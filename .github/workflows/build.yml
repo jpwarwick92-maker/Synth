@@ -55,7 +55,7 @@ jobs:
           npm install --no-audit --no-fund
           npx playwright install chromium
           node -e "import('playwright').then(p => p.chromium.launch()).then(b => b.close())" \
-            || sudo DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
+            || sudo env "PATH=$PATH" DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
 
       - name: Page tests
         run: node tests/page/run.mjs build/site build/out
