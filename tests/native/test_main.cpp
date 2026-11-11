@@ -21,6 +21,7 @@
 #include "gfx.h"
 #include "params.h"
 #include "synth.h"
+#include "tables.h"
 #include "ui.h"
 
 // ---------------------------------------------------------------- harness
@@ -300,28 +301,28 @@ static void saveFrame(const char* name) {
   FILE* f = std::fopen(path.c_str(), "wb");
   if (!f) return;
   std::fprintf(f, "P6\n%d %d\n255\n", fw::kDisplayW, fw::kDisplayH);
-  const uint16_t* fb = fw::frame();
-  for (int i = 0; i < fw::kDisplayW * fw::kDisplayH; ++i) {
-    uint16_t p = fb[i];
-    unsigned char rgb[3] = {(unsigned char)((p >> 11) << 3), (unsigned char)(((p >> 5) & 63) << 2),
-                            (unsigned char)((p & 31) << 3)};
-    std::fwrite(rgb, 1, 3, f);
+  uint16_t row[fw::kDisplayW];
+  for (int y = 0; y < fw::kDisplayH; ++y) {
+    fw::frameRow565(y, row);  // the same expansion a display driver uses
+    for (int x = 0; x < fw::kDisplayW; ++x) {
+      uint16_t p = row[x];
+      unsigned char rgb[3] = {(unsigned char)((p >> 11) << 3), (unsigned char)(((p >> 5) & 63) << 2),
+                              (unsigned char)((p & 31) << 3)};
+      std::fwrite(rgb, 1, 3, f);
+    }
   }
   std::fclose(f);
 }
 
-static long countColour(uint16_t c, int y0 = 0, int y1 = fw::kDisplayH) {
-  const uint16_t* fb = fw::frame();
+static long countColour(fw::Colour c, int y0 = 0, int y1 = fw::kDisplayH) {
   long n = 0;
   for (int y = y0; y < y1; ++y)
     for (int x = 0; x < fw::kDisplayW; ++x)
-      if (fb[y * fw::kDisplayW + x] == c) ++n;
+      if (fw::gfxGet(x, y) == c) ++n;
   return n;
 }
 
-static std::vector<uint16_t> grabFrame() {
-  return std::vector<uint16_t>(fw::frame(), fw::frame() + fw::kDisplayW * fw::kDisplayH);
-}
+static std::vector<uint8_t> grabFrame() { return std::vector<uint8_t>(fw::frame(), fw::frame() + fw::kFrameBytes); }
 
 // ------------------------------------------------------------------ tests
 
@@ -691,7 +692,7 @@ static void testUi() {
   section("AC6  moving a control shows its visual, home returns after 1.5 s");
   boot(48000);
   fw::tick(33);
-  std::vector<uint16_t> home = grabFrame();
+  std::vector<uint8_t> home = grabFrame();
   static const char* const kShots[] = {"osc1_wave",     "osc1_macro",      "osc2_detune",  "mix_sub",
                                        "filter_cutoff", "filter_resonance", "filter_type",  "fenv_decay",
                                        "aenv_release",  "aenv_velocity",   "lfo_shape",    "lfo_destination",
@@ -726,7 +727,7 @@ static void testUi() {
   saveFrame("mode_engine");
   CHECK(fw::gUi.mode() == fw::MB_ENGINE, "Engine button did not open the Engine page");
   CHECK(fw::controlGet(ctl("btn_engine")) == 1, "Engine button light is off");
-  std::vector<uint16_t> enginePage = grabFrame();
+  std::vector<uint8_t> enginePage = grabFrame();
 
   fw::encoderTurn(enc1, 3);
   CHECK(fw::gParams.step(fw::P_UNI_DETUNE) == before + 3, "enc1 should raise unison detune by 3");
@@ -1465,6 +1466,61 @@ static void testTextSize() {
   CHECK(vertical == horizontal && vertical == 2 * 42, "vertical %ld px, horizontal %ld px", vertical, horizontal);
 }
 
+// The display buffer is 4 bits per pixel. These guard the bit-packing: a
+// slip there would smear neighbouring pixels or lose odd columns.
+static void testPackedFrame() {
+  section("display buffer: 4 bits per pixel, every pixel independent");
+  boot(48000);
+  CHECK(fw::kFrameBytes == 38400, "frame is %d bytes, expected 38400", fw::kFrameBytes);
+  fw::gfxClear(fw::kGrid);
+  CHECK(countColour(fw::kGrid) == 320L * 240, "clear did not fill every pixel");
+  // single pixels on even and odd columns must not disturb their neighbours
+  fw::gfxPixel(10, 5, fw::kAmber);
+  fw::gfxPixel(13, 5, fw::kTeal);
+  CHECK(fw::gfxGet(10, 5) == fw::kAmber && fw::gfxGet(11, 5) == fw::kGrid && fw::gfxGet(9, 5) == fw::kGrid, "even column");
+  CHECK(fw::gfxGet(13, 5) == fw::kTeal && fw::gfxGet(12, 5) == fw::kGrid && fw::gfxGet(14, 5) == fw::kGrid, "odd column");
+  // fills with every mix of odd and even edges cover exactly their rectangle
+  int wrong = 0;
+  for (int x0 = 20; x0 < 24; ++x0)
+    for (int w = 1; w <= 6; ++w) {
+      fw::gfxClear(fw::kBlack);
+      fw::gfxFill(x0, 30, w, 3, fw::kWhite);
+      for (int y = 28; y < 36; ++y)
+        for (int x = 14; x < 36; ++x) {
+          bool inside = x >= x0 && x < x0 + w && y >= 30 && y < 33;
+          wrong += (fw::gfxGet(x, y) == fw::kWhite) != inside;
+        }
+    }
+  CHECK(wrong == 0, "%d pixels wrong across the odd/even fill cases", wrong);
+  // drawing off every edge must not wrap round or write outside the buffer
+  fw::gfxClear(fw::kBlack);
+  fw::gfxFill(-5, -5, 10, 10, fw::kTeal);
+  fw::gfxFill(315, 235, 10, 10, fw::kTeal);
+  fw::gfxPixel(320, 0, fw::kAmber);
+  fw::gfxPixel(-1, 0, fw::kAmber);
+  CHECK(countColour(fw::kTeal) == 50 && countColour(fw::kAmber) == 0, "clipping at the edges: %ld teal, %ld amber", countColour(fw::kTeal), countColour(fw::kAmber));
+  // a row expands to the display's own colours
+  uint16_t row[fw::kDisplayW];
+  fw::gfxClear(fw::kBlack);
+  fw::gfxPixel(7, 100, fw::kAmber);
+  fw::frameRow565(100, row);
+  CHECK(row[7] == fw::kPalette565[fw::kAmber] && row[6] == fw::kPalette565[fw::kBlack] && row[8] == 0, "row expansion");
+
+  section("oscillator tables: stored as 16-bit, none clipped");
+  int peakSaw = 0, peakTri = 0, peakWt = 0;
+  for (int l = 0; l < fw::kSawLevels; ++l)
+    for (int i = 0; i <= fw::kTabLen; ++i) peakSaw = std::max(peakSaw, std::abs((int)fw::gSaw[l][i]));
+  for (int l = 0; l < fw::kTriLevels; ++l)
+    for (int i = 0; i <= fw::kTabLen; ++i) peakTri = std::max(peakTri, std::abs((int)fw::gTri[l][i]));
+  for (int t = 0; t < fw::kWtTables; ++t)
+    for (int f = 0; f < fw::kWtFrames; ++f)
+      for (int l = 0; l < fw::kWtLevels; ++l)
+        for (int i = 0; i <= fw::kWtLen; ++i) peakWt = std::max(peakWt, std::abs((int)fw::gWt[t][f][l][i]));
+  CHECK(peakSaw > 27000 && peakSaw < 32700, "saw tables peak at %d of 32767", peakSaw);
+  CHECK(peakTri > 26000 && peakTri < 32700, "triangle tables peak at %d of 32767", peakTri);
+  CHECK(peakWt > 31000 && peakWt < 32700, "wavetables peak at %d of 32767", peakWt);
+}
+
 static void testState() {
   section("AC11  every control and encoder value survives a restart");
   boot(48000);
@@ -1577,6 +1633,7 @@ int main(int argc, char** argv) {
   testUi();
   testSoftPages();
   testTextSize();
+  testPackedFrame();
   testState();
   testOlderSavedState();
   testArpAndHold();

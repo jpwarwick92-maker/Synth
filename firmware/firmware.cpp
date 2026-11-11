@@ -156,6 +156,8 @@ bool tick(uint32_t dtMs) {
   return gUi.tick(dtMs);
 }
 
-const uint16_t* frame() { return gFrame; }
+const uint8_t* frame() { return gFrame; }
+
+void frameRow565(int y, uint16_t* dst) { gfxRow565(y, dst); }
 
 }  // namespace fw

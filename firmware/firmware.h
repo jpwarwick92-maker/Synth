@@ -47,7 +47,11 @@ int controlGet(int index);
 // Call about 30 times a second with the elapsed time. Returns true when the
 // display buffer has new content.
 bool tick(uint32_t dtMs);
-const uint16_t* frame();
+// The display frame: 320x240, 4 bits per pixel (a colour number), two
+// pixels to a byte. frameRow565 expands one row to the display's native
+// 16-bit format, so a driver can send it a line at a time.
+const uint8_t* frame();
+void frameRow565(int y, uint16_t* dst);
 
 // ---- used inside the core ----
 void onParamChanged(int id);

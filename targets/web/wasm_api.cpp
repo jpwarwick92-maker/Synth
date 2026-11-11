@@ -11,6 +11,9 @@ namespace {
 float gOutL[fw::kMaxBlock];
 float gOutR[fw::kMaxBlock];
 uint8_t gMidiBuf[256];
+// The page is handed the frame already expanded to the display's 16-bit
+// format, as the real display would receive it line by line.
+uint16_t gDisplay[fw::kDisplayW * fw::kDisplayH];
 uint8_t gStore[fw::kStateSize];
 uint32_t gStoreLen = 0;
 uint32_t gSaveCount = 0;
@@ -67,8 +70,12 @@ void FW_EXPORT(fw_encoder_turn)(int i, int delta) { fw::encoderTurn(i, delta); }
 int FW_EXPORT(fw_control_get)(int i) { return fw::controlGet(i); }
 
 // ---- display ----
-int FW_EXPORT(fw_tick)(int dtMs) { return fw::tick((uint32_t)dtMs) ? 1 : 0; }
-const uint16_t* FW_EXPORT(fw_display_ptr)() { return fw::frame(); }
+int FW_EXPORT(fw_tick)(int dtMs) {
+  if (!fw::tick((uint32_t)dtMs)) return 0;
+  for (int y = 0; y < fw::kDisplayH; ++y) fw::frameRow565(y, gDisplay + y * fw::kDisplayW);
+  return 1;
+}
+const uint16_t* FW_EXPORT(fw_display_ptr)() { return gDisplay; }
 int FW_EXPORT(fw_display_width)() { return fw::kDisplayW; }
 int FW_EXPORT(fw_display_height)() { return fw::kDisplayH; }
 

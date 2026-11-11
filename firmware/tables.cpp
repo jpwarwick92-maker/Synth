@@ -11,8 +11,8 @@ const int16_t kSawHarmonics[kSawLevels] = {512, 362, 256, 181, 128, 90, 64, 45, 
 constexpr int kTriFirstLevel = kSawLevels - kTriLevels;
 
 float gSine[kTabLen + 1];
-FW_BIGMEM float gSaw[kSawLevels][kTabLen + 1];
-FW_BIGMEM float gTri[kTriLevels][kTabLen + 1];
+FW_BIGMEM int16_t gSaw[kSawLevels][kTabLen + 1];
+FW_BIGMEM int16_t gTri[kTriLevels][kTabLen + 1];
 FW_BIGMEM int16_t gWt[kWtTables][kWtFrames][kWtLevels][kWtLen + 1];
 
 namespace {
@@ -26,9 +26,12 @@ void addHarmonic(int h, float amp) {
   }
 }
 
-void store(float* dst) {
-  for (int i = 0; i < kTabLen; ++i) dst[i] = gAcc[i];
-  dst[kTabLen] = gAcc[0];  // guard sample for interpolation
+void store(int16_t* dst) {
+  for (int i = 0; i < kTabLen; ++i) {
+    float v = gAcc[i] * kTabScale;
+    dst[i] = (int16_t)(v >= 0.0f ? v + 0.5f : v - 0.5f);
+  }
+  dst[kTabLen] = dst[0];  // guard sample for interpolation
 }
 }  // namespace
 
@@ -146,9 +149,9 @@ static int levelFor(float inc) {
   return kSawLevels - 1;
 }
 
-const float* sawTableFor(float inc) { return gSaw[levelFor(inc)]; }
+const int16_t* sawTableFor(float inc) { return gSaw[levelFor(inc)]; }
 
-const float* triTableFor(float inc) {
+const int16_t* triTableFor(float inc) {
   int l = levelFor(inc) - kTriFirstLevel;
   return gTri[l < 0 ? 0 : l];
 }

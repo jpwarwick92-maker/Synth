@@ -34,8 +34,8 @@ constexpr int kKsLen = 2048;  // pluck engine: string length in samples (power o
 
 struct Osc {
   float phase;
-  const float* tab;     // VA: current band-limited table
-  const float* tabOld;  // VA: previous table, faded out over one control block
+  const int16_t* tab;     // VA: current band-limited table
+  const int16_t* tabOld;  // VA: previous table, faded out over one control block
   float xf;             // VA: 1 -> 0 crossfade from tabOld to tab
   float phase2;         // FM: modulator phase
   float fb;             // FM: modulator feedback memory. Pluck: exciter filter memory

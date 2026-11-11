@@ -110,8 +110,8 @@ inline float envTick(Env& e, const EnvCoef& c) {
 }
 
 inline float readTable(const Osc& o, float ph) {
-  float y = tabRead(o.tab, ph);
-  if (o.xf > 0.0f) y += (tabRead(o.tabOld, ph) - y) * o.xf;
+  float y = tabRead16(o.tab, ph);
+  if (o.xf > 0.0f) y += (tabRead16(o.tabOld, ph) - y) * o.xf;
   return y;
 }
 
@@ -133,7 +133,7 @@ inline float pulseRead(const Osc& o, float pw) {
   return readTable(o, ph) - readTable(o, ph2) - (2.0f * pw - 1.0f);
 }
 
-inline void setTable(Osc& o, const float* t, bool fade) {
+inline void setTable(Osc& o, const int16_t* t, bool fade) {
   if (t == o.tab) return;
   o.tabOld = fade ? o.tab : t;
   o.xf = fade ? 1.0f : 0.0f;
@@ -290,7 +290,7 @@ void Synth::init(float sampleRate) {
 
   for (int i = 0; i < P_COUNT; ++i) smooth_[i] = gParams.norm(i);
 
-  const float* rest = gSaw[kSawLevels - 1];
+  const int16_t* rest = gSaw[kSawLevels - 1];
   for (int i = 0; i < kNumVoices; ++i) {
     Voice& v = voices_[i];
     v.active = v.gate = v.keyDown = v.sustained = false;

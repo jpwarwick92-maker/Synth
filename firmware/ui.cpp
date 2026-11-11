@@ -224,7 +224,7 @@ void formatParam(int id, Str& s) {
 // One column of a plotted curve: joins the previous column's height to this
 // one's with a vertical stroke. Steep edges (a square wave) come out as one
 // clean upright line instead of a diagonal with a kink in it.
-void plotColumn(int x, int yFrom, int yTo, uint16_t c) { gfxPlotLine(x, yFrom, x, yTo, c); }
+void plotColumn(int x, int yFrom, int yTo, Colour c) { gfxPlotLine(x, yFrom, x, yTo, c); }
 
 // Live output scope, triggered on a rising zero crossing so the wave holds still.
 void drawScope(int x, int y, int w, int h) {
@@ -351,7 +351,7 @@ void drawMixer(int selected) {
     int id = P_MIX_OSC1 + i;
     int x = 30 + i * 72;
     int h = (int)(gParams.norm(id) * 126.0f);
-    uint16_t c = id == selected ? kAmber : kDimTeal;
+    Colour c = id == selected ? kAmber : kDimTeal;
     gfxFrame(x, 56, 44, 130, kDarkGrey);
     gfxFill(x + 2, 184 - h, 40, h, c);
     gfxTextCentre(x + 22, 194, kNames[i], id == selected ? kAmber : kGrey, 2);
@@ -413,7 +413,7 @@ void drawAdsr(int firstParam, int selected) {
 
   auto yOf = [&](float level) { return bottom - (int)(level * (float)hgt); };
   auto seg = [&](int width, int which, float (*shape)(float t, float s), float sus) {
-    uint16_t c = (firstParam + which == selected) ? kAmber : kTeal;
+    Colour c = (firstParam + which == selected) ? kAmber : kTeal;
     int py = yOf(shape(0.0f, sus));
     for (int i = 1; i <= width; ++i) {
       int yy = yOf(shape((float)i / (float)width, sus));

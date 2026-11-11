@@ -29,8 +29,12 @@ Rules for code in `firmware/`:
 - no memory allocation, at start-up or while playing;
 - audio in blocks of at most 128 samples, at any sample rate;
 - only `<stdint.h>` and `<stddef.h>`; maths comes from `fw_math.h`;
-- the display is drawn with pixels, lines, fills and a bitmap font only, and no text
-  smaller than 2 mm tall on the real display (font scale 2).
+- the display is drawn with pixels, lines, fills and a bitmap font only, in a fixed
+  set of colours (the frame is 4 bits per pixel), and no text smaller than 2 mm tall
+  on the real display (font scale 2);
+- large tables and delay lines are 16-bit where that is inaudible, to fit the
+  Teensy's 1 MB of RAM. They stay in RAM: reading them from flash in the audio loop
+  is too slow.
 
 ## Build and run
 

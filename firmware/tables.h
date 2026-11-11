@@ -18,9 +18,14 @@ constexpr int kTriLevels = 11;
 // Harmonic count of each saw level, richest first. Half-octave steps.
 extern const int16_t kSawHarmonics[kSawLevels];
 
+// The saw and triangle sets are stored as 16-bit numbers: half the memory
+// of floats, with rounding noise far below anything audible. kTabScale is
+// the stored value of 1.0; it leaves room for the overshoot a band-limited
+// saw has at its edge (about 1.18).
+constexpr float kTabScale = 27000.0f;
 extern float gSine[kTabLen + 1];
-extern float gSaw[kSawLevels][kTabLen + 1];
-extern float gTri[kTriLevels][kTabLen + 1];
+extern int16_t gSaw[kSawLevels][kTabLen + 1];
+extern int16_t gTri[kTriLevels][kTabLen + 1];
 
 // ---- wavetable engine ----
 // Four tables of four frames each; the oscillator morphs between frames.
@@ -37,8 +42,16 @@ int wtLevelFor(float inc);
 void tablesInit();
 
 // Table to use for an oscillator advancing `inc` cycles per sample.
-const float* sawTableFor(float inc);
-const float* triTableFor(float inc);
+const int16_t* sawTableFor(float inc);
+const int16_t* triTableFor(float inc);
+
+// Linear-interpolated read of a 16-bit table, phase in [0, 1). Result in the table's -1..1 scale.
+inline float tabRead16(const int16_t* t, float phase) {
+  float p = phase * (float)kTabLen;
+  int i = (int)p;
+  float f = p - (float)i;
+  return ((float)t[i] + (float)(t[i + 1] - t[i]) * f) * (1.0f / kTabScale);
+}
 
 // Linear-interpolated read, phase in [0, 1).
 inline float tabRead(const float* t, float phase) {
