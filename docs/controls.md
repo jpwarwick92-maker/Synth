@@ -43,14 +43,39 @@ all sound off (CC 120) and all notes off (CC 123).
 | `lfo_destination` | LFO | DESTINATION | selector | PITCH, CUTOFF, AMP, PW | 109 |
 | `volume` | OUTPUT | VOLUME | pot |  | 7 |
 
-## Engine page (soft controls)
+## Soft parameters (encoder pages and buttons)
 
-| Parameter id | Encoder | Name | Type | Values | CC |
-|---|---|---|---|---|---|
-| `unison_detune` | 1 | UNI DETUNE | stepped | 0 to 50 | 110 |
-| `sub_octave` | 2 | SUB OCTAVE | stepped | -1 OCT, -2 OCT | 111 |
-| `bend_range` | 3 | BEND RANGE | stepped | 1 to 12 | 112 |
-| `filter_slope` | 4 | FILT SLOPE | stepped | 12 dB, 24 dB | 113 |
+Wave, Macro and Color mean different things under each oscillator engine:
+VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, position, none. Pluck: exciter, damping, decay.
+
+| Parameter id | Page | Name | Values | CC |
+|---|---|---|---|---|
+| `unison_detune` | ENGINE | UNI DETUNE | 0 to 50 | 110 |
+| `sub_octave` | ENGINE | SUB OCTAVE | -1 OCT, -2 OCT | 111 |
+| `bend_range` | ENGINE | BEND RANGE | 1 to 12 | 112 |
+| `filter_slope` | ENGINE | FILT SLOPE | 12 dB, 24 dB | 113 |
+| `delay_time` | FX 1 | TIME | 0 to 100 | 46 |
+| `delay_tone` | FX 1 | TONE | 0 to 100 | 47 |
+| `delay_feedback` | FX 1 | FEEDBACK | 0 to 100 | 48 |
+| `delay_mix` | FX 1 | MIX | 0 to 100 | 49 |
+| `chorus` | FX 2 | CHORUS | 0 to 100 | 50 |
+| `reverb_size` | FX 2 | RVB SIZE | 0 to 100 | 51 |
+| `reverb_tone` | FX 2 | RVB TONE | 0 to 100 | 52 |
+| `reverb_mix` | FX 2 | RVB MIX | 0 to 100 | 53 |
+| `lfo_fade` | MOD | LFO FADE | 0 to 100 | 54 |
+| `vel_cutoff` | MOD | VEL>CUTOFF | 0 to 100 | 55 |
+| `fenv_pitch` | MOD | ENV>PITCH | 0 to 24 | 56 |
+| `lfo_sync` | MOD | LFO SYNC | FREE, KEY | 57 |
+| `arp_mode` | ARP | MODE | OFF, UP, DOWN, UP-DOWN, RANDOM, PLAYED | 58 |
+| `arp_tempo` | ARP | TEMPO | 40 to 240 | 59 |
+| `arp_octaves` | ARP | OCTAVES | 1 to 4 | 60 |
+| `arp_gate` | ARP | GATE | 0 to 19 | 61 |
+| `osc1_color` | OSC 1 | COLOR | 0 to 100 | 62 |
+| `osc2_macro` | OSC 2 | MACRO | 0 to 100 | 63 |
+| `osc2_color` | OSC 2 | COLOR | 0 to 100 | 114 |
+| `osc1_engine` | OSC 1 | ENGINE | VA, FM, WAVETABLE, PLUCK | 115 |
+| `osc2_engine` | OSC 2 | ENGINE | VA, FM, WAVETABLE, PLUCK | 116 |
+| `hold` | VOICE | HOLD | OFF, ON | 69 |
 
 ## Encoders and buttons
 
@@ -68,3 +93,4 @@ all sound off (CC 120) and all notes off (CC 123).
 | `btn_patch` | button |
 | `btn_osc1_engine` | button |
 | `btn_osc2_engine` | button |
+| `btn_hold` | button |

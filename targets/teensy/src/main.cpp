@@ -22,18 +22,31 @@ class AudioSynthFirmware : public AudioStream {
 
   void update() override {
     if (!gReady) return;
-    audio_block_t* block = allocate();
-    if (!block) return;
-    float buf[AUDIO_BLOCK_SAMPLES];
-    fw::process(buf, AUDIO_BLOCK_SAMPLES);
-    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; ++i) {
-      float s = buf[i] * 32767.0f;
-      if (s > 32767.0f) s = 32767.0f;
-      if (s < -32768.0f) s = -32768.0f;
-      block->data[i] = (int16_t)s;
+    audio_block_t* left = allocate();
+    if (!left) return;
+    audio_block_t* right = allocate();
+    if (!right) {
+      release(left);
+      return;
     }
-    transmit(block, 0);
-    release(block);
+    float l[AUDIO_BLOCK_SAMPLES], r[AUDIO_BLOCK_SAMPLES];
+    fw::process(l, r, AUDIO_BLOCK_SAMPLES);
+    for (int i = 0; i < AUDIO_BLOCK_SAMPLES; ++i) {
+      left->data[i] = toInt16(l[i]);
+      right->data[i] = toInt16(r[i]);
+    }
+    transmit(left, 0);
+    transmit(right, 1);
+    release(left);
+    release(right);
+  }
+
+ private:
+  static int16_t toInt16(float x) {
+    float s = x * 32767.0f;
+    if (s > 32767.0f) s = 32767.0f;
+    if (s < -32768.0f) s = -32768.0f;
+    return (int16_t)s;
   }
 };
 
@@ -41,9 +54,9 @@ static AudioSynthFirmware synthOut;
 static AudioOutputI2S i2sOut;  // also drives the audio clock
 static AudioOutputUSB usbOut;
 static AudioConnection patch1(synthOut, 0, i2sOut, 0);
-static AudioConnection patch2(synthOut, 0, i2sOut, 1);
+static AudioConnection patch2(synthOut, 1, i2sOut, 1);
 static AudioConnection patch3(synthOut, 0, usbOut, 0);
-static AudioConnection patch4(synthOut, 0, usbOut, 1);
+static AudioConnection patch4(synthOut, 1, usbOut, 1);
 
 // ---- storage: the saved state lives in the on-board EEPROM ----
 // Layout: one length byte, then the blob.
@@ -61,7 +74,7 @@ extern "C" void fw_hal_storage_save(const uint8_t* src, uint32_t len) {
 }
 
 void setup() {
-  AudioMemory(12);
+  AudioMemory(16);
   Serial.begin(115200);
   fw::init(AUDIO_SAMPLE_RATE_EXACT);
   gReady = true;

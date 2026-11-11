@@ -16,9 +16,54 @@ namespace {
 
 const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ARP", "ENGINE", "PATCH"};
 
-// Engine page: one parameter per encoder, in encoder order
-// (left-top, left-bottom, right-top, right-bottom).
-const uint8_t kEnginePage[4] = {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE};
+// The soft-control pages. One parameter per encoder, in encoder order
+// (left-top, left-bottom, right-top, right-bottom); kNone leaves a slot empty.
+constexpr uint8_t kNone = 255;
+struct Page {
+  const char* title;
+  uint8_t param[4];
+};
+constexpr int kMaxPages = 2;
+const Page kPages[MB_COUNT][kMaxPages] = {
+    /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
+    /* FX 2   */ {{"CHORUS + REVERB", {P_CHORUS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
+    /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
+    /* ARP    */ {{"ARP", {P_ARP_MODE, P_ARP_TEMPO, P_ARP_OCTAVES, P_ARP_GATE}}, {nullptr, {}}},
+    /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
+                  {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
+    /* PATCH  */ {{nullptr, {}}, {nullptr, {}}},
+};
+
+int pageCount(int mode) {
+  int n = 0;
+  while (n < kMaxPages && kPages[mode][n].title) ++n;
+  return n;
+}
+
+// Which oscillator a parameter belongs to (0 or 1), or -1.
+int oscOf(int id) {
+  switch (id) {
+    case P_OSC1_WAVE: case P_OSC1_OCTAVE: case P_OSC1_MACRO: case P_OSC1_COLOR: case P_OSC1_ENGINE: return 0;
+    case P_OSC2_WAVE: case P_OSC2_OCTAVE: case P_OSC2_DETUNE: case P_OSC2_MACRO: case P_OSC2_COLOR: case P_OSC2_ENGINE: return 1;
+    default: return -1;
+  }
+}
+
+int engineOf(int osc) { return gParams.step(osc == 0 ? P_OSC1_ENGINE : P_OSC2_ENGINE); }
+
+// A parameter's name on the display. Wave, Macro and Color mean different
+// things under each oscillator engine, so their names follow the engine.
+// Returns "" for a control the current engine does not use.
+const char* paramName(int id) {
+  int osc = oscOf(id);
+  if (osc >= 0) {
+    int e = engineOf(osc);
+    if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) return kEngineWaveName[e];
+    if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) return kEngineMacroName[e];
+    if (id == P_OSC1_COLOR || id == P_OSC2_COLOR) return kEngineColorName[e];
+  }
+  return kParams[id].name;
+}
 
 // ---- small string builder (no printf in the core) ----
 struct Str {
@@ -77,8 +122,45 @@ void formatParam(int id, Str& s) {
   const ParamDef& d = kParams[id];
   float n = gParams.norm(id);
   int st = gParams.step(id);
+  int osc = oscOf(id);
+  int engine = osc >= 0 ? engineOf(osc) : ENG_VA;
+  if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) {  // the stops mean something else under each engine
+    s.add(kEngineWaveLabels[engine][st & 3]);
+    return;
+  }
+  if (id == P_OSC1_MACRO && engine != ENG_VA) {
+    s.addInt((int)(n * 100.0f + 0.5f));
+    s.add('%');
+    return;
+  }
+  if (id == P_OSC2_MACRO && engine == ENG_VA) {
+    s.addInt((int)(mapPulseWidth(gParams.frac(id)) * 100.0f + 0.5f));
+    s.add('%');
+    return;
+  }
   switch (d.unit) {
     case U_STEP: s.add(d.labels[st]); break;
+    case U_INT_PERCENT:
+      s.addInt((int)(gParams.frac(id) * 100.0f + 0.5f));
+      s.add('%');
+      break;
+    case U_INT_PLAIN: s.addInt(st + d.intMin); break;
+    case U_BPM:
+      s.addInt(st + d.intMin);
+      s.add(" BPM");
+      break;
+    case U_GATE:
+      s.addInt((st + 1) * 5);
+      s.add('%');
+      break;
+    case U_DLY_TIME: s.addTime(mapDelayTime(gParams.frac(id))); break;
+    case U_RVB_TIME: s.addTime(mapReverbTime(gParams.frac(id))); break;
+    case U_FADE_TIME: {
+      float t = mapFadeTime(gParams.frac(id));
+      if (t <= 0.0f) s.add("OFF");
+      else s.addTime(t);
+      break;
+    }
     case U_PW:
       s.addInt((int)(mapPulseWidth(n) * 100.0f + 0.5f));
       s.add('%');
@@ -177,7 +259,8 @@ void drawScope(int x, int y, int w, int h) {
 void drawStatus() {
   const int y = 222;
   for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kTeal : kDarkGrey);
-  gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
+  if (gParams.step(P_HOLD)) gfxText(104, y, "HOLD", kAmber, 2);
+  else gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
 
   float peak = minf(gSynth.peakLevel(), 1.0f);
   gfxFill(162, y + 3, 88, 8, kDarkGrey);
@@ -221,14 +304,42 @@ float waveShape(int wave, float ph, float pw) {
   }
 }
 
-void drawOscWave(int wave, float pw) {
+// One point of an oscillator's wave as it is set now, whichever engine it runs.
+float oscShape(int osc, float ph) {
+  int engine = engineOf(osc);
+  int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) & 3;
+  float macro = osc == 0 ? gParams.norm(P_OSC1_MACRO) : gParams.frac(P_OSC2_MACRO);
+  float color = gParams.frac(osc == 0 ? P_OSC1_COLOR : P_OSC2_COLOR);
+  switch (engine) {
+    case ENG_VA: return waveShape(wave, ph, mapPulseWidth(macro));
+    case ENG_FM: {
+      static const float kRatios[4] = {1.0f, 2.0f, 3.0f, 3.5f};
+      float m = sinf_(kTwoPi * ph * kRatios[wave]);
+      return sinf_(kTwoPi * ph + macro * macro * 8.0f * m);
+    }
+    case ENG_WAVETABLE: {
+      float pos = macro * (float)(kWtFrames - 1);
+      int f0 = pos >= (float)(kWtFrames - 1) ? kWtFrames - 2 : (int)pos;
+      int i = (int)(ph * (float)kWtLen) & (kWtLen - 1);
+      float a = (float)gWt[wave][f0][0][i], b = (float)gWt[wave][f0 + 1][0][i];
+      return (a + (b - a) * (pos - (float)f0)) * (1.0f / 32000.0f);
+    }
+    default: {  // pluck: a wave that dies away, faster and duller with more damping
+      float decay = exp2f_(-ph * (5.0f - 4.0f * color));
+      return sinf_(kTwoPi * ph * 4.0f) * decay * (1.0f - 0.5f * macro);
+    }
+  }
+}
+
+void drawOscWave(int osc) {
   const int x0 = 10, w = 300, mid = 138, amp = 64;
   gfxHLine(x0, mid, w, kGrid);
+  bool once = engineOf(osc) == ENG_PLUCK;  // a pluck is one event, not a repeating wave
   int py = 0;
   for (int px = 0; px < w; ++px) {
-    float ph = (float)px * (2.0f / (float)w);
-    ph -= floorf_(ph);
-    int yy = mid - (int)(waveShape(wave, ph, pw) * (float)amp);
+    float ph = (float)px * ((once ? 1.0f : 2.0f) / (float)w);
+    if (!once) ph -= floorf_(ph);
+    int yy = clampi(mid - (int)(oscShape(osc, ph) * (float)amp), 56, 216);
     plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
   }
@@ -359,53 +470,72 @@ void drawLfo() {
 
 void Ui::init() {
   mode_ = MB_NONE;
+  page_ = 0;
   popupParam_ = -1;
-  popupOsc_ = -1;
   popupMs_ = 0;
+  for (int i = 0; i < 4; ++i) burst_[i] = 0;
   dirty_ = true;
 }
 
+// Parameter on encoder `enc` of the page showing now, or -1.
+int Ui::pageParam(int enc) const {
+  if (mode_ == MB_NONE || enc < 0 || enc >= 4 || page_ >= pageCount(mode_)) return -1;
+  uint8_t id = kPages[mode_][page_].param[enc];
+  if (id == kNone) return -1;
+  if (paramName(id)[0] == 0) return -1;  // the oscillator's engine has no use for this one
+  return id;
+}
+
 void Ui::paramChanged(int id) {
-  // Engine-page values are already on screen while that page is open.
-  if (mode_ == MB_ENGINE && kParams[id].section == SEC_ENGINE) {
-    dirty_ = true;
-    return;
-  }
+  // A value already on the page showing now updates in place.
+  for (int e = 0; e < 4; ++e)
+    if (pageParam(e) == id) {
+      dirty_ = true;
+      return;
+    }
   popupParam_ = (int16_t)id;
-  popupOsc_ = -1;
   popupMs_ = kPopupMs;
   dirty_ = true;
 }
 
 void Ui::modeButton(int which) {
   if (which < 0 || which >= MB_COUNT) return;
-  mode_ = mode_ == which ? (int8_t)MB_NONE : (int8_t)which;  // pressing the lit button goes home
+  if (mode_ != which) {
+    mode_ = (int8_t)which;
+    page_ = 0;
+  } else if (page_ + 1 < pageCount(which)) {
+    ++page_;  // the lit button steps to the mode's next page
+  } else {
+    mode_ = MB_NONE;  // and after the last page, home
+    page_ = 0;
+  }
   popupParam_ = -1;
-  popupOsc_ = -1;
   popupMs_ = 0;
   dirty_ = true;
 }
 
-void Ui::oscEngineButton(int osc) {
-  popupOsc_ = (int8_t)osc;
-  popupParam_ = -1;
-  popupMs_ = kPopupMs;
-  dirty_ = true;
-}
-
 void Ui::encoderTurn(int enc, int delta) {
-  if (mode_ != MB_ENGINE || enc < 0 || enc >= 4) return;  // only the Engine page is live
-  int id = kEnginePage[enc];
+  int id = pageParam(enc);
+  if (id < 0) return;
+  // Long ranges would take many turns one click at a time: a fast spin
+  // (several clicks within one display tick) moves in bigger steps.
+  if (kParams[id].steps > 30) {
+    int n = burst_[enc] < 250 ? ++burst_[enc] : 250;
+    if (n >= 4) delta *= 5;
+    else if (n >= 2) delta *= 2;
+  }
   if (gParams.set(id, gParams.step(id) + delta)) onParamChanged(id);
 }
 
 void Ui::encoderPush(int enc) {
-  if (mode_ != MB_ENGINE || enc < 0 || enc >= 4) return;
-  int id = kEnginePage[enc];
+  int id = pageParam(enc);
+  if (id < 0) return;
   if (gParams.set(id, kParams[id].def)) onParamChanged(id);  // push = back to default
 }
 
 bool Ui::tick(uint32_t dtMs) {
+  for (int i = 0; i < 4; ++i) burst_[i] = 0;
+
   bool popup = popupMs_ > 0;
   if (popup) {
     if (popupMs_ > dtMs) {
@@ -413,7 +543,6 @@ bool Ui::tick(uint32_t dtMs) {
     } else {
       popupMs_ = 0;
       popupParam_ = -1;
-      popupOsc_ = -1;
       popup = false;
       dirty_ = true;
     }
@@ -425,7 +554,6 @@ bool Ui::tick(uint32_t dtMs) {
 
   gfxClear(kBlack);
   if (popup && popupParam_ >= 0) drawParamPopup(popupParam_);
-  else if (popup && popupOsc_ >= 0) drawEnginePopup(popupOsc_);
   else if (mode_ != MB_NONE) drawModePage();
   else drawHome();
   return true;
@@ -438,24 +566,42 @@ void Ui::drawHome() {
 }
 
 void Ui::drawModePage() {
-  gfxTextCentre(160, 6, kModeNames[mode_], kAmber, 2);
-  if (mode_ != MB_ENGINE) {
+  int pages = pageCount(mode_);
+  if (pages == 0) {
+    gfxTextCentre(160, 6, kModeNames[mode_], kAmber, 2);
     gfxTextCentre(160, 104, "NOT BUILT YET", kGrey, 2);
     drawStatus();
     return;
   }
+  Str title;
+  title.add(kPages[mode_][page_].title);
+  if (pages > 1) {
+    title.add(' ');
+    title.addInt(page_ + 1);
+    title.add('/');
+    title.addInt(pages);
+  }
+  gfxTextCentre(160, 6, title.b, kAmber, 2);
+
   // one value per encoder, at the corner nearest that encoder
   static const int kLabelY[2] = {30, 164};
   for (int e = 0; e < 4; ++e) {
-    int id = kEnginePage[e];
-    Str v;
-    formatParam(id, v);
+    int id = pageParam(e);
     int y = kLabelY[e & 1];
+    Str label, v;
+    if (id < 0) {
+      label.add("--");
+    } else {
+      int osc = oscOf(id);
+      if (osc >= 0) label.add(osc == 0 ? "O1 " : "O2 ");
+      label.add(paramName(id));
+      formatParam(id, v);
+    }
     if (e < 2) {
-      gfxText(8, y, kParams[id].name, kDimTeal, 2);
+      gfxText(8, y, label.b, kDimTeal, 2);
       gfxText(8, y + 16, v.b, kWhite, 3);
     } else {
-      gfxTextRight(312, y, kParams[id].name, kDimTeal, 2);
+      gfxTextRight(312, y, label.b, kDimTeal, 2);
       gfxTextRight(312, y + 16, v.b, kWhite, 3);
     }
   }
@@ -467,14 +613,16 @@ void Ui::drawParamPopup(int id) {
   const ParamDef& d = kParams[id];
   Str v;
   formatParam(id, v);
-  drawHeader(kSectionNames[d.section], d.name, v.b);
+  const char* name = paramName(id);
+  drawHeader(kSectionNames[d.section], name[0] ? name : d.name, v.b);
 
-  switch (d.section) {
+  bool engineSwitch = id == P_OSC1_ENGINE || id == P_OSC2_ENGINE;
+  switch (engineSwitch ? (int)SEC_COUNT : (int)d.section) {
     case SEC_OSC1:
-      drawOscWave(gParams.step(P_OSC1_WAVE), mapPulseWidth(gParams.norm(P_OSC1_MACRO)));
+      drawOscWave(0);
       break;
     case SEC_OSC2:
-      drawOscWave(gParams.step(P_OSC2_WAVE), 0.5f);
+      drawOscWave(1);
       break;
     case SEC_MIXER:
       drawMixer(id);
@@ -494,17 +642,10 @@ void Ui::drawParamPopup(int id) {
       break;
     default:
       if (d.kind == PK_STEP && d.labels) drawSteps(d, gParams.step(id));
-      else if (d.kind == PK_STEP) drawBar((float)gParams.step(id) / (float)(d.steps - 1));
+      else if (d.kind == PK_STEP) drawBar(gParams.frac(id));
       else drawBar(gParams.norm(id));
       break;
   }
-}
-
-void Ui::drawEnginePopup(int osc) {
-  drawHeader(osc == 0 ? "OSC 1" : "OSC 2", "ENGINE", "VA");
-  gfxTextCentre(160, 96, "VA ONLY", kWhite, 3);
-  gfxTextCentre(160, 140, "FM / WAVETABLE / PLUCK", kGrey, 2);
-  gfxTextCentre(160, 160, "NOT BUILT YET", kGrey, 2);
 }
 
 }  // namespace fw

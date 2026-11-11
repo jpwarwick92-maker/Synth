@@ -1,5 +1,6 @@
 // The sound engine: 8 voices, each with two oscillators, a sub and noise,
-// a mixer, a multimode filter, two envelopes and a shared LFO.
+// a mixer, a multimode filter, two envelopes and a shared LFO; then an
+// arpeggiator and Hold in front of the voices, and effects behind them.
 //
 // Two contexts use it. The audio context calls process(). The control
 // context (MIDI and panel handling) posts note events through a small
@@ -29,11 +30,21 @@ struct EnvCoef {
   float a, d, s, r;
 };
 
+constexpr int kKsLen = 2048;  // pluck engine: string length in samples (power of two)
+
 struct Osc {
   float phase;
-  const float* tab;     // current band-limited table
-  const float* tabOld;  // previous table, faded out over one control block
-  float xf;             // 1 -> 0 crossfade from tabOld to tab
+  const float* tab;     // VA: current band-limited table
+  const float* tabOld;  // VA: previous table, faded out over one control block
+  float xf;             // VA: 1 -> 0 crossfade from tabOld to tab
+  float phase2;         // FM: modulator phase
+  float fb;             // FM: modulator feedback memory. Pluck: exciter filter memory
+  float lp;             // Pluck: loop filter memory
+  int16_t* ks;          // Pluck: the string (a delay line)
+  int ksPos;
+  int excite;           // Pluck: samples of excitation still to feed in
+  int exciteLen;
+  bool pluck;           // Pluck: pluck the string at the next block
 };
 
 struct Voice {
@@ -48,6 +59,8 @@ struct Voice {
   float target;     // pitch being glided towards
   Osc o1, o2, sub;
   uint8_t wave1, wave2;
+  uint8_t eng1, eng2;
+  float lfoAmt;     // 0..1, fades the LFO in after the note starts
   Svf f1, f2;
   Env aenv, fenv;
   uint32_t rng;
@@ -63,6 +76,8 @@ enum EventType : uint8_t {
   EV_ALL_SOUND_OFF,
 };
 
+struct OscRun;  // one oscillator's settings for one control block (synth.cpp)
+
 class Synth {
  public:
   void init(float sampleRate);
@@ -70,8 +85,8 @@ class Synth {
   // Control context. Returns false if the queue is full.
   bool post(uint8_t type, uint8_t a = 0, uint8_t b = 0);
 
-  // Audio context. Mono output, n <= kMaxBlock.
-  void process(float* out, int n);
+  // Audio context. Stereo output, n <= kMaxBlock.
+  void process(float* outL, float* outR, int n);
 
   // ---- read by the display (control context) ----
   int activeVoices() const { return activeCount_; }
@@ -85,6 +100,14 @@ class Synth {
   struct Patch;
 
   void handleEvent(uint8_t type, uint8_t a, uint8_t b);
+  // keys as played, before Hold and the arpeggiator
+  void keyDown(uint8_t note, uint8_t velocity);
+  void keyUp(uint8_t note);
+  void dropUnheld();
+  bool latching() const { return hold_ || (arpMode_ != ARP_OFF && pedal_); }
+  void arpAdvance(int len);
+  int arpPick(uint8_t& velocity);
+  // notes as the voices get them
   void noteOn(uint8_t note, uint8_t velocity);
   void noteOff(uint8_t note);
   void setSustain(bool down);
@@ -95,6 +118,8 @@ class Synth {
   void releaseVoice(Voice& v);
   void derive(Patch& p, int len);
   void renderVoice(Voice& v, int index, const Patch& p, float* out, int n);
+  void prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, uint8_t engine, uint8_t wave, float inc,
+               float macro, float color, float pw);
 
   float sr_;
   Voice voices_[kNumVoices];
@@ -106,6 +131,24 @@ class Synth {
   uint8_t stackNote_[16];
   uint8_t stackVel_[16];
   int stackN_;
+
+  // keys physically down, and the notes being played: keys down plus any
+  // that Hold has latched, in the order they were played
+  uint8_t physNote_[16];
+  int physN_;
+  uint8_t setNote_[16];
+  uint8_t setVel_[16];
+  int setN_;
+  bool hold_;
+  bool pedal_;
+
+  uint8_t arpMode_;
+  float arpClock_;            // samples since the last step
+  float arpGateLeft_;         // samples until the sounding note is let go
+  int arpIndex_;
+  int arpNote_;               // note the arpeggiator has sounding, or -1
+  bool arpRestart_;
+  uint32_t arpRng_;
 
   bool sustain_;
   float bend_;                // -1..1 target

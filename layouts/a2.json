@@ -1,6 +1,6 @@
 {
   "name": "A2",
-  "description": "Panel A with soft controls: 12 knobs, 7 rotary selectors, 12 faders, 4 push-encoders, 8 buttons, 2.4 inch display.",
+  "description": "Panel A with soft controls: 12 knobs, 7 rotary selectors, 12 faders, 4 push-encoders, 9 buttons (the ninth, Hold, was added while prototyping), 2.4 inch display.",
   "units": "mm",
   "panel": { "width": 464, "height": 192 },
 
@@ -31,12 +31,12 @@
     { "id": "osc1_wave", "type": "selector", "x": 32, "y": 52, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN"] },
     { "id": "osc1_octave", "type": "selector", "x": 62, "y": 52, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
     { "id": "osc1_macro", "type": "knob", "x": 90, "y": 50, "label": "Macro" },
-    { "id": "btn_osc1_engine", "type": "button", "x": 23, "y": 77, "w": 10, "h": 5, "caption": "Engine: VA" },
+    { "id": "btn_osc1_engine", "type": "button", "x": 23, "y": 77, "w": 10, "h": 5, "caption": "Engine" },
 
     { "id": "osc2_wave", "type": "selector", "x": 132, "y": 52, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN"] },
     { "id": "osc2_octave", "type": "selector", "x": 162, "y": 52, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
     { "id": "osc2_detune", "type": "knob", "x": 190, "y": 50, "label": "Detune" },
-    { "id": "btn_osc2_engine", "type": "button", "x": 123, "y": 77, "w": 10, "h": 5, "caption": "Engine: VA" },
+    { "id": "btn_osc2_engine", "type": "button", "x": 123, "y": 77, "w": 10, "h": 5, "caption": "Engine" },
 
     { "id": "mix_osc1", "type": "fader", "x": 224, "y": 49, "travel": 34, "label": "Osc 1" },
     { "id": "mix_osc2", "type": "fader", "x": 241, "y": 49, "travel": 34, "label": "Osc 2" },
@@ -50,8 +50,9 @@
     { "id": "filter_drive", "type": "knob", "x": 366, "y": 65, "label": "Drive" },
     { "id": "filter_type", "type": "selector", "x": 390, "y": 56, "label": "Type", "stops": ["LP", "BP", "HP"] },
 
-    { "id": "voice_glide", "type": "knob", "x": 431, "y": 38, "label": "Glide" },
-    { "id": "voice_mode", "type": "selector", "x": 431, "y": 69, "label": "Mode", "stops": ["POLY", "MONO", "UNI"] },
+    { "id": "voice_glide", "type": "knob", "x": 431, "y": 33, "label": "Glide" },
+    { "id": "voice_mode", "type": "selector", "x": 431, "y": 60, "label": "Mode", "stops": ["POLY", "MONO", "UNI"] },
+    { "id": "btn_hold", "type": "button", "x": 431, "y": 79, "w": 17, "h": 6, "label": "HOLD" },
 
     { "id": "fenv_attack", "type": "fader", "x": 26, "y": 131, "travel": 34, "label": "Attack" },
     { "id": "fenv_decay", "type": "fader", "x": 44, "y": 131, "travel": 34, "label": "Decay" },
@@ -92,6 +93,6 @@
     { "x": 209, "y": 167, "text": "Mod wheel adds depth", "size": 2.8, "style": "note" },
     { "x": 446, "y": 99.5, "text": "2.4\" IPS", "size": 2.4, "anchor": "end", "style": "note" },
     { "x": 12, "y": 184, "text": "VOLUME KNOB, MIDI IN, USB HOST, LINE IN, LINE OUT, PHONES ON REAR PANEL", "size": 2.6, "style": "note" },
-    { "x": 452, "y": 184, "text": "12 KNOBS · 7 ROTARY SELECTORS · 4 PUSH-ENCODERS · 12 FADERS · 8 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
+    { "x": 452, "y": 184, "text": "12 KNOBS · 7 ROTARY SELECTORS · 4 PUSH-ENCODERS · 12 FADERS · 9 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
   ]
 }

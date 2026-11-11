@@ -117,7 +117,7 @@ try {
     check(await count('#panel .ctl.selector') === 7, '7 rotary selectors', String(await count('#panel .ctl.selector')));
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
-    check(await count('#panel .ctl.button') === 8, '8 buttons', String(await count('#panel .ctl.button')));
+    check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
     check(await count('#rear .ctl.knob') === 1, 'rear-panel volume knob');
 
     // the display sits where the layout says, at 4:3
@@ -149,7 +149,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 44, '44 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 45, '45 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -291,13 +291,31 @@ try {
     await sleep(150);
     check(await page.locator('[data-id="btn_fx1"]').evaluate((e) => e.classList.contains('lit')), 'FX 1 lights');
     check(!(await page.locator('[data-id="btn_engine"]').evaluate((e) => e.classList.contains('lit'))), 'Engine light goes out');
+    check(await lcdCount(page, WHITE, 44, 70) > 100, 'FX 1 is a live page with values on the encoders');
+    await page.screenshot({ path: path.join(shotDir, 'page_fx1.png') });
     await press(page, 'btn_fx1');
     await sleep(150);
     check(!(await page.locator('[data-id="btn_fx1"]').evaluate((e) => e.classList.contains('lit'))), 'pressing the lit button returns home');
+
+    const lit = (id) => page.locator(`[data-id="${id}"]`).evaluate((e) => e.classList.contains('lit'));
     await press(page, 'btn_osc1_engine');
     await sleep(150);
-    check(await lcdCount(page, WHITE, 90, 125) > 500, 'oscillator engine button shows "VA only"');
+    check(await lit('btn_osc1_engine'), 'an oscillator engine button lights when its engine is no longer VA');
+    check(await lcdCount(page, WHITE, 0, 44) > 60, 'and the display names the engine');
+    for (let i = 0; i < 3; i++) { await press(page, 'btn_osc1_engine'); await sleep(60); }
+    await sleep(150);
+    check(!(await lit('btn_osc1_engine')), 'three more presses come back round to VA');
+
+    await press(page, 'btn_hold');
+    await sleep(150);
+    check(await lit('btn_hold'), 'Hold lights when pressed');
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x80, 60, 0]));   // a key pressed and let go
     await sleep(1700);
+    check(await lcdCount(page, TEAL, 222, 236) === 64, 'with Hold on, a note keeps sounding after its key is released', String(await lcdCount(page, TEAL, 222, 236)));
+    await press(page, 'btn_hold');
+    await sleep(900);
+    check(!(await lit('btn_hold')) && await lcdCount(page, TEAL, 222, 236) === 0, 'Hold off lets it go');
+    await sleep(900);
   }
 
   // ------------------------------------------------------------------ MIDI

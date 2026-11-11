@@ -8,7 +8,8 @@
 #define FW_EXPORT(name) __attribute__((export_name(#name))) name
 
 namespace {
-float gOut[fw::kMaxBlock];
+float gOutL[fw::kMaxBlock];
+float gOutR[fw::kMaxBlock];
 uint8_t gMidiBuf[256];
 uint8_t gStore[fw::kStateSize];
 uint32_t gStoreLen = 0;
@@ -40,11 +41,12 @@ uint32_t FW_EXPORT(fw_storage_save_count)() { return gSaveCount; }
 
 // ---- lifecycle and audio ----
 void FW_EXPORT(fw_init)(float sampleRate) { fw::init(sampleRate); }
-float* FW_EXPORT(fw_out_ptr)() { return gOut; }
+float* FW_EXPORT(fw_out_left_ptr)() { return gOutL; }
+float* FW_EXPORT(fw_out_right_ptr)() { return gOutR; }
 int FW_EXPORT(fw_max_block)() { return fw::kMaxBlock; }
 void FW_EXPORT(fw_process)(int n) {
   if (n > fw::kMaxBlock) n = fw::kMaxBlock;
-  fw::process(gOut, n);
+  fw::process(gOutL, gOutR, n);
 }
 
 // ---- MIDI in: write bytes to the buffer, then call fw_midi(count) ----

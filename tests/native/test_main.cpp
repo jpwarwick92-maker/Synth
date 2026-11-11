@@ -113,22 +113,31 @@ static void midi(std::initializer_list<int> bytes) {
   for (int b : bytes) fw::midiByte((uint8_t)b);
 }
 
+// Renders into `out` (left channel). The right channel of the same span is
+// kept in gRight for the tests that look at stereo.
+static std::vector<float> gRight;
+
 static void render(std::vector<float>& out, double sec) {
   long n = std::lround(sec * gSr);
-  float buf[fw::kMaxBlock];
+  float l[fw::kMaxBlock], r[fw::kMaxBlock];
   while (n > 0) {
     int len = n > fw::kMaxBlock ? fw::kMaxBlock : (int)n;
-    fw::process(buf, len);
-    out.insert(out.end(), buf, buf + len);
+    fw::process(l, r, len);
+    out.insert(out.end(), l, l + len);
+    gRight.insert(gRight.end(), r, r + len);
     n -= len;
   }
 }
 
 static std::vector<float> renderNew(double sec) {
   std::vector<float> v;
+  gRight.clear();
   render(v, sec);
   return v;
 }
+
+// Sets any parameter through its MIDI controller number, as a knob box would.
+static void setCC(int param, int value7) { midi({0xB0, fw::kParams[param].cc, value7}); }
 
 static double peakOf(const std::vector<float>& x, size_t from = 0, size_t to = (size_t)-1) {
   double p = 0;
@@ -231,7 +240,10 @@ struct AliasResult {
   int harmonics;
 };
 
-static AliasResult aliasCheck(const std::vector<float>& x) {
+// With knownHz = 0 the fundamental is found from the spectrum (the lowest
+// strong peak). Engines whose fundamental can be weak or missing (FM) pass
+// the pitch they were asked for; levels are then relative to the loudest partial.
+static AliasResult aliasCheck(const std::vector<float>& x, double knownHz = 0) {
   const size_t n = 32768;
   size_t from = (size_t)(0.4 * gSr);
   std::vector<double> m = spectrum(x, from, n);
@@ -249,6 +261,10 @@ static AliasResult aliasCheck(const std::vector<float>& x) {
     }
   double a = m[fund - 1], b = m[fund], c = m[fund + 1];
   double f0bin = (double)fund + 0.5 * (a - c) / (a - 2 * b + c);
+  if (knownHz > 0) {
+    f0bin = knownHz / binHz;
+    fund = pk;
+  }
 
   AliasResult r{};
   r.f0 = f0bin * binHz;
@@ -410,7 +426,7 @@ static void testAliasing() {
 // R4: nothing in the firmware allocates memory.
 static void testNoAllocation() {
   section("R4  no memory allocation, at start-up or while playing");
-  float buf[fw::kMaxBlock];
+  float buf[fw::kMaxBlock], buf2[fw::kMaxBlock];
   gStoreLen = 0;
   gAllocs = 0;
   gCounting = true;
@@ -427,7 +443,13 @@ static void testNoAllocation() {
     fw::midiByte(0xE0);
     fw::midiByte(0);
     fw::midiByte((uint8_t)(round * 3 % 128));
-    for (int b = 0; b < 30; ++b) fw::process(buf, fw::kMaxBlock);
+    for (int cc = 0; cc < 120; ++cc) {  // every controller number, so the soft parameters move too
+      if (cc == 120 || cc == 123) continue;
+      fw::midiByte(0xB0);
+      fw::midiByte((uint8_t)cc);
+      fw::midiByte((uint8_t)((round * 37 + cc * 11) % 128));
+    }
+    for (int b = 0; b < 30; ++b) fw::process(buf, buf2, fw::kMaxBlock);
     fw::tick(33);
     fw::tick(1200);  // long enough to trigger a state save
     for (int n = 0; n < 10; ++n) {
@@ -724,27 +746,697 @@ static void testUi() {
   fw::controlSet(enc1, 0);
   CHECK(fw::gParams.step(fw::P_UNI_DETUNE) == fw::kParams[fw::P_UNI_DETUNE].def, "pushing enc1 should reset unison detune");
 
-  static const char* const kOthers[] = {"btn_fx1", "btn_fx2", "btn_mod", "btn_arp", "btn_patch"};
-  for (const char* b : kOthers) {
-    press(b);
-    fw::tick(33);
-    CHECK(fw::controlGet(ctl(b)) == 1 && fw::controlGet(ctl("btn_engine")) == 0, "%s: lights wrong", b);
-    CHECK(countColour(fw::kGrey, 90, 130) > 300, "%s: no 'not built yet' message", b);
-    int v = fw::gParams.step(fw::P_UNI_DETUNE);
-    fw::encoderTurn(enc1, 2);
-    CHECK(fw::gParams.step(fw::P_UNI_DETUNE) == v, "%s: encoder should do nothing on a placeholder page", b);
-  }
-  saveFrame("mode_placeholder");
-  press("btn_patch");  // pressing the lit button returns home
+  // the Engine mode has a second page: its lit button steps to it, then home
+  press("btn_engine");
   fw::tick(33);
-  CHECK(fw::gUi.mode() == fw::MB_NONE, "pressing the lit mode button should return to the home screen");
+  saveFrame("mode_engine_2");
+  CHECK(fw::gUi.mode() == fw::MB_ENGINE && fw::gUi.page() == 1, "second press should show Engine page 2");
+  CHECK(fw::controlGet(ctl("btn_engine")) == 1, "Engine light should stay on for page 2");
+  press("btn_engine");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "third press should return to the home screen");
+}
 
-  press("btn_osc1_engine");
+static void testSoftPages() {
+  section("soft pages: FX 1, FX 2, Mod and Arp each put four values on the encoders");
+  struct PageCase {
+    const char* button;
+    const char* shot;
+    int params[4];
+  };
+  static const PageCase kCases[] = {
+      {"btn_fx1", "mode_fx1", {fw::P_DLY_TIME, fw::P_DLY_TONE, fw::P_DLY_FDBK, fw::P_DLY_MIX}},
+      {"btn_fx2", "mode_fx2", {fw::P_CHORUS, fw::P_RVB_SIZE, fw::P_RVB_TONE, fw::P_RVB_MIX}},
+      {"btn_mod", "mode_mod", {fw::P_LFO_FADE, fw::P_VEL_CUTOFF, fw::P_FENV_PITCH, fw::P_LFO_SYNC}},
+      {"btn_arp", "mode_arp", {fw::P_ARP_MODE, fw::P_ARP_TEMPO, fw::P_ARP_OCTAVES, fw::P_ARP_GATE}},
+  };
+  static const char* const kEncoders[4] = {"enc1", "enc2", "enc3", "enc4"};
+  boot(48000);
+  for (const PageCase& c : kCases) {
+    press(c.button);
+    fw::tick(33);
+    CHECK(fw::controlGet(ctl(c.button)) == 1, "%s: light is off", c.button);
+    CHECK(countColour(fw::kWhite, 44, 70) > 100 && countColour(fw::kWhite, 178, 204) > 100, "%s: values missing", c.button);
+    for (int e = 0; e < 4; ++e) {
+      int id = c.params[e];
+      int v0 = fw::gParams.step(id);
+      fw::encoderTurn(ctl(kEncoders[e]), 1);
+      CHECK(fw::gParams.step(id) == v0 + 1, "%s %s: one click should move %s by one step", c.button, kEncoders[e], fw::kParams[id].key);
+      CHECK(fw::gUi.popupParam() < 0, "%s: a value on the open page should update in place", c.button);
+      fw::tick(33);
+      fw::controlSet(ctl(kEncoders[e]), 1);  // push = default
+      fw::controlSet(ctl(kEncoders[e]), 0);
+      CHECK(fw::gParams.step(id) == fw::kParams[id].def, "%s %s: push should restore the default", c.button, kEncoders[e]);
+    }
+    fw::tick(33);
+    saveFrame(c.shot);
+    press(c.button);
+    CHECK(fw::gUi.mode() == fw::MB_NONE, "%s: pressing the lit button should return home", c.button);
+  }
+
+  section("soft pages: a fast spin of an encoder covers a long range quickly");
+  press("btn_fx1");
   fw::tick(33);
-  saveFrame("popup_osc_engine");
-  CHECK(countColour(fw::kWhite, 90, 125) > 500, "oscillator engine button: no 'VA only' message");
+  int enc = ctl("enc4");
+  for (int i = 0; i < 8; ++i) {  // eight slow clicks, a display tick apart
+    fw::encoderTurn(enc, 1);
+    fw::tick(33);
+  }
+  CHECK(fw::gParams.step(fw::P_DLY_MIX) == 8, "slow clicks should move one step each (got %d)", fw::gParams.step(fw::P_DLY_MIX));
+  for (int i = 0; i < 8; ++i) fw::encoderTurn(enc, 1);  // eight clicks inside one tick
+  CHECK(fw::gParams.step(fw::P_DLY_MIX) > 8 + 20, "a fast spin should move in bigger steps (got %d)", fw::gParams.step(fw::P_DLY_MIX));
+  press("btn_fx1");
+
+  section("soft pages: Patch is still a placeholder");
+  press("btn_patch");
+  fw::tick(33);
+  saveFrame("mode_placeholder");
+  CHECK(countColour(fw::kGrey, 90, 130) > 300, "no 'not built yet' message");
+  uint16_t before[fw::P_COUNT];
+  for (int i = 0; i < fw::P_COUNT; ++i) before[i] = fw::gParams.val[i];
+  for (int e = 0; e < 4; ++e) fw::encoderTurn(ctl(kEncoders[e]), 2);
+  int changed = 0;
+  for (int i = 0; i < fw::P_COUNT; ++i) changed += before[i] != fw::gParams.val[i];
+  CHECK(changed == 0, "encoders should do nothing on a placeholder page");
+  press("btn_patch");
+
+  section("oscillator engine buttons step through VA, FM, wavetable and pluck");
+  boot(48000);
+  static const char* const kNames[4] = {"VA", "FM", "WAVETABLE", "PLUCK"};
+  for (int i = 1; i <= 4; ++i) {
+    press("btn_osc1_engine");
+    fw::tick(33);
+    int e = fw::gParams.step(fw::P_OSC1_ENGINE);
+    CHECK(e == i % 4, "press %d: engine %s, expected %s", i, kNames[e], kNames[i % 4]);
+    CHECK(fw::gUi.popupParam() == fw::P_OSC1_ENGINE, "the display should show the engine");
+    CHECK(fw::controlGet(ctl("btn_osc1_engine")) == (e != fw::ENG_VA), "the button is lit for any engine but VA");
+    if (i == 1) saveFrame("popup_osc_engine");
+  }
+  CHECK(fw::gParams.step(fw::P_OSC2_ENGINE) == fw::ENG_VA, "oscillator 2 should not have changed");
+
+  section("Engine page 2 follows each oscillator's engine");
   fw::tick(1600);
-  CHECK(countColour(fw::kWhite, 90, 125) == 0, "'VA only' message did not clear");
+  press("btn_engine");
+  press("btn_engine");
+  int enc1 = ctl("enc1"), enc2 = ctl("enc2"), enc3 = ctl("enc3");
+  fw::encoderTurn(enc1, 3);
+  CHECK(fw::gParams.step(fw::P_OSC1_COLOR) == 0, "VA has no second timbre control: encoder 1 should do nothing");
+  fw::encoderTurn(enc2, 3);
+  fw::tick(33);
+  fw::encoderTurn(enc3, 3);
+  CHECK(fw::gParams.step(fw::P_OSC2_MACRO) > 0, "encoder 3 should set oscillator 2's Macro");
+  press("btn_osc1_engine");  // -> FM, which does have one (feedback)
+  fw::tick(1600);
+  fw::encoderTurn(enc1, 3);
+  CHECK(fw::gParams.step(fw::P_OSC1_COLOR) > 0, "FM: encoder 1 should set feedback");
+  press("btn_osc2_engine");
+  press("btn_osc2_engine");
+  press("btn_osc2_engine");  // osc 2 -> pluck
+  fw::tick(1600);
+  fw::tick(33);
+  saveFrame("mode_engine_2_fm_pluck");
+
+  section("pop-ups name the Wave selector and Macro by engine");
+  setSel("osc1_wave", 2);
+  fw::tick(33);
+  saveFrame("popup_fm_ratio");
+  setPot("osc1_macro", 0.7);
+  fw::tick(33);
+  saveFrame("popup_fm_amount");
+  setSel("osc2_wave", 3);
+  fw::tick(33);
+  saveFrame("popup_pluck_exciter");
+  midi({0xB0, fw::kParams[fw::P_OSC1_ENGINE].cc, 80});  // wavetable
+  setPot("osc1_macro", 0.5);
+  fw::tick(33);
+  saveFrame("popup_wavetable_position");
+
+  section("Hold button latches, lights, and shows on the display");
+  boot(48000);
+  fw::tick(33);
+  long amberBefore = countColour(fw::kAmber, 222, 236);
+  press("btn_hold");
+  CHECK(fw::gParams.step(fw::P_HOLD) == 1 && fw::controlGet(ctl("btn_hold")) == 1, "Hold should be on and lit");
+  fw::tick(1600);
+  fw::tick(33);
+  CHECK(countColour(fw::kAmber, 222, 236) > amberBefore + 60, "status strip should show HOLD");
+  saveFrame("home_hold");
+  press("btn_hold");
+  CHECK(fw::gParams.step(fw::P_HOLD) == 0 && fw::controlGet(ctl("btn_hold")) == 0, "Hold should be off again");
+  setCC(fw::P_HOLD, 127);
+  CHECK(fw::controlGet(ctl("btn_hold")) == 1, "controller 69 should switch Hold on");
+}
+
+// ---- helpers for the note-level tests ----
+
+// Sets a stepped parameter to an exact step through its controller number.
+static void setStep(int param, int step) {
+  int steps = fw::kParams[param].steps;
+  for (int v = 0; v < 128; ++v)
+    if (v * steps / 128 == step) {
+      setCC(param, v);
+      return;
+    }
+  std::printf("    cannot reach step %d of %s by controller\n", step, fw::kParams[param].key);
+  std::exit(2);
+}
+
+static double rmsOf(const std::vector<float>& x, double fromSec, double toSec) {
+  size_t a = (size_t)(fromSec * gSr), b = std::min(x.size(), (size_t)(toSec * gSr));
+  double s = 0;
+  for (size_t i = a; i < b; ++i) s += (double)x[i] * x[i];
+  return b > a ? std::sqrt(s / (double)(b - a)) : 0;
+}
+
+// The MIDI note sounding in each arpeggiator step (0 = silence).
+static std::vector<int> stepNotes(const std::vector<float>& x, double stepSec, int count) {
+  std::vector<int> notes;
+  for (int i = 0; i < count; ++i) {
+    double t0 = i * stepSec;
+    if (rmsOf(x, t0 + 0.1 * stepSec, t0 + 0.4 * stepSec) < 0.005) {
+      notes.push_back(0);
+      continue;
+    }
+    double f = measureFreq(x, (size_t)((t0 + 0.08 * stepSec) * gSr), (size_t)((t0 + 0.45 * stepSec) * gSr));
+    notes.push_back(f > 0 ? (int)std::lround(69 + 12 * std::log2(f / 440.0)) : 0);
+  }
+  return notes;
+}
+
+static std::string show(const std::vector<int>& v) {
+  std::string s;
+  for (int n : v) s += std::to_string(n) + " ";
+  return s;
+}
+
+static void arpTone() {
+  cleanTone(fw::WAVE_SIN);
+  setPot("aenv_release", 0.1);
+  renderNew(0.05);
+}
+
+static void testArpAndHold() {
+  const double step = 0.125;  // sixteenth notes at the default 120 BPM
+  section("arp: patterns play the held notes in the right order, eight to the second");
+  struct Case {
+    int mode;
+    int octaves;
+    std::vector<int> keys;
+    std::vector<int> expect;
+  };
+  const Case cases[] = {
+      {fw::ARP_UP, 1, {64, 60, 67}, {60, 64, 67, 60, 64, 67, 60, 64}},
+      {fw::ARP_DOWN, 1, {64, 60, 67}, {67, 64, 60, 67, 64, 60, 67, 64}},
+      {fw::ARP_UPDOWN, 1, {64, 60, 67}, {60, 64, 67, 64, 60, 64, 67, 64}},
+      {fw::ARP_PLAYED, 1, {64, 60, 67}, {64, 60, 67, 64, 60, 67, 64, 60}},
+      {fw::ARP_UP, 2, {60, 64, 67}, {60, 64, 67, 72, 76, 79, 60, 64}},
+      {fw::ARP_DOWN, 2, {60, 64}, {76, 72, 64, 60, 76, 72, 64, 60}},
+  };
+  for (const Case& c : cases) {
+    boot(48000);
+    arpTone();
+    setStep(fw::P_ARP_MODE, c.mode);
+    setStep(fw::P_ARP_OCTAVES, c.octaves - 1);
+    renderNew(0.05);
+    for (int k : c.keys) midi({0x90, k, 100});
+    std::vector<float> x = renderNew(1.0);
+    std::vector<int> got = stepNotes(x, step, 8);
+    CHECK(got == c.expect, "%s x%d: got %s", fw::kParams[fw::P_ARP_MODE].labels[c.mode], c.octaves, show(got).c_str());
+    for (int k : c.keys) midi({0x80, k, 0});
+    x = renderNew(0.6);
+    CHECK(rmsOf(x, 0.3, 0.6) < 1e-4, "%s: should stop when the keys are let go", fw::kParams[fw::P_ARP_MODE].labels[c.mode]);
+  }
+
+  boot(48000);
+  arpTone();
+  setStep(fw::P_ARP_MODE, fw::ARP_RANDOM);
+  renderNew(0.05);
+  for (int k : {60, 64, 67, 71}) midi({0x90, k, 100});
+  std::vector<int> rnd = stepNotes(renderNew(3.0), step, 24);
+  bool inSet = true, varied = false;
+  for (int n : rnd) inSet = inSet && (n == 60 || n == 64 || n == 67 || n == 71);
+  for (size_t i = 1; i < rnd.size(); ++i) varied = varied || rnd[i] != rnd[0];
+  CHECK(inSet && varied, "random: got %s", show(rnd).c_str());
+
+  section("arp: Gate sets how much of each step sounds");
+  for (int gate : {9, 19}) {  // 50% and 100%
+    boot(48000);
+    arpTone();
+    setStep(fw::P_ARP_MODE, fw::ARP_UP);
+    setStep(fw::P_ARP_GATE, gate);
+    renderNew(0.05);
+    for (int k : {60, 64, 67}) midi({0x90, k, 100});
+    std::vector<float> x = renderNew(1.0);
+    double early = rmsOf(x, 2 * step + 0.1 * step, 2 * step + 0.4 * step);
+    double late = rmsOf(x, 2 * step + 0.7 * step, 2 * step + 0.95 * step);
+    if (gate == 9) CHECK(early > 0.05 && late < 0.1 * early, "50%%: first half %.4f, second half %.4f", early, late);
+    else CHECK(late > 0.5 * early, "100%%: first half %.4f, second half %.4f", early, late);
+  }
+
+  section("Hold with the arp: it keeps running hands-free, and a new chord replaces the old");
+  boot(48000);
+  arpTone();
+  setStep(fw::P_ARP_MODE, fw::ARP_UP);
+  press("btn_hold");
+  renderNew(0.05);
+  for (int k : {60, 64, 67}) midi({0x90, k, 100});
+  renderNew(0.25);
+  for (int k : {60, 64, 67}) midi({0x80, k, 0});
+  std::vector<int> held = stepNotes(renderNew(1.0), step, 8);
+  int sounding = 0;
+  for (int n : held) sounding += n != 0;
+  CHECK(sounding == 8, "arp should keep playing after the keys are let go: %s", show(held).c_str());
+  midi({0x90, 72, 100});
+  midi({0x90, 76, 100});
+  std::vector<int> fresh = stepNotes(renderNew(0.5), step, 4);
+  CHECK((fresh == std::vector<int>{72, 76, 72, 76}), "a new chord should replace the held one: %s", show(fresh).c_str());
+  midi({0x80, 72, 0});
+  midi({0x80, 76, 0});
+  renderNew(0.5);
+  press("btn_hold");  // Hold off: nothing has a finger on it, so it stops
+  std::vector<float> x = renderNew(0.6);
+  CHECK(rmsOf(x, 0.3, 0.6) < 1e-4, "switching Hold off should stop the arp");
+
+  section("Hold without the arp: a chord rings on, the next chord replaces it");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  press("btn_hold");
+  midi({0x90, 60, 100});
+  midi({0x90, 64, 100});
+  renderNew(0.2);
+  midi({0x80, 60, 0});
+  midi({0x80, 64, 0});
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 2, "held chord: %d voices sounding, expected 2", fw::gSynth.activeVoices());
+  midi({0x90, 72, 100});
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 1, "after a new note: %d voices, expected only the new one", fw::gSynth.activeVoices());
+  x = renderNew(0.3);
+  double f = measureFreq(x, 0, x.size());
+  CHECK(std::fabs(f / 523.25 - 1) < 0.002, "the note still sounding should be the new one (%.1f Hz)", f);
+  midi({0x80, 72, 0});
+  renderNew(0.5);
+  CHECK(fw::gSynth.activeVoices() == 1, "the new note should hold too");
+  press("btn_hold");
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "Hold off should let everything go (%d voices)", fw::gSynth.activeVoices());
+
+  section("a key still held when Hold goes off keeps sounding");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  press("btn_hold");
+  midi({0x90, 60, 100});
+  midi({0x90, 64, 100});
+  renderNew(0.1);
+  midi({0x80, 64, 0});
+  press("btn_hold");
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 1, "%d voices, expected the one key still down", fw::gSynth.activeVoices());
+
+  section("arp: the sustain pedal acts as Hold while the arp runs; switching the arp off hands the notes back");
+  boot(48000);
+  arpTone();
+  setStep(fw::P_ARP_MODE, fw::ARP_UP);
+  renderNew(0.05);
+  midi({0xB0, 64, 127});
+  for (int k : {60, 64, 67}) midi({0x90, k, 100});
+  renderNew(0.25);  // two whole steps, so the next render starts on a step
+  for (int k : {60, 64, 67}) midi({0x80, k, 0});
+  held = stepNotes(renderNew(0.5), step, 4);
+  sounding = 0;
+  for (int n : held) sounding += n != 0;
+  CHECK(sounding == 4, "pedal down: arp should continue (%s)", show(held).c_str());
+  midi({0xB0, 64, 0});
+  x = renderNew(0.6);
+  CHECK(rmsOf(x, 0.3, 0.6) < 1e-4, "pedal up: arp should stop");
+
+  for (int k : {60, 64, 67}) midi({0x90, k, 100});
+  renderNew(0.3);
+  setStep(fw::P_ARP_MODE, fw::ARP_OFF);
+  renderNew(0.5);
+  CHECK(fw::gSynth.activeVoices() == 3, "arp off with keys held: %d voices, expected the chord of 3", fw::gSynth.activeVoices());
+  setStep(fw::P_ARP_MODE, fw::ARP_UP);
+  renderNew(0.5);
+  CHECK(fw::gSynth.activeVoices() <= 1, "arp on again: %d voices, expected one note at a time", fw::gSynth.activeVoices());
+  midi({0xB0, 120, 0});
+  x = renderNew(0.3);
+  CHECK(peakOf(x) < 1e-6, "panic should stop the arp too");
+}
+
+static void testEffects() {
+  section("effects: with everything off, left and right are the same dry signal");
+  boot(48000);
+  for (int k : {48, 55, 60, 64}) midi({0x90, k, 100});
+  std::vector<float> l = renderNew(0.5);
+  CHECK(rmsDiff(l, gRight) == 0, "left and right differ with no effect on (%.8f)", rmsDiff(l, gRight));
+  std::vector<float> dry = l;
+
+  section("effects: chorus widens the sound");
+  boot(48000);
+  setCC(fw::P_CHORUS, 110);
+  for (int k : {48, 55, 60, 64}) midi({0x90, k, 100});
+  l = renderNew(0.5);
+  CHECK(rmsDiff(l, gRight) > 0.005, "left and right should differ (%.5f)", rmsDiff(l, gRight));
+  CHECK(rmsDiff(l, dry) > 0.005, "chorus made no difference to the sound");
+
+  section("effects: delay repeats at the set time, each repeat quieter, at either sample rate");
+  const double echo = 0.02 * std::pow(2.0, 0.55 * 5.2288);  // the default Time setting
+  for (double sr : {48000.0, 44100.0}) {
+    boot(sr);
+    cleanTone(fw::WAVE_SAW);
+    setPot("aenv_release", 0.1);
+    setCC(fw::P_DLY_MIX, 127);
+    setCC(fw::P_DLY_FDBK, 64);
+    renderNew(0.6);  // the delay time settles
+    midi({0x90, 60, 110});
+    std::vector<float> x = renderNew(0.04);
+    midi({0x80, 60, 0});
+    render(x, 0.8);
+    double gap1 = rmsOf(x, echo - 0.05, echo - 0.01), rep1 = rmsOf(x, echo + 0.005, echo + 0.04);
+    double gap2 = rmsOf(x, 2 * echo - 0.05, 2 * echo - 0.01), rep2 = rmsOf(x, 2 * echo + 0.005, 2 * echo + 0.04);
+    CHECK(rep1 > 5 * gap1 && rep1 > 0.01, "@%.0f first repeat at %.0f ms: %.4f against %.4f just before", sr, echo * 1000, rep1, gap1);
+    CHECK(rep2 > 3 * gap2, "@%.0f second repeat: %.4f against %.4f just before", sr, rep2, gap2);
+    CHECK(rep2 < 0.8 * rep1, "@%.0f repeats should get quieter: %.4f then %.4f", sr, rep1, rep2);
+  }
+
+  section("effects: reverb leaves a tail that dies away, longer with a bigger Size");
+  double tail[2];
+  for (int size = 0; size < 2; ++size) {
+    boot(48000);
+    cleanTone(fw::WAVE_SAW);
+    setPot("aenv_release", 0.1);
+    setCC(fw::P_RVB_MIX, 127);
+    setCC(fw::P_RVB_SIZE, size ? 110 : 20);
+    renderNew(0.1);
+    midi({0x90, 60, 110});
+    std::vector<float> x = renderNew(0.05);
+    midi({0x80, 60, 0});
+    render(x, 4.0);
+    tail[size] = rmsOf(x, 1.0, 1.5);
+    bool finite = true;
+    for (float v : x) finite = finite && std::isfinite(v);
+    CHECK(finite, "reverb output has NaN or infinity");
+    CHECK(rmsOf(x, 0.2, 0.4) > 10 * rmsOf(x, 3.6, 4.0) || size, "small room should have died away by 4 s");
+    if (size) {
+      CHECK(rmsOf(x, 0.5, 1.0) > rmsOf(x, 3.0, 3.5), "the tail should fall, not grow");
+      std::vector<float> lr(x.begin(), x.end());
+      CHECK(rmsDiff(lr, gRight) > 1e-4, "the tail should be different left and right");
+    }
+  }
+  CHECK(tail[1] > 5 * tail[0], "tail a second later: small %.5f, large %.5f", tail[0], tail[1]);
+
+  section("effects: all on with a full chord stays finite and clear of hard clipping");
+  boot(48000);
+  setCC(fw::P_CHORUS, 127);
+  setCC(fw::P_DLY_MIX, 127);
+  setCC(fw::P_DLY_FDBK, 127);
+  setCC(fw::P_RVB_MIX, 127);
+  setCC(fw::P_RVB_SIZE, 127);
+  for (int i = 0; i < 8; ++i) midi({0x90, 36 + i * 5, 127});
+  l = renderNew(6.0);
+  bool finite = true;
+  for (float v : l) finite = finite && std::isfinite(v);
+  CHECK(finite && peakOf(l) < 0.99, "peak %.3f", peakOf(l));
+  std::printf("    worst case, all effects full with eight voices: peak %.3f\n", peakOf(l));
+}
+
+// Spread of the gaps between upward zero crossings: how much the pitch wobbles.
+static double pitchSpread(const std::vector<float>& x, double fromSec, double toSec) {
+  double last = -1, lo = 1e9, hi = 0;
+  for (size_t i = (size_t)(fromSec * gSr) + 1; i < (size_t)(toSec * gSr) && i < x.size(); ++i)
+    if (x[i - 1] < 0 && x[i] >= 0) {
+      double t = (double)(i - 1) + (double)(-x[i - 1]) / (double)(x[i] - x[i - 1]);
+      if (last >= 0) {
+        lo = std::min(lo, t - last);
+        hi = std::max(hi, t - last);
+      }
+      last = t;
+    }
+  return hi > 0 ? (hi - lo) / lo : 0;
+}
+
+static void testMod() {
+  section("Mod: Env>Pitch bends the pitch up by the set amount, following the filter envelope");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  setPot("fenv_attack", 0.0);
+  setPot("fenv_decay", 0.8);  // about 1.6 s
+  setPot("fenv_sustain", 0.0);
+  setStep(fw::P_FENV_PITCH, 12);
+  renderNew(0.05);
+  midi({0x90, 69, 100});
+  std::vector<float> x = renderNew(4.0);
+  double early = measureFreq(x, (size_t)(0.002 * gSr), (size_t)(0.02 * gSr));
+  double late = measureFreq(x, (size_t)(3.5 * gSr), x.size());
+  CHECK(early > 440 * 1.6 && early < 440 * 2.05, "start of the note: %.1f Hz, expected nearly an octave up", early);
+  CHECK(std::fabs(late / 440.0 - 1) < 0.01, "once the envelope has fallen: %.1f Hz", late);
+
+  section("Mod: Vel>Cutoff makes harder notes brighter");
+  double bright[2][2];
+  for (int amt = 0; amt < 2; ++amt)
+    for (int hard = 0; hard < 2; ++hard) {
+      boot(48000);
+      cleanTone(fw::WAVE_SAW);
+      setPot("filter_cutoff", 0.3);
+      setCC(fw::P_VEL_CUTOFF, amt ? 127 : 0);
+      renderNew(0.05);
+      midi({0x90, 45, hard ? 127 : 30});
+      bright[amt][hard] = rmsOf(renderNew(0.6), 0.2, 0.6);
+    }
+  CHECK(std::fabs(bright[0][1] / bright[0][0] - 1) < 0.02, "with the amount at zero velocity should not matter (%.4f, %.4f)", bright[0][0], bright[0][1]);
+  CHECK(bright[1][1] > 1.5 * bright[1][0], "with it up, hard %.4f should carry more than soft %.4f", bright[1][1], bright[1][0]);
+
+  section("Mod: LFO Fade brings the wobble in gradually after each note starts");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  setSel("lfo_destination", fw::LFO_PITCH);
+  setPot("lfo_depth", 0.5);
+  setPot("lfo_rate", 0.8);
+  setCC(fw::P_LFO_FADE, 83);  // about one second
+  renderNew(0.05);
+  midi({0x90, 69, 100});
+  x = renderNew(3.0);
+  double start = pitchSpread(x, 0.0, 0.2), settled = pitchSpread(x, 2.0, 3.0);
+  CHECK(settled > 0.05 && start < 0.35 * settled, "pitch wobble at the start %.4f, once faded in %.4f", start, settled);
+
+  section("Mod: LFO Sync restarts the LFO with a note played from silence");
+  for (int sync = 0; sync < 2; ++sync) {
+    std::vector<float> take[2];
+    for (int t = 0; t < 2; ++t) {
+      boot(48000);
+      cleanTone(fw::WAVE_SAW);
+      setSel("lfo_destination", fw::LFO_CUTOFF);
+      setPot("lfo_depth", 0.7);
+      setPot("lfo_rate", 0.75);
+      setPot("filter_cutoff", 0.5);
+      setStep(fw::P_LFO_SYNC, sync);
+      renderNew(t ? 0.18 : 0.1);  // wait a different time before playing (about half an LFO cycle apart)
+      midi({0x90, 57, 100});
+      take[t] = renderNew(0.5);
+    }
+    double d = rmsDiff(take[0], take[1]);
+    if (sync) CHECK(d < 1e-6, "KEY: the note should sound the same whenever it is played (%.6f)", d);
+    else CHECK(d > 0.003, "FREE: the LFO should be somewhere different each time (%.6f)", d);
+  }
+}
+
+static void engineTone(int osc1Engine, int wave) {
+  cleanTone(wave);
+  setStep(fw::P_OSC1_ENGINE, osc1Engine);
+  renderNew(0.05);
+}
+
+static void testEngines() {
+  static const char* const kNames[4] = {"VA", "FM", "wavetable", "pluck"};
+
+  section("engines: every engine and every Wave position gives its own sound at a sensible level");
+  std::vector<std::vector<float>> sounds;
+  for (int e = 0; e < 4; ++e)
+    for (int w = 0; w < 4; ++w) {
+      boot(48000);
+      engineTone(e, w);
+      setPot("osc1_macro", 0.6);
+      renderNew(0.05);
+      midi({0x90, 57, 110});
+      std::vector<float> x = renderNew(0.4);
+      bool finite = true;
+      for (float v : x) finite = finite && std::isfinite(v);
+      double pk = peakOf(x);
+      CHECK(finite && pk > 0.03 && pk < 0.6, "%s position %d: peak %.3f", kNames[e], w, pk);
+      for (size_t k = 0; k < sounds.size(); ++k)
+        CHECK(rmsDiff(x, sounds[k]) > 0.003, "%s position %d sounds the same as case %zu", kNames[e], w, k);
+      sounds.push_back(x);
+    }
+
+  section("engines: Macro and Color do something where the engine has them, on either oscillator");
+  for (int osc = 0; osc < 2; ++osc)
+    for (int e = 0; e < 4; ++e) {
+      bool hasColor = fw::kEngineColorName[e][0] != 0;
+      std::vector<float> take[3];
+      for (int t = 0; t < 3; ++t) {  // 0 = base, 1 = Macro moved, 2 = Color moved
+        boot(48000);
+        cleanTone(fw::WAVE_SQR);
+        if (osc == 1) {
+          setPot("mix_osc1", 0.0);
+          setPot("mix_osc2", 1.0);
+          setSel("osc2_wave", fw::WAVE_SQR);
+          setPot("osc2_detune", 0.5);
+        }
+        setStep(osc ? fw::P_OSC2_ENGINE : fw::P_OSC1_ENGINE, e);
+        double macro = t == 1 ? 0.8 : 0.3;
+        if (osc == 0) setPot("osc1_macro", macro);
+        else setCC(fw::P_OSC2_MACRO, (int)(macro * 127));
+        setCC(osc ? fw::P_OSC2_COLOR : fw::P_OSC1_COLOR, t == 2 ? 110 : 20);
+        renderNew(0.05);
+        midi({0x90, 57, 110});
+        take[t] = renderNew(0.5);
+      }
+      CHECK(rmsDiff(take[0], take[1]) > 0.003, "osc %d %s: Macro made no difference", osc + 1, kNames[e]);
+      if (hasColor) CHECK(rmsDiff(take[0], take[2]) > 0.002, "osc %d %s: Color made no difference", osc + 1, kNames[e]);
+      else CHECK(rmsDiff(take[0], take[2]) == 0, "osc %d %s: has no Color, yet it changed the sound", osc + 1, kNames[e]);
+    }
+
+  section("engines: all are in tune");
+  struct Tune {
+    int engine, wave;
+    double macro;
+    const char* what;
+  };
+  const Tune tunes[] = {
+      {fw::ENG_FM, 0, 0.0, "FM, no modulation"},      {fw::ENG_FM, 1, 0.5, "FM 2:1"},
+      {fw::ENG_WAVETABLE, 0, 0.0, "wavetable 1"},     {fw::ENG_WAVETABLE, 2, 0.7, "wavetable 3"},
+      {fw::ENG_PLUCK, 3, 0.0, "pluck, bright"},       {fw::ENG_PLUCK, 3, 0.6, "pluck, damped"},
+      {fw::ENG_PLUCK, 0, 0.3, "pluck, noise exciter"},
+  };
+  for (double sr : {48000.0, 44100.0})
+    for (const Tune& t : tunes)
+      for (int note : {45, 69}) {
+        boot(sr);
+        engineTone(t.engine, t.wave);
+        setPot("osc1_macro", t.macro);
+        setCC(fw::P_OSC1_COLOR, 127);  // long ring for the pluck, so there is something to measure
+        renderNew(0.05);
+        midi({0x90, note, 110});
+        std::vector<float> x = renderNew(1.3);
+        double want = 440.0 * std::pow(2.0, (note - 69) / 12.0);
+        double got = aliasCheck(x).f0;
+        CHECK(std::fabs(got / want - 1) < 0.004, "%s, note %d @%.0f: %.2f Hz, expected %.2f", t.what, note, sr, got, want);
+      }
+
+  section("engines: high notes stay clean (nothing louder than -60 dB between the harmonics)");
+  for (double sr : {48000.0, 44100.0}) {
+    double worstFm = -300, worstWt = -300;
+    for (int note : {84, 96, 103}) {
+      for (int w = 0; w < 3; ++w)  // the three whole-number ratios; 3.5:1 is deliberately not harmonic
+        for (double macro : {0.5, 1.0, 0.75}) {
+          boot(sr);
+          engineTone(fw::ENG_FM, w);
+          setPot("osc1_macro", macro);
+          setCC(fw::P_OSC1_COLOR, macro == 0.75 ? 0 : 100);  // with and without feedback
+          renderNew(0.05);
+          midi({0x90, note, 127});
+          AliasResult a = aliasCheck(renderNew(1.3), 440.0 * std::pow(2.0, (note - 69) / 12.0));
+          worstFm = std::max(worstFm, a.worstDb);
+          CHECK(a.worstDb <= -60.0, "FM ratio %d, amount %.0f%%, note %d @%.0f: %.1f dB at %.0f Hz", w, macro * 100, note, sr, a.worstDb, a.worstHz);
+        }
+      for (int w = 0; w < 4; ++w)
+        for (double macro : {0.0, 0.45, 1.0}) {
+          boot(sr);
+          engineTone(fw::ENG_WAVETABLE, w);
+          setPot("osc1_macro", macro);
+          renderNew(0.05);
+          midi({0x90, note, 127});
+          AliasResult a = aliasCheck(renderNew(1.3), 440.0 * std::pow(2.0, (note - 69) / 12.0));
+          worstWt = std::max(worstWt, a.worstDb);
+          CHECK(a.worstDb <= -60.0, "wavetable %d, position %.0f%%, note %d @%.0f: %.1f dB at %.0f Hz", w + 1, macro * 100, note, sr, a.worstDb, a.worstHz);
+        }
+    }
+    std::printf("    @%.1fk worst case: FM %.1f dB, wavetable %.1f dB\n", sr / 1000, worstFm, worstWt);
+  }
+
+  section("engines: a plucked string dies away on its own, slower with more Decay");
+  double left[2];
+  for (int c = 0; c < 2; ++c) {
+    boot(48000);
+    engineTone(fw::ENG_PLUCK, 3);
+    setCC(fw::P_OSC1_COLOR, c ? 127 : 0);
+    renderNew(0.05);
+    midi({0x90, 57, 110});  // key held throughout
+    std::vector<float> x = renderNew(3.0);
+    left[c] = rmsOf(x, 2.5, 3.0) / rmsOf(x, 0.05, 0.25);
+  }
+  CHECK(left[0] < 0.2, "short decay: %.3f of the starting level left after 2.5 s", left[0]);
+  CHECK(left[1] > 3 * left[0], "long decay %.3f should ring well past short decay %.3f", left[1], left[0]);
+}
+
+// AC4, extended: every soft parameter changes the sound too.
+static void softBaseline() {
+  phraseBaseline();
+  setSel("voice_mode", fw::MODE_UNI);       // so unison detune matters
+  setSel("lfo_destination", fw::LFO_PITCH);
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_FM);   // FM has a Color
+  setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+  setCC(fw::P_OSC2_MACRO, 40);
+  setCC(fw::P_OSC1_COLOR, 40);
+  setCC(fw::P_OSC2_COLOR, 40);
+  setCC(fw::P_DLY_MIX, 70);
+  setCC(fw::P_CHORUS, 70);
+  setCC(fw::P_RVB_MIX, 70);
+  setCC(fw::P_LFO_FADE, 60);
+  setCC(fw::P_VEL_CUTOFF, 60);
+  setStep(fw::P_FENV_PITCH, 5);
+  setStep(fw::P_ARP_MODE, fw::ARP_UP);
+  midi({0xE0, 0x00, 0x60});                 // some pitch bend, so bend range matters
+}
+
+static void testEverySoftParameter() {
+  section("AC4  each of the soft parameters changes the sound");
+  boot(48000);
+  softBaseline();
+  renderNew(0.4);
+  std::vector<float> base = phrase();
+  render(base, 0.4);
+  for (int id = fw::P_PANEL_COUNT; id < fw::P_COUNT; ++id) {
+    boot(48000);
+    softBaseline();
+    int steps = fw::kParams[id].steps;
+    // (the arp pattern goes from up to down: with only two notes held, several of the others coincide)
+    int moved = id == fw::P_ARP_MODE ? fw::ARP_DOWN : (fw::gParams.step(id) + std::max(1, steps / 2)) % steps;
+    fw::gParams.set(id, moved);
+    renderNew(0.4);
+    std::vector<float> x = phrase();
+    render(x, 0.4);
+    double d = rmsDiff(base, x);
+    CHECK(d > 1e-4, "%s made no audible difference (%.6f)", fw::kParams[id].key, d);
+  }
+}
+
+static void testOlderSavedState() {
+  section("AC11  state saved by the first build (36 parameters) still loads");
+  const int oldCount = 36;
+  uint8_t blob[6 + oldCount * 2 + 2] = {'S', 'Y', 'N', 'T', 1, (uint8_t)oldCount};
+  uint16_t sum = 0;
+  for (int i = 0; i < oldCount; ++i) {
+    const fw::ParamDef& d = fw::kParams[i];
+    uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
+    blob[6 + i * 2] = (uint8_t)(v & 0xFF);
+    blob[7 + i * 2] = (uint8_t)(v >> 8);
+    sum = (uint16_t)(sum * 31u + v + 1u);
+  }
+  blob[6 + oldCount * 2] = (uint8_t)(sum & 0xFF);
+  blob[7 + oldCount * 2] = (uint8_t)(sum >> 8);
+  std::memcpy(gStore, blob, sizeof blob);
+  gStoreLen = sizeof blob;
+  boot(48000, true);
+  int wrong = 0;
+  for (int i = 0; i < oldCount; ++i) {
+    const fw::ParamDef& d = fw::kParams[i];
+    uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
+    wrong += fw::gParams.val[i] != v;
+  }
+  CHECK(wrong == 0, "%d of the old parameters came back different", wrong);
+  wrong = 0;
+  for (int i = oldCount; i < fw::P_COUNT; ++i) wrong += fw::gParams.val[i] != fw::kParams[i].def;
+  CHECK(wrong == 0, "%d of the newer parameters are not at their defaults", wrong);
 }
 
 // Hands-on finding, 2026-11-11: text at the font's natural size is 1 mm tall
@@ -815,11 +1507,11 @@ static void benchmark() {
   setPot("filter_drive", 0.5);
   setPot("lfo_depth", 0.4);
   for (int i = 0; i < 8; ++i) midi({0x90, 40 + i * 4, 100});
-  float buf[fw::kMaxBlock];
+  float buf[fw::kMaxBlock], buf2[fw::kMaxBlock];
   timespec t0, t1;
   clock_gettime(CLOCK_MONOTONIC, &t0);
   const int blocks = 3750;  // 10 s
-  for (int b = 0; b < blocks; ++b) fw::process(buf, fw::kMaxBlock);
+  for (int b = 0; b < blocks; ++b) fw::process(buf, buf2, fw::kMaxBlock);
   clock_gettime(CLOCK_MONOTONIC, &t1);
   double sec = (double)(t1.tv_sec - t0.tv_sec) + (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
   std::printf("    8 voices, every source on, 24 dB filter with drive: 10 s of audio in %.0f ms (%.0fx real time)\n",
@@ -838,8 +1530,11 @@ static void printControls() {
   std::printf("| Control id | Section | Name | Type | Stops | CC |\n|---|---|---|---|---|---|\n");
   for (int i = 0; i < fw::P_COUNT; ++i) {
     if (i == fw::P_PANEL_COUNT) {
-      std::printf("\n## Engine page (soft controls)\n\n");
-      std::printf("| Parameter id | Encoder | Name | Type | Values | CC |\n|---|---|---|---|---|---|\n");
+      std::printf("\n## Soft parameters (encoder pages and buttons)\n\n");
+      std::printf("Wave, Macro and Color mean different things under each oscillator engine:\n");
+      std::printf("VA: wave, pulse width, none. FM: ratio, FM amount, feedback. ");
+      std::printf("Wavetable: table, position, none. Pluck: exciter, damping, decay.\n\n");
+      std::printf("| Parameter id | Page | Name | Values | CC |\n|---|---|---|---|---|\n");
     }
     const fw::ParamDef& d = fw::kParams[i];
     std::string stops;
@@ -854,8 +1549,7 @@ static void printControls() {
       std::printf("| `%s` | %s | %s | %s | %s | %d |\n", d.key, fw::kSectionNames[d.section], d.name,
                   d.kind == fw::PK_STEP ? "selector" : "pot", stops.c_str(), d.cc);
     } else {
-      std::printf("| `%s` | %d | %s | stepped | %s | %d |\n", d.key, i - fw::P_PANEL_COUNT + 1, d.name, stops.c_str(),
-                  d.cc);
+      std::printf("| `%s` | %s | %s | %s | %d |\n", d.key, fw::kSectionNames[d.section], d.name, stops.c_str(), d.cc);
     }
   }
   std::printf("\n## Encoders and buttons\n\n| Control id | Type |\n|---|---|\n");
@@ -881,8 +1575,15 @@ int main(int argc, char** argv) {
   testEveryControl();
   testMidi();
   testUi();
+  testSoftPages();
   testTextSize();
   testState();
+  testOlderSavedState();
+  testArpAndHold();
+  testEffects();
+  testMod();
+  testEngines();
+  testEverySoftParameter();
   benchmark();
 
   std::printf("\n%d checks, %d failed\n", gChecks, gFails);

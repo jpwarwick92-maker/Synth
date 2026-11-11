@@ -20,7 +20,8 @@ class SynthProcessor extends AudioWorkletProcessor {
 
     const mem = x.memory.buffer; // never grows: the firmware does not allocate
     this.maxBlock = x.fw_max_block();
-    this.out = new Float32Array(mem, x.fw_out_ptr(), this.maxBlock);
+    this.outL = new Float32Array(mem, x.fw_out_left_ptr(), this.maxBlock);
+    this.outR = new Float32Array(mem, x.fw_out_right_ptr(), this.maxBlock);
     this.midiCap = x.fw_midi_capacity();
     this.midi = new Uint8Array(mem, x.fw_midi_ptr(), this.midiCap);
     this.width = x.fw_display_width();
@@ -68,8 +69,9 @@ class SynthProcessor extends AudioWorkletProcessor {
     for (let done = 0; done < n; done += this.maxBlock) {
       const len = Math.min(this.maxBlock, n - done);
       this.x.fw_process(len);
-      const block = len === this.maxBlock ? this.out : this.out.subarray(0, len);
-      for (let ch = 0; ch < out.length; ch++) out[ch].set(block, done);
+      const whole = len === this.maxBlock;
+      out[0].set(whole ? this.outL : this.outL.subarray(0, len), done);
+      if (out.length > 1) out[1].set(whole ? this.outR : this.outR.subarray(0, len), done);
     }
 
     this.sinceFrame += n;

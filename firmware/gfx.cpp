@@ -4,7 +4,9 @@
 
 namespace fw {
 
-FW_BIGMEM uint16_t gFrame[kDisplayW * kDisplayH];
+// In ordinary memory (the Teensy's RAM1): the big-buffer region is needed
+// for the wavetables and the delay line.
+uint16_t gFrame[kDisplayW * kDisplayH];
 
 void gfxClear(uint16_t c) {
   for (int i = 0; i < kDisplayW * kDisplayH; ++i) gFrame[i] = c;
