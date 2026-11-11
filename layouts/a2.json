@@ -1,6 +1,6 @@
 {
   "name": "A2",
-  "description": "Panel A with soft controls: 12 knobs, 7 rotary selectors, 12 faders, 4 push-encoders, 9 buttons (the ninth, Hold, was added while prototyping), 2.4 inch display.",
+  "description": "Panel A with soft controls: 11 knobs, 8 rotary selectors, 12 faders, 4 push-encoders, 9 buttons, 2.4 inch display. Changed while prototyping: a ninth button (Hold) was added, and LFO Shape became a selector instead of a knob.",
   "units": "mm",
   "panel": { "width": 464, "height": 192 },
 
@@ -65,10 +65,10 @@
     { "id": "aenv_release", "type": "fader", "x": 168, "y": 131, "travel": 34, "label": "Release" },
     { "id": "aenv_velocity", "type": "knob", "x": 186, "y": 129, "label": "Velocity" },
 
-    { "id": "lfo_rate", "type": "knob", "x": 221, "y": 128, "label": "Rate" },
-    { "id": "lfo_depth", "type": "knob", "x": 245, "y": 128, "label": "Depth" },
-    { "id": "lfo_shape", "type": "knob", "x": 269, "y": 128, "label": "Shape" },
-    { "id": "lfo_destination", "type": "selector", "x": 299, "y": 132, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
+    { "id": "lfo_rate", "type": "knob", "x": 219, "y": 128, "label": "Rate" },
+    { "id": "lfo_depth", "type": "knob", "x": 241, "y": 128, "label": "Depth" },
+    { "id": "lfo_shape", "type": "selector", "x": 266, "y": 132, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"] },
+    { "id": "lfo_destination", "type": "selector", "x": 300, "y": 132, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
 
     { "id": "enc1", "type": "encoder", "x": 346, "y": 112 },
     { "id": "enc2", "type": "encoder", "x": 346, "y": 137 },
@@ -93,6 +93,6 @@
     { "x": 209, "y": 167, "text": "Mod wheel adds depth", "size": 2.8, "style": "note" },
     { "x": 446, "y": 99.5, "text": "2.4\" IPS", "size": 2.4, "anchor": "end", "style": "note" },
     { "x": 12, "y": 184, "text": "VOLUME KNOB, MIDI IN, USB HOST, LINE IN, LINE OUT, PHONES ON REAR PANEL", "size": 2.6, "style": "note" },
-    { "x": 452, "y": 184, "text": "12 KNOBS · 7 ROTARY SELECTORS · 4 PUSH-ENCODERS · 12 FADERS · 9 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
+    { "x": 452, "y": 184, "text": "11 KNOBS · 8 ROTARY SELECTORS · 4 PUSH-ENCODERS · 12 FADERS · 9 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
   ]
 }

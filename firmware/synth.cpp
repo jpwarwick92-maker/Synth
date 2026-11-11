@@ -670,7 +670,7 @@ void Synth::derive(Patch& p, int len) {
     lfoRandom_ = nextNoise(lfoRng_);
   }
   float lfo;
-  switch (mapLfoShape(sm[P_LFO_SHAPE])) {
+  switch (gParams.step(P_LFO_SHAPE)) {
     case LFOS_SINE: lfo = tabRead(gSine, lfoPhase_); break;
     case LFOS_TRI: lfo = 1.0f - 4.0f * absf(lfoPhase_ - 0.5f); break;
     case LFOS_SAW: lfo = 1.0f - 2.0f * lfoPhase_; break;

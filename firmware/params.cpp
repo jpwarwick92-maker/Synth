@@ -73,7 +73,7 @@ const ParamDef kParams[P_COUNT] = {
     {"aenv_velocity", "VELOCITY",   SEC_AENV,   PK_POT,  0,    pot(0.6f), 90,  U_PERCENT,    nullptr,       0},
     {"lfo_rate",      "RATE",       SEC_LFO,    PK_POT,  0,    pot(0.7f), 76,  U_LFOHZ,      nullptr,       0},
     {"lfo_depth",     "DEPTH",      SEC_LFO,    PK_POT,  0,    pot(0.0f), 77,  U_PERCENT,    nullptr,       0},
-    {"lfo_shape",     "SHAPE",      SEC_LFO,    PK_POT,  0,    pot(0.0f), 108, U_LFOSHAPE,   nullptr,       0},
+    {"lfo_shape",     "SHAPE",      SEC_LFO,    PK_STEP, 5,    0,         108, U_STEP,       kLfoShapeNames, 0},
     {"lfo_destination", "DESTINATION", SEC_LFO, PK_STEP, 4,    0,         109, U_STEP,       kDestLabels,   0},
     {"volume",        "VOLUME",     SEC_OUTPUT, PK_POT,  0,    pot(0.75f), 7,  U_PERCENT,    nullptr,       0},
     {"unison_detune", "UNI DETUNE", SEC_ENGINE, PK_STEP, 51,   15,        110, U_INT_CENTS,  nullptr,       0},

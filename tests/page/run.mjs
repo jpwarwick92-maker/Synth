@@ -113,8 +113,8 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 12, '12 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 7, '7 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.knob') === 11, '11 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 8, '8 rotary selectors', String(await count('#panel .ctl.selector')));
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
     check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
@@ -396,7 +396,7 @@ try {
     const w = (await again.page.locator('#panel').boundingBox()).width;
     check(Math.abs(w - 464 * 4.25) < 1, '1:1 panel is 464 mm at the calibrated scale', String(w));
     const a = await again.page.locator('[data-id="lfo_rate"] .cap').boundingBox(), b = await again.page.locator('[data-id="lfo_depth"] .cap').boundingBox();
-    check(Math.abs((b.x - a.x) / 4.25 - 24) < 0.1, 'two knobs 24 mm apart in the file are 24 mm apart on screen', String((b.x - a.x) / 4.25));
+    check(Math.abs((b.x - a.x) / 4.25 - 22) < 0.1, 'two knobs 22 mm apart in the file are 22 mm apart on screen', String((b.x - a.x) / 4.25));
     check(await again.page.evaluate(() => { const s = document.getElementById('stage'); return s.scrollWidth > s.clientWidth; }), 'the 1:1 panel can be panned');
     await again.page.click('#view-toggle');
     check((await again.page.locator('#panel').boundingBox()).width < 1500, 'toggling back fits the panel to the window');

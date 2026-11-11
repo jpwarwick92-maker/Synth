@@ -203,7 +203,6 @@ void formatParam(int id, Str& s) {
       else s.addTime(t);
       break;
     }
-    case U_LFOSHAPE: s.add(kLfoShapeNames[mapLfoShape(n)]); break;
     case U_INT_CENTS:
       s.addInt(st + d.intMin);
       s.add(" ct");
@@ -438,7 +437,7 @@ void drawAdsr(int firstParam, int selected) {
 
 void drawLfo() {
   static const float kRandom[8] = {0.3f, -0.7f, 0.9f, -0.2f, 0.6f, -0.9f, 0.1f, -0.5f};
-  int shape = mapLfoShape(gParams.norm(P_LFO_SHAPE));
+  int shape = gParams.step(P_LFO_SHAPE);
   const int x0 = 10, w = 300, mid = 124, amp = 54;
   gfxHLine(x0, mid, w, kGrid);
   int py = 0;

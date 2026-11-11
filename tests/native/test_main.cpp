@@ -603,7 +603,7 @@ static void phraseBaseline() {
   setPot("aenv_velocity", 0.5);
   setPot("lfo_rate", 0.8);
   setPot("lfo_depth", 0.5);
-  setPot("lfo_shape", 0.1);
+  setSel("lfo_shape", fw::LFOS_SINE);
   setSel("lfo_destination", fw::LFO_CUTOFF);
   setPot("volume", 0.6);
 }
@@ -1411,6 +1411,30 @@ static void testEverySoftParameter() {
   }
 }
 
+static void testLfoShapes() {
+  section("LFO Shape is a five-stop selector, and each stop is a different shape");
+  int i = ctl("lfo_shape");
+  CHECK(fw::controlInfo(i).kind == fw::CK_SELECTOR && fw::controlInfo(i).steps == 5, "Shape should be a selector with 5 stops");
+  std::vector<std::vector<float>> takes;
+  for (int shape = 0; shape < 5; ++shape) {
+    boot(48000);
+    cleanTone(fw::WAVE_SAW);
+    setPot("filter_cutoff", 0.5);
+    setSel("lfo_destination", fw::LFO_CUTOFF);
+    setPot("lfo_depth", 0.8);
+    setPot("lfo_rate", 0.8);
+    setSel("lfo_shape", shape);
+    fw::tick(33);
+    if (shape == fw::LFOS_SQUARE) saveFrame("popup_lfo_shape_selector");
+    renderNew(0.05);
+    midi({0x90, 57, 100});
+    std::vector<float> x = renderNew(1.0);
+    for (size_t k = 0; k < takes.size(); ++k)
+      CHECK(rmsDiff(x, takes[k]) > 0.003, "%s sounds the same as %s", fw::kLfoShapeNames[shape], fw::kLfoShapeNames[k]);
+    takes.push_back(x);
+  }
+}
+
 static void testOlderSavedState() {
   section("AC11  state saved by the first build (36 parameters) still loads");
   const int oldCount = 36;
@@ -1419,6 +1443,7 @@ static void testOlderSavedState() {
   for (int i = 0; i < oldCount; ++i) {
     const fw::ParamDef& d = fw::kParams[i];
     uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
+    if (i == fw::P_LFO_SHAPE) v = 2600;  // the first build stored Shape as a knob position: this one is in the SQUARE zone
     blob[6 + i * 2] = (uint8_t)(v & 0xFF);
     blob[7 + i * 2] = (uint8_t)(v >> 8);
     sum = (uint16_t)(sum * 31u + v + 1u);
@@ -1432,9 +1457,12 @@ static void testOlderSavedState() {
   for (int i = 0; i < oldCount; ++i) {
     const fw::ParamDef& d = fw::kParams[i];
     uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
+    if (i == fw::P_LFO_SHAPE) continue;
     wrong += fw::gParams.val[i] != v;
   }
   CHECK(wrong == 0, "%d of the old parameters came back different", wrong);
+  CHECK(fw::gParams.step(fw::P_LFO_SHAPE) == fw::LFOS_SQUARE, "an old Shape knob position should become the matching stop (got %d)",
+        fw::gParams.step(fw::P_LFO_SHAPE));
   wrong = 0;
   for (int i = oldCount; i < fw::P_COUNT; ++i) wrong += fw::gParams.val[i] != fw::kParams[i].def;
   CHECK(wrong == 0, "%d of the newer parameters are not at their defaults", wrong);
@@ -1636,6 +1664,7 @@ int main(int argc, char** argv) {
   testPackedFrame();
   testState();
   testOlderSavedState();
+  testLfoShapes();
   testArpAndHold();
   testEffects();
   testMod();

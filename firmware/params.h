@@ -116,7 +116,6 @@ enum Unit : uint8_t {
   U_TIME,       // envelope time
   U_LFOHZ,      // LFO rate
   U_GLIDE,      // glide time
-  U_LFOSHAPE,   // one of five shapes
   U_INT_CENTS,  // integer steps shown as cents
   U_INT_SEMI,   // integer steps shown as semitones
   U_INT_PERCENT,  // stepped 0..100%
@@ -185,7 +184,7 @@ float mapDetuneCents(float n);    // -100 .. +100 cents, fine near centre
 float mapPulseWidth(float n);     // 0.5 .. 0.95
 float mapDriveGain(float n);      // 1 .. 16
 float mapVolume(float n);         // output gain
-int mapLfoShape(float n);         // LfoShape
+int mapLfoShape(float n);         // LfoShape from an old pot position (the Shape control was once a knob)
 float mapDelayTime(float f);      // 20 ms .. 750 ms
 float mapReverbTime(float f);     // 0.3 .. 8 s
 float mapFadeTime(float f);       // 0 .. 5 s

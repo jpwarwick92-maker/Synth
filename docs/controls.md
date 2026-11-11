@@ -39,7 +39,7 @@ all sound off (CC 120) and all notes off (CC 123).
 | `aenv_velocity` | AMP ENV | VELOCITY | pot |  | 90 |
 | `lfo_rate` | LFO | RATE | pot |  | 76 |
 | `lfo_depth` | LFO | DEPTH | pot |  | 77 |
-| `lfo_shape` | LFO | SHAPE | pot |  | 108 |
+| `lfo_shape` | LFO | SHAPE | selector | SINE, TRI, SAW, SQUARE, RANDOM | 108 |
 | `lfo_destination` | LFO | DESTINATION | selector | PITCH, CUTOFF, AMP, PW | 109 |
 | `volume` | OUTPUT | VOLUME | pot |  | 7 |
 
