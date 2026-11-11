@@ -19,11 +19,23 @@ jobs:
   test:
     name: Engine tests, browser build, page tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install the compiler and WebAssembly linker
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+      # The runner image normally ships clang with its WebAssembly linker,
+      # so only install them if a trial build fails.
+      - name: Check for the WebAssembly compiler
+        timeout-minutes: 10
+        run: |
+          echo 'int probe(void) { return 1; }' > /tmp/probe.c
+          if clang --target=wasm32 -nostdlib -Wl,--no-entry -o /tmp/probe.wasm /tmp/probe.c; then
+            echo "clang and its WebAssembly linker are already installed"
+          else
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang lld
+          fi
+          clang++ --version
 
       - name: Engine tests
         run: make test
@@ -35,11 +47,15 @@ jobs:
         with:
           node-version: 22
 
+      # System libraries for the browser are installed only if it will not start.
       - name: Install the test browser
         working-directory: tests/page
+        timeout-minutes: 10
         run: |
           npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
+          node -e "import('playwright').then(p => p.chromium.launch()).then(b => b.close())" \
+            || sudo DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
 
       - name: Page tests
         run: node tests/page/run.mjs build/site build/out
@@ -52,6 +68,7 @@ jobs:
   teensy:
     name: Teensy 4.1 compile check
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
