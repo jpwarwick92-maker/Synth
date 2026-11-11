@@ -29,7 +29,8 @@ Rules for code in `firmware/`:
 - no memory allocation, at start-up or while playing;
 - audio in blocks of at most 128 samples, at any sample rate;
 - only `<stdint.h>` and `<stddef.h>`; maths comes from `fw_math.h`;
-- the display is drawn with pixels, lines, fills and a bitmap font only.
+- the display is drawn with pixels, lines, fills and a bitmap font only, and no text
+  smaller than 2 mm tall on the real display (font scale 2).
 
 ## Build and run
 
@@ -51,9 +52,15 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
 
 ## Using the page
 
-- Knobs and faders: drag up and down. Hold Shift for fine movement.
-- Selectors: drag, or tap a stop's label.
-- Encoders: drag to turn, double-tap to push.
+- Knobs, selectors and encoders: press and circle the pointer round the control and it
+  turns with you. The **Knobs** button switches to dragging up and down instead.
+- Scrolling over any control also moves it (two fingers on a trackpad, or a mouse wheel).
+- Hold Shift for fine movement.
+- Selectors: you can also tap a stop's label. Encoders: double-tap to push.
+- Faders follow the pointer along their slot.
+- **Zoom display** shows the display enlarged with every pixel visible. On the panel it
+  is drawn at its true physical size, which on most screens is fewer pixels than the real
+  320x240 display has.
 - **1:1 size** shows the panel at true physical size. It asks once for calibration
   against a bank card held to the screen.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend

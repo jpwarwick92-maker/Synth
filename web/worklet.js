@@ -96,7 +96,10 @@ class SynthProcessor extends AudioWorkletProcessor {
       transfer.push(buf);
     }
 
-    let moved = this.first;
+    // Sent when something moved, and twice a second regardless, so the page
+    // always converges on what the firmware holds.
+    this.ticks = (this.ticks || 0) + 1;
+    let moved = this.first || this.ticks % 15 === 0;
     for (let i = 0; i < this.count; i++) {
       const v = x.fw_control_get(i);
       if (v !== this.positions[i]) {

@@ -14,6 +14,8 @@
   <span class="stat" title="Delay between the firmware and the speaker, as the browser reports it">Audio delay: <b id="audio-delay">–</b></span>
   <span class="stat">Build: <b id="build">–</b></span>
   <span class="spacer"></span>
+  <button id="knob-mode" type="button" title="How knobs, selectors and encoders answer a drag">Knobs: turn</button>
+  <button id="zoom-toggle" type="button" aria-pressed="false" title="Show the display enlarged, every pixel visible">Zoom display</button>
   <button id="view-toggle" type="button" aria-pressed="false">1:1 size</button>
   <button id="calibrate" type="button">Calibrate</button>
 </header>
@@ -24,6 +26,10 @@
     <canvas id="lcd" width="320" height="240" aria-label="Synth display"></canvas>
   </div>
 </main>
+
+<div id="zoom" hidden>
+  <canvas id="lcd-zoom" width="640" height="480" aria-label="Synth display, enlarged"></canvas>
+</div>
 
 <section id="aids" aria-label="Test aids">
   <div class="aid">
@@ -41,7 +47,7 @@
     <button id="panic" type="button">Panic</button>
     <span class="aidnote">Test aids, not part of the panel</span>
   </div>
-  <p class="hint">Drag knobs and faders up and down (hold Shift for fine). Drag a selector or tap a stop's label. Drag an encoder to turn it, double-tap to push.</p>
+  <p class="hint" id="hint"></p>
 </section>
 
 <div id="start">

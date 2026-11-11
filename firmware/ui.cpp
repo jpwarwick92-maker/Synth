@@ -139,6 +139,11 @@ void formatParam(int id, Str& s) {
 
 // ---- shared pieces ----
 
+// One column of a plotted curve: joins the previous column's height to this
+// one's with a vertical stroke. Steep edges (a square wave) come out as one
+// clean upright line instead of a diagonal with a kink in it.
+void plotColumn(int x, int yFrom, int yTo, uint16_t c) { gfxPlotLine(x, yFrom, x, yTo, c); }
+
 // Live output scope, triggered on a rising zero crossing so the wave holds still.
 void drawScope(int x, int y, int w, int h) {
   const float* buf = gSynth.scope();
@@ -163,7 +168,7 @@ void drawScope(int x, int y, int w, int h) {
   for (int px = 0; px < w; ++px) {
     float s = buf[(start + (uint32_t)((float)px * step)) & mask];
     int yy = clampi(mid - (int)(s * gain), y, y + h - 2);
-    if (px > 0) gfxPlotLine(x + px - 1, py, x + px, yy, kTeal);
+    plotColumn(x + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
   }
 }
@@ -171,23 +176,21 @@ void drawScope(int x, int y, int w, int h) {
 // Bottom strip: voices in use, voice mode, output level, MIDI activity.
 void drawStatus() {
   const int y = 222;
-  for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 10, y, 7, 7, gSynth.voiceActive(i) ? kTeal : kDarkGrey);
-  gfxText(96, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 1);
+  for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kTeal : kDarkGrey);
+  gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
 
   float peak = minf(gSynth.peakLevel(), 1.0f);
-  gfxText(150, y, "LEVEL", kGrey, 1);
-  gfxFill(186, y, 70, 7, kDarkGrey);
-  gfxFill(186, y, (int)(peak * 70.0f), 7, peak > 0.7f ? kAmber : kDimTeal);
+  gfxFill(162, y + 3, 88, 8, kDarkGrey);
+  gfxFill(162, y + 3, (int)(peak * 88.0f), 8, peak > 0.7f ? kAmber : kDimTeal);
 
-  gfxText(274, y, "MIDI", kGrey, 1);
-  gfxFill(304, y, 7, 7, gMidi.idleMs() < 120 ? kAmber : kDarkGrey);
+  gfxText(258, y, "MIDI", gMidi.idleMs() < 120 ? kAmber : kDarkGrey, 2);  // lights up on every message
 }
 
 void drawHeader(const char* section, const char* name, const char* value) {
-  gfxText(8, 6, section, kDimTeal, 1);
-  gfxText(8, 20, name, kAmber, 2);
-  gfxTextRight(312, 10, value, kWhite, 3);
-  gfxHLine(8, 44, 304, kGrid);
+  gfxText(8, 6, section, kDimTeal, 2);
+  gfxText(8, 26, name, kAmber, 2);
+  gfxTextRight(312, 12, value, kWhite, 3);
+  gfxHLine(8, 46, 304, kGrid);
 }
 
 void drawBar(float n) {
@@ -226,7 +229,7 @@ void drawOscWave(int wave, float pw) {
     float ph = (float)px * (2.0f / (float)w);
     ph -= floorf_(ph);
     int yy = mid - (int)(waveShape(wave, ph, pw) * (float)amp);
-    if (px > 0) gfxPlotLine(x0 + px - 1, py, x0 + px, yy, kTeal);
+    plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
   }
 }
@@ -236,11 +239,11 @@ void drawMixer(int selected) {
   for (int i = 0; i < 4; ++i) {
     int id = P_MIX_OSC1 + i;
     int x = 30 + i * 72;
-    int h = (int)(gParams.norm(id) * 136.0f);
+    int h = (int)(gParams.norm(id) * 126.0f);
     uint16_t c = id == selected ? kAmber : kDimTeal;
-    gfxFrame(x, 58, 44, 140, kDarkGrey);
-    gfxFill(x + 2, 196 - h, 40, h, c);
-    gfxTextCentre(x + 22, 204, kNames[i], id == selected ? kAmber : kGrey, 1);
+    gfxFrame(x, 56, 44, 130, kDarkGrey);
+    gfxFill(x + 2, 184 - h, 40, h, c);
+    gfxTextCentre(x + 22, 194, kNames[i], id == selected ? kAmber : kGrey, 2);
   }
 }
 
@@ -257,7 +260,7 @@ float filterStage(float w, float k, int type) {
 
 // The filter's frequency response, 20 Hz to 20 kHz, as it is set right now.
 void drawFilterCurve() {
-  const int x0 = 8, w = 304, y0 = 54, h = 160;
+  const int x0 = 8, w = 304, y0 = 54, h = 156;
   const float topDb = 18.0f, rangeDb = 66.0f;
   int zero = y0 + (int)(topDb / rangeDb * (float)h);
   gfxHLine(x0, zero, w, kGrid);
@@ -266,7 +269,7 @@ void drawFilterCurve() {
   for (int i = 0; i < 3; ++i) {
     int x = x0 + (int)(log2f_(kMarks[i] / 20.0f) * 0.1f * (float)w);
     gfxVLine(x, y0, h, kGrid);
-    gfxTextCentre(x, y0 + h + 3, kMarkNames[i], kGrey, 1);
+    gfxTextCentre(x, y0 + h + 4, kMarkNames[i], kGrey, 2);
   }
 
   float fc = mapCutoffHz(gParams.norm(P_CUTOFF));
@@ -284,7 +287,7 @@ void drawFilterCurve() {
     if (slope24) mag *= filterStage(wn, 1.41421356f, type);
     float db = 6.0206f * log2f_(maxf(mag, 1e-6f));
     int yy = clampi(y0 + (int)((topDb - db) / rangeDb * (float)h), y0, y0 + h - 2);
-    if (px > 0) gfxPlotLine(x0 + px - 1, py, x0 + px, yy, kTeal);
+    plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
   }
 }
@@ -292,7 +295,7 @@ void drawFilterCurve() {
 void drawAdsr(int firstParam, int selected) {
   float a = gParams.norm(firstParam), d = gParams.norm(firstParam + 1);
   float s = gParams.norm(firstParam + 2), r = gParams.norm(firstParam + 3);
-  const int top = 62, bottom = 208, hgt = bottom - top;
+  const int top = 62, bottom = 196, hgt = bottom - top;
   int wA = 16 + (int)(70.0f * a), wD = 16 + (int)(70.0f * d), wS = 50, wR = 16 + (int)(70.0f * r);
   int x = 12;
   gfxHLine(8, bottom + 2, 304, kGrid);
@@ -300,11 +303,10 @@ void drawAdsr(int firstParam, int selected) {
   auto yOf = [&](float level) { return bottom - (int)(level * (float)hgt); };
   auto seg = [&](int width, int which, float (*shape)(float t, float s), float sus) {
     uint16_t c = (firstParam + which == selected) ? kAmber : kTeal;
-    int px = x, py = yOf(shape(0.0f, sus));
+    int py = yOf(shape(0.0f, sus));
     for (int i = 1; i <= width; ++i) {
       int yy = yOf(shape((float)i / (float)width, sus));
-      gfxPlotLine(px, py, x + i, yy, c);
-      px = x + i;
+      plotColumn(x + i, py, yy, c);
       py = yy;
     }
     x += width;
@@ -318,7 +320,7 @@ void drawAdsr(int firstParam, int selected) {
   int lx = 12;
   const int widths[4] = {wA, wD, wS, wR};
   for (int i = 0; i < 4; ++i) {
-    gfxTextCentre(lx + widths[i] / 2, bottom + 8, kNames[i], firstParam + i == selected ? kAmber : kGrey, 1);
+    gfxTextCentre(lx + widths[i] / 2, bottom + 8, kNames[i], firstParam + i == selected ? kAmber : kGrey, 2);
     lx += widths[i];
   }
 }
@@ -326,7 +328,7 @@ void drawAdsr(int firstParam, int selected) {
 void drawLfo() {
   static const float kRandom[8] = {0.3f, -0.7f, 0.9f, -0.2f, 0.6f, -0.9f, 0.1f, -0.5f};
   int shape = mapLfoShape(gParams.norm(P_LFO_SHAPE));
-  const int x0 = 10, w = 300, mid = 128, amp = 56;
+  const int x0 = 10, w = 300, mid = 124, amp = 54;
   gfxHLine(x0, mid, w, kGrid);
   int py = 0;
   for (int px = 0; px < w; ++px) {
@@ -341,16 +343,16 @@ void drawLfo() {
       default: v = kRandom[(int)(t * 4.0f) & 7]; break;
     }
     int yy = mid - (int)(v * (float)amp);
-    if (px > 0) gfxPlotLine(x0 + px - 1, py, x0 + px, yy, kTeal);
+    plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
   }
   Str s;
   s.add("TO ");
   s.add(kParams[P_LFO_DEST].labels[gParams.step(P_LFO_DEST)]);
-  gfxText(8, 204, s.b, kGrey, 1);
+  gfxText(8, 200, s.b, kGrey, 2);
   Str r;
   formatParam(P_LFO_RATE, r);
-  gfxTextRight(312, 204, r.b, kGrey, 1);
+  gfxTextRight(312, 200, r.b, kGrey, 2);
 }
 
 }  // namespace
@@ -436,28 +438,28 @@ void Ui::drawHome() {
 }
 
 void Ui::drawModePage() {
-  gfxTextCentre(160, 10, kModeNames[mode_], kAmber, 2);
+  gfxTextCentre(160, 6, kModeNames[mode_], kAmber, 2);
   if (mode_ != MB_ENGINE) {
     gfxTextCentre(160, 104, "NOT BUILT YET", kGrey, 2);
     drawStatus();
     return;
   }
   // one value per encoder, at the corner nearest that encoder
-  static const int kLabelY[2] = {40, 176};
+  static const int kLabelY[2] = {30, 164};
   for (int e = 0; e < 4; ++e) {
     int id = kEnginePage[e];
     Str v;
     formatParam(id, v);
     int y = kLabelY[e & 1];
     if (e < 2) {
-      gfxText(8, y, kParams[id].name, kDimTeal, 1);
-      gfxText(8, y + 12, v.b, kWhite, 2);
+      gfxText(8, y, kParams[id].name, kDimTeal, 2);
+      gfxText(8, y + 16, v.b, kWhite, 3);
     } else {
-      gfxTextRight(312, y, kParams[id].name, kDimTeal, 1);
-      gfxTextRight(312, y + 12, v.b, kWhite, 2);
+      gfxTextRight(312, y, kParams[id].name, kDimTeal, 2);
+      gfxTextRight(312, y + 16, v.b, kWhite, 3);
     }
   }
-  drawScope(8, 78, 304, 88);
+  drawScope(8, 74, 304, 82);
   drawStatus();
 }
 
@@ -501,8 +503,8 @@ void Ui::drawParamPopup(int id) {
 void Ui::drawEnginePopup(int osc) {
   drawHeader(osc == 0 ? "OSC 1" : "OSC 2", "ENGINE", "VA");
   gfxTextCentre(160, 96, "VA ONLY", kWhite, 3);
-  gfxTextCentre(160, 140, "FM / WAVETABLE / PLUCK", kGrey, 1);
-  gfxTextCentre(160, 154, "NOT BUILT YET", kGrey, 1);
+  gfxTextCentre(160, 140, "FM / WAVETABLE / PLUCK", kGrey, 2);
+  gfxTextCentre(160, 160, "NOT BUILT YET", kGrey, 2);
 }
 
 }  // namespace fw

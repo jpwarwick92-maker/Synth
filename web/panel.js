@@ -8,6 +8,15 @@
 const NS = 'http://www.w3.org/2000/svg';
 const POT_MAX = 4095;
 
+// How knobs, selectors and encoders answer a drag:
+//   'turn'   - the control turns with the pointer as it circles the control
+//   'updown' - dragging up turns it clockwise, down anticlockwise
+// Faders always follow the pointer along their slot.
+let knobMode = 'turn';
+export function setKnobMode(mode) { knobMode = mode === 'updown' ? 'updown' : 'turn'; }
+
+const MIN_TURN_RADIUS = 8;   // px: closer to the centre than this, an angle means nothing
+
 function el(name, attrs, parent, text) {
   const e = document.createElementNS(NS, name);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -25,7 +34,12 @@ function onDrag(target, handlers) {
     if (e.button > 0) return;
     e.preventDefault();
     try { target.setPointerCapture(e.pointerId); } catch (_) { /* synthetic pointers cannot be captured */ }
-    const st = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lastY: e.clientY, moved: false, acc: 0 };
+    const box = target.getBoundingClientRect();
+    const st = {
+      id: e.pointerId, x0: e.clientX, y0: e.clientY, lastY: e.clientY, moved: false, acc: 0,
+      cx: box.left + box.width / 2, cy: box.top + box.height / 2,   // the control's centre on screen
+      angle: null,
+    };
     if (handlers.down) handlers.down(e, st);
     const move = (ev) => {
       if (ev.pointerId !== st.id) return;
@@ -47,12 +61,42 @@ function onDrag(target, handlers) {
   });
 }
 
+// Pointer direction seen from the control's centre, in degrees: 0 = straight
+// up, clockwise positive. Null when the pointer is too close to the centre.
+function angleOf(e, st) {
+  const dx = e.clientX - st.cx, dy = e.clientY - st.cy;
+  if (dx * dx + dy * dy < MIN_TURN_RADIUS * MIN_TURN_RADIUS) return null;
+  return (Math.atan2(dx, -dy) * 180) / Math.PI;
+}
+
+// How many degrees the pointer has swept round the centre since the last call.
+function sweep(e, st) {
+  const a = angleOf(e, st);
+  if (a === null || st.angle === null) {
+    st.angle = a;
+    return 0;
+  }
+  let d = a - st.angle;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  st.angle = a;
+  return d;
+}
+
+// Scrolling over a control (two fingers on a trackpad, or a mouse wheel).
+// `fn` gets the scrolled distance in pixels, positive = wheel up; a trackpad
+// sends many small amounts, a wheel a few large ones.
 function onWheel(target, fn) {
   target.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) return;                       // pinch-zoom, not a scroll
     e.preventDefault();
-    fn(e.deltaY < 0 ? 1 : -1, e);
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 240 : 1;
+    fn(-e.deltaY * unit, e);
   }, { passive: false });
 }
+
+const WHEEL_SWEEP = 1200;   // px of scrolling for a knob's full travel
+const WHEEL_STEP = 40;      // px of scrolling per selector stop or encoder click
 
 // On-screen pixels per millimetre of panel, for 1:1 feeling drags.
 function pxPerMm(svg) {
@@ -72,20 +116,25 @@ function makeKnob(g, def, sizes, c, send) {
 
   c.draw = () => ptr.setAttribute('transform', `rotate(${-135 + (270 * c.value) / POT_MAX})`);
   const nudge = (dv) => {
-    const v = Math.round(clamp(c.fine + dv, 0, POT_MAX));
     c.fine = clamp(c.fine + dv, 0, POT_MAX);
+    const v = Math.round(c.fine);
     if (v !== c.value) {
       c.value = v;
+      c.touched();
       c.draw();
       send(def.id, 'set', v);
     }
   };
   onDrag(hit, {
-    down: () => { c.held = true; c.fine = c.value; },
-    move: (e, st, dy) => nudge(-dy * (POT_MAX / 180) * (e.shiftKey ? 0.1 : 1)),   // full sweep = 180 px
+    down: (e, st) => { c.held = true; c.fine = c.value; st.angle = angleOf(e, st); },
+    move: (e, st, dy) => {
+      const fine = e.shiftKey ? 0.1 : 1;
+      if (knobMode === 'turn') nudge((sweep(e, st) / 270) * POT_MAX * fine);   // the pointer line follows the cursor
+      else nudge(-dy * (POT_MAX / 180) * fine);                                // full travel = 180 px
+    },
     up: () => { c.held = false; },
   });
-  onWheel(hit, (d, e) => { c.fine = c.value; nudge(d * POT_MAX * (e.shiftKey ? 0.004 : 0.02)); });
+  onWheel(hit, (px, e) => { c.fine = c.value; nudge((px / WHEEL_SWEEP) * POT_MAX * (e.shiftKey ? 0.1 : 1)); });
 }
 
 function makeFader(g, def, sizes, c, send) {
@@ -104,6 +153,7 @@ function makeFader(g, def, sizes, c, send) {
     const v = Math.round(c.fine);
     if (v !== c.value) {
       c.value = v;
+      c.touched();
       c.draw();
       send(def.id, 'set', v);
     }
@@ -114,7 +164,7 @@ function makeFader(g, def, sizes, c, send) {
     move: (e, st, dy) => nudge((-dy / (travel * pxPerMm(g.ownerSVGElement))) * POT_MAX * (e.shiftKey ? 0.1 : 1)),
     up: () => { c.held = false; },
   });
-  onWheel(hit, (d, e) => { c.fine = c.value; nudge(d * POT_MAX * (e.shiftKey ? 0.004 : 0.02)); });
+  onWheel(hit, (px, e) => { c.fine = c.value; nudge((px / WHEEL_SWEEP) * POT_MAX * (e.shiftKey ? 0.1 : 1)); });
 }
 
 function makeSelector(g, def, sizes, c, send) {
@@ -153,19 +203,30 @@ function makeSelector(g, def, sizes, c, send) {
     i = clamp(i, 0, n - 1);
     if (i === c.value) return;
     c.value = i;
+    c.touched();
     c.draw();
     send(def.id, 'set', i);
   };
   onDrag(hit, {
     down: () => { c.held = true; },
-    move: (e, st, dy) => {                    // one stop per 22 px, up = clockwise
-      st.acc -= dy;
+    move: (e, st, dy) => {
+      if (knobMode === 'turn') {              // the switch points at the stop nearest the cursor
+        const a = angleOf(e, st);
+        if (a !== null && Math.abs(a) < 150) setStop(Math.round(a / spacing + (n - 1) / 2));
+        return;
+      }
+      st.acc -= dy;                           // one stop per 22 px, up = clockwise
       while (st.acc >= 22) { st.acc -= 22; setStop(c.value + 1); }
       while (st.acc <= -22) { st.acc += 22; setStop(c.value - 1); }
     },
     up: () => { c.held = false; },
   });
-  onWheel(hit, (d) => setStop(c.value + d));
+  let wheelAcc = 0;
+  onWheel(hit, (px) => {
+    wheelAcc += px;
+    while (wheelAcc >= WHEEL_STEP) { wheelAcc -= WHEEL_STEP; setStop(c.value + 1); }
+    while (wheelAcc <= -WHEEL_STEP) { wheelAcc += WHEEL_STEP; setStop(c.value - 1); }
+  });
 }
 
 function makeEncoder(g, def, sizes, c, send) {
@@ -181,14 +242,17 @@ function makeEncoder(g, def, sizes, c, send) {
   };
   const turn = (d) => {
     c.value = (c.value + d + 65536) % 65536;
+    c.touched();
     c.draw();
     send(def.id, 'enc', d);
   };
   onDrag(hit, {
-    move: (e, st, dy) => {                    // one click per 12 px, up = clockwise
-      st.acc -= dy;
-      while (st.acc >= 12) { st.acc -= 12; turn(1); }
-      while (st.acc <= -12) { st.acc += 12; turn(-1); }
+    down: (e, st) => { st.angle = angleOf(e, st); },
+    move: (e, st, dy) => {
+      const per = knobMode === 'turn' ? 15 : 12;   // 15 degrees, or 12 px, per click
+      st.acc += knobMode === 'turn' ? sweep(e, st) : -dy;
+      while (st.acc >= per) { st.acc -= per; turn(1); }
+      while (st.acc <= -per) { st.acc += per; turn(-1); }
     },
     up: (e, st) => {                          // double tap = push
       if (st.moved) return;
@@ -204,7 +268,12 @@ function makeEncoder(g, def, sizes, c, send) {
       }
     },
   });
-  onWheel(hit, (d) => turn(d));
+  let wheelAcc = 0;
+  onWheel(hit, (px) => {
+    wheelAcc += px;
+    while (wheelAcc >= WHEEL_STEP) { wheelAcc -= WHEEL_STEP; turn(1); }
+    while (wheelAcc <= -WHEEL_STEP) { wheelAcc += WHEEL_STEP; turn(-1); }
+  });
 }
 
 function makeButton(g, def, sizes, c, send) {
@@ -226,10 +295,14 @@ const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encod
 export function makeControl(parent, def, sizes, send) {
   const g = el('g', { transform: `translate(${def.x} ${def.y})`, class: `ctl ${def.type}`, 'data-id': def.id }, parent);
   const c = {
-    id: def.id, type: def.type, def, el: g, value: 0, fine: 0, held: false,
+    id: def.id, type: def.type, def, el: g, value: 0, fine: 0, held: false, movedAt: -1e9,
     draw() {},
+    touched() { this.movedAt = performance.now(); },
+    // A position reported back by the firmware. A control under a finger
+    // stays where the finger put it, and for a moment afterwards too: the
+    // firmware's reports run a frame or two behind and would tug it back.
     set(v) {
-      if (this.held || v === this.value) return;   // a control under a finger stays where the finger put it
+      if (this.held || v === this.value || performance.now() - this.movedAt < 250) return;
       this.value = v;
       this.draw();
     },

@@ -31,10 +31,14 @@ void gfxFrame(int x, int y, int w, int h, uint16_t c);
 void gfxHLine(int x, int y, int w, uint16_t c);
 void gfxVLine(int x, int y, int h, uint16_t c);
 void gfxLine(int x0, int y0, int x1, int y1, uint16_t c);
-// A line two pixels thick, for plots.
+// A line two pixels thick in every direction, for plots.
 void gfxPlotLine(int x0, int y0, int x1, int y1, uint16_t c);
 
-// Text. scale 1 = 5x7 pixels per character on a 6-pixel pitch.
+// Text. The font is 5x7 pixels per character on a 6-pixel pitch, multiplied
+// by `scale`. On the real 2.4 inch display one pixel is 0.15 mm, so scale 1
+// would be letters 1 mm tall: too small to read. Anything below
+// kMinTextScale is drawn at kMinTextScale (letters 2.1 mm tall).
+constexpr int kMinTextScale = 2;
 int gfxTextWidth(const char* s, int scale);
 void gfxText(int x, int y, const char* s, uint16_t c, int scale);
 void gfxTextRight(int xRight, int y, const char* s, uint16_t c, int scale);

@@ -662,8 +662,8 @@ static void testUi() {
   fw::tick(33);
   saveFrame("home");
   CHECK(countColour(fw::kTeal, 40, 208) > quietScope + 200, "scope shows no waveform while notes sound");
-  CHECK(countColour(fw::kTeal, 220, 232) == 3 * 49, "status strip should show 3 voices lit");
-  CHECK(countColour(fw::kAmber, 220, 232) >= 49, "MIDI activity light is not lit");
+  CHECK(countColour(fw::kTeal, 222, 236) == 3 * 64, "status strip should show 3 voices lit");
+  CHECK(countColour(fw::kAmber, 222, 236) >= 60, "MIDI activity light is not lit");
   midi({0xB0, 120, 0});
 
   section("AC6  moving a control shows its visual, home returns after 1.5 s");
@@ -745,6 +745,32 @@ static void testUi() {
   CHECK(countColour(fw::kWhite, 90, 125) > 500, "oscillator engine button: no 'VA only' message");
   fw::tick(1600);
   CHECK(countColour(fw::kWhite, 90, 125) == 0, "'VA only' message did not clear");
+}
+
+// Hands-on finding, 2026-11-11: text at the font's natural size is 1 mm tall
+// on the real display and was unreadable. Nothing may be drawn smaller than
+// kMinTextScale, whatever a screen asks for.
+static void testTextSize() {
+  section("display text is never smaller than 2.1 mm (scale 2)");
+  boot(48000);
+  fw::gfxClear(fw::kBlack);
+  fw::gfxText(10, 10, "H", fw::kWhite, 1);
+  long asked1 = countColour(fw::kWhite);
+  fw::gfxClear(fw::kBlack);
+  fw::gfxText(10, 10, "H", fw::kWhite, 2);
+  long asked2 = countColour(fw::kWhite);
+  CHECK(asked1 == asked2 && asked2 == 17 * 4, "scale 1 drew %ld pixels, scale 2 drew %ld (an H is 17 dots)", asked1, asked2);
+  CHECK(fw::gfxTextWidth("AB", 1) == fw::gfxTextWidth("AB", 2), "text width must follow the same rule");
+
+  // plot lines are two pixels thick in both directions, so a vertical edge
+  // is as visible as a horizontal one
+  fw::gfxClear(fw::kBlack);
+  fw::gfxPlotLine(50, 20, 50, 60, fw::kTeal);
+  long vertical = countColour(fw::kTeal);
+  fw::gfxClear(fw::kBlack);
+  fw::gfxPlotLine(20, 50, 60, 50, fw::kTeal);
+  long horizontal = countColour(fw::kTeal);
+  CHECK(vertical == horizontal && vertical == 2 * 42, "vertical %ld px, horizontal %ld px", vertical, horizontal);
 }
 
 static void testState() {
@@ -855,6 +881,7 @@ int main(int argc, char** argv) {
   testEveryControl();
   testMidi();
   testUi();
+  testTextSize();
   testState();
   benchmark();
 

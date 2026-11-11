@@ -36,14 +36,16 @@ void gfxFrame(int x, int y, int w, int h, uint16_t c) {
   gfxVLine(x + w - 1, y, h, c);
 }
 
-void gfxLine(int x0, int y0, int x1, int y1, uint16_t c) {
+// Bresenham, stamping a brush x brush square at every step.
+static void lineWithBrush(int x0, int y0, int x1, int y1, uint16_t c, int brush) {
   int dx = x1 > x0 ? x1 - x0 : x0 - x1;
   int dy = y1 > y0 ? y0 - y1 : y1 - y0;  // negative
   int sx = x0 < x1 ? 1 : -1;
   int sy = y0 < y1 ? 1 : -1;
   int err = dx + dy;
   for (;;) {
-    gfxPixel(x0, y0, c);
+    if (brush == 1) gfxPixel(x0, y0, c);
+    else gfxFill(x0, y0, brush, brush, c);
     if (x0 == x1 && y0 == y1) break;
     int e2 = 2 * err;
     if (e2 >= dy) {
@@ -57,18 +59,19 @@ void gfxLine(int x0, int y0, int x1, int y1, uint16_t c) {
   }
 }
 
-void gfxPlotLine(int x0, int y0, int x1, int y1, uint16_t c) {
-  gfxLine(x0, y0, x1, y1, c);
-  gfxLine(x0, y0 + 1, x1, y1 + 1, c);
-}
+void gfxLine(int x0, int y0, int x1, int y1, uint16_t c) { lineWithBrush(x0, y0, x1, y1, c, 1); }
+
+void gfxPlotLine(int x0, int y0, int x1, int y1, uint16_t c) { lineWithBrush(x0, y0, x1, y1, c, 2); }
 
 int gfxTextWidth(const char* s, int scale) {
+  if (scale < kMinTextScale) scale = kMinTextScale;
   int n = 0;
   while (s[n]) ++n;
   return n == 0 ? 0 : (n * (kFontW + 1) - 1) * scale;
 }
 
 void gfxText(int x, int y, const char* s, uint16_t c, int scale) {
+  if (scale < kMinTextScale) scale = kMinTextScale;
   for (; *s; ++s, x += (kFontW + 1) * scale) {
     int ch = (unsigned char)*s;
     if (ch < kFontFirst || ch > kFontLast) ch = '?';
