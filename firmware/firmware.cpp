@@ -13,10 +13,14 @@ namespace {
 const char* const kEncoderNames[kNumEncoders] = {"enc1", "enc2", "enc3", "enc4"};
 const char* const kButtonNames[kNumButtons] = {
     "btn_fx1", "btn_fx2", "btn_mod", "btn_arp", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine",
+    "btn_hold",
 };
+constexpr int kButtonOsc1Engine = MB_COUNT, kButtonOsc2Engine = MB_COUNT + 1, kButtonHold = MB_COUNT + 2;
 
 constexpr uint32_t kSaveDelayMs = 1000;  // save once the controls have been still this long
-constexpr uint8_t kStateVersion = 1;
+// Version 2: the LFO Shape control became a five-stop selector. Version 1
+// stored it as a pot position; that is converted on loading.
+constexpr uint8_t kStateVersion = 2;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
@@ -44,20 +48,25 @@ uint32_t stateWrite(uint8_t* dst) {
 }
 
 bool stateRead(const uint8_t* src, uint32_t len) {
-  if (len != kStateSize) return false;
+  if (len < 8 || len > kStateSize) return false;
   if (src[0] != 'S' || src[1] != 'Y' || src[2] != 'N' || src[3] != 'T') return false;
-  if (src[4] != kStateVersion || src[5] != (uint8_t)P_COUNT) return false;
+  uint8_t version = src[4];
+  if (version != 1 && version != kStateVersion) return false;
+  int count = src[5];  // parameters are only ever added at the end, so an older blob is a prefix
+  if (count < 1 || count > P_COUNT || len != 6u + (uint32_t)count * 2u + 2u) return false;
   uint16_t sum = 0;
   const uint8_t* p = src + 6;
-  for (int i = 0; i < P_COUNT; ++i) {
+  for (int i = 0; i < count; ++i) {
     uint16_t v = (uint16_t)(p[0] | (p[1] << 8));
     p += 2;
     sum = (uint16_t)(sum * 31u + v + 1u);
   }
   if ((uint16_t)(p[0] | (p[1] << 8)) != sum) return false;
   p = src + 6;
-  for (int i = 0; i < P_COUNT; ++i) {
-    gParams.set(i, p[0] | (p[1] << 8));
+  for (int i = 0; i < count; ++i) {
+    int v = p[0] | (p[1] << 8);
+    if (version == 1 && i == P_LFO_SHAPE) v = mapLfoShape((float)v * (1.0f / (float)kPotMax));
+    gParams.set(i, v);
     p += 2;
   }
   return true;
@@ -76,7 +85,7 @@ void init(float sampleRate) {
   gSaveMs = 0;
 }
 
-void process(float* out, int n) { gSynth.process(out, n); }
+void process(float* outL, float* outR, int n) { gSynth.process(outL, outR, n); }
 
 void midiByte(uint8_t b) { gMidi.byte(b); }
 
@@ -108,8 +117,16 @@ void controlSet(int index, int raw) {
     return;
   }
   int b = index - kFirstButton;
-  if (b < MB_COUNT) gUi.modeButton(b);
-  else gUi.oscEngineButton(b - MB_COUNT);
+  if (b < MB_COUNT) {
+    gUi.modeButton(b);
+  } else if (b == kButtonHold) {  // Hold latches; press again to let go
+    gParams.set(P_HOLD, gParams.step(P_HOLD) ? 0 : 1);
+    onParamChanged(P_HOLD);
+  } else {  // an oscillator's engine button steps through the engines
+    int id = b == kButtonOsc1Engine ? P_OSC1_ENGINE : P_OSC2_ENGINE;
+    gParams.set(id, (gParams.step(id) + 1) % ENG_COUNT);
+    onParamChanged(id);
+  }
 }
 
 void encoderTurn(int index, int delta) {
@@ -124,7 +141,10 @@ int controlGet(int index) {
   if (index < kFirstEncoder) return gParams.val[index];
   if (index < kFirstButton) return gEncoderPos[index - kFirstEncoder];
   int b = index - kFirstButton;
-  return b < MB_COUNT && gUi.mode() == b ? 1 : 0;
+  if (b < MB_COUNT) return gUi.mode() == b ? 1 : 0;
+  if (b == kButtonHold) return gParams.step(P_HOLD);
+  // an engine button is lit while its oscillator is on anything but the plain VA engine
+  return gParams.step(b == kButtonOsc1Engine ? P_OSC1_ENGINE : P_OSC2_ENGINE) != ENG_VA ? 1 : 0;
 }
 
 bool tick(uint32_t dtMs) {
@@ -141,6 +161,8 @@ bool tick(uint32_t dtMs) {
   return gUi.tick(dtMs);
 }
 
-const uint16_t* frame() { return gFrame; }
+const uint8_t* frame() { return gFrame; }
+
+void frameRow565(int y, uint16_t* dst) { gfxRow565(y, dst); }
 
 }  // namespace fw

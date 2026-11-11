@@ -13,6 +13,10 @@ const char* const kModeLabels[] = {"POLY", "MONO", "UNI"};
 const char* const kDestLabels[] = {"PITCH", "CUTOFF", "AMP", "PW"};
 const char* const kSubLabels[] = {"-1 OCT", "-2 OCT"};
 const char* const kSlopeLabels[] = {"12 dB", "24 dB"};
+const char* const kSyncLabels[] = {"FREE", "KEY"};
+const char* const kArpLabels[] = {"OFF", "UP", "DOWN", "UP-DOWN", "RANDOM", "PLAYED"};
+const char* const kEngineLabels[] = {"VA", "FM", "WAVETABLE", "PLUCK"};
+const char* const kOnOffLabels[] = {"OFF", "ON"};
 
 constexpr uint16_t pot(float x) { return (uint16_t)(x * (float)kPotMax + 0.5f); }
 
@@ -20,13 +24,24 @@ constexpr uint16_t pot(float x) { return (uint16_t)(x * (float)kPotMax + 0.5f); 
 
 const char* const kSectionNames[SEC_COUNT] = {
     "OSC 1", "OSC 2", "MIXER", "FILTER", "VOICE", "FILTER ENV", "AMP ENV", "LFO", "OUTPUT", "ENGINE",
+    "FX 1", "FX 2", "MOD", "ARP",
+};
+
+const char* const kEngineWaveName[ENG_COUNT] = {"WAVE", "RATIO", "TABLE", "EXCITER"};
+const char* const kEngineMacroName[ENG_COUNT] = {"PULSE WIDTH", "FM AMOUNT", "POSITION", "DAMPING"};
+const char* const kEngineColorName[ENG_COUNT] = {"", "FEEDBACK", "", "DECAY"};
+const char* const kEngineWaveLabels[ENG_COUNT][4] = {
+    {"SAW", "SQR", "TRI", "SIN"},
+    {"1:1", "2:1", "3:1", "3.5:1"},
+    {"TABLE 1", "TABLE 2", "TABLE 3", "TABLE 4"},
+    {"NOISE", "SOFT", "SNAP", "STRING"},
 };
 
 const char* const kLfoShapeNames[LFOS_COUNT] = {"SINE", "TRI", "SAW", "SQUARE", "RANDOM"};
 
 // Controller numbers: the usual MIDI number where one exists (1 mod wheel
 // and 64 sustain are handled separately), otherwise from the unassigned
-// ranges 20-31, 85-90 and 102-119.
+// ranges 20-31, 46-63, 85-90 and 102-119. Hold is 69, the standard "hold 2".
 const ParamDef kParams[P_COUNT] = {
     // key            name          section     kind     steps def        cc   unit          labels         intMin
     {"osc1_wave",     "WAVE",       SEC_OSC1,   PK_STEP, 4,    0,         20,  U_STEP,       kWaveLabels,   0},
@@ -58,13 +73,35 @@ const ParamDef kParams[P_COUNT] = {
     {"aenv_velocity", "VELOCITY",   SEC_AENV,   PK_POT,  0,    pot(0.6f), 90,  U_PERCENT,    nullptr,       0},
     {"lfo_rate",      "RATE",       SEC_LFO,    PK_POT,  0,    pot(0.7f), 76,  U_LFOHZ,      nullptr,       0},
     {"lfo_depth",     "DEPTH",      SEC_LFO,    PK_POT,  0,    pot(0.0f), 77,  U_PERCENT,    nullptr,       0},
-    {"lfo_shape",     "SHAPE",      SEC_LFO,    PK_POT,  0,    pot(0.0f), 108, U_LFOSHAPE,   nullptr,       0},
+    {"lfo_shape",     "SHAPE",      SEC_LFO,    PK_STEP, 5,    0,         108, U_STEP,       kLfoShapeNames, 0},
     {"lfo_destination", "DESTINATION", SEC_LFO, PK_STEP, 4,    0,         109, U_STEP,       kDestLabels,   0},
     {"volume",        "VOLUME",     SEC_OUTPUT, PK_POT,  0,    pot(0.75f), 7,  U_PERCENT,    nullptr,       0},
     {"unison_detune", "UNI DETUNE", SEC_ENGINE, PK_STEP, 51,   15,        110, U_INT_CENTS,  nullptr,       0},
     {"sub_octave",    "SUB OCTAVE", SEC_ENGINE, PK_STEP, 2,    0,         111, U_STEP,       kSubLabels,    0},
     {"bend_range",    "BEND RANGE", SEC_ENGINE, PK_STEP, 12,   1,         112, U_INT_SEMI,   nullptr,       1},
     {"filter_slope",  "FILT SLOPE", SEC_ENGINE, PK_STEP, 2,    1,         113, U_STEP,       kSlopeLabels,  0},
+    {"delay_time",    "TIME",       SEC_FX1,    PK_STEP, 101,  55,        46,  U_DLY_TIME,   nullptr,       0},
+    {"delay_tone",    "TONE",       SEC_FX1,    PK_STEP, 101,  60,        47,  U_INT_PERCENT, nullptr,      0},
+    {"delay_feedback", "FEEDBACK",  SEC_FX1,    PK_STEP, 101,  35,        48,  U_INT_PERCENT, nullptr,      0},
+    {"delay_mix",     "MIX",        SEC_FX1,    PK_STEP, 101,  0,         49,  U_INT_PERCENT, nullptr,      0},
+    {"chorus",        "CHORUS",     SEC_FX2,    PK_STEP, 101,  0,         50,  U_INT_PERCENT, nullptr,      0},
+    {"reverb_size",   "RVB SIZE",   SEC_FX2,    PK_STEP, 101,  50,        51,  U_RVB_TIME,   nullptr,       0},
+    {"reverb_tone",   "RVB TONE",   SEC_FX2,    PK_STEP, 101,  50,        52,  U_INT_PERCENT, nullptr,      0},
+    {"reverb_mix",    "RVB MIX",    SEC_FX2,    PK_STEP, 101,  0,         53,  U_INT_PERCENT, nullptr,      0},
+    {"lfo_fade",      "LFO FADE",   SEC_MOD,    PK_STEP, 101,  0,         54,  U_FADE_TIME,  nullptr,       0},
+    {"vel_cutoff",    "VEL>CUTOFF", SEC_MOD,    PK_STEP, 101,  0,         55,  U_INT_PERCENT, nullptr,      0},
+    {"fenv_pitch",    "ENV>PITCH",  SEC_MOD,    PK_STEP, 25,   0,         56,  U_INT_SEMI,   nullptr,       0},
+    {"lfo_sync",      "LFO SYNC",   SEC_MOD,    PK_STEP, 2,    0,         57,  U_STEP,       kSyncLabels,   0},
+    {"arp_mode",      "MODE",       SEC_ARP,    PK_STEP, 6,    0,         58,  U_STEP,       kArpLabels,    0},
+    {"arp_tempo",     "TEMPO",      SEC_ARP,    PK_STEP, 201,  80,        59,  U_BPM,        nullptr,       40},
+    {"arp_octaves",   "OCTAVES",    SEC_ARP,    PK_STEP, 4,    0,         60,  U_INT_PLAIN,  nullptr,       1},
+    {"arp_gate",      "GATE",       SEC_ARP,    PK_STEP, 20,   9,         61,  U_GATE,       nullptr,       0},
+    {"osc1_color",    "COLOR",      SEC_OSC1,   PK_STEP, 101,  0,         62,  U_INT_PERCENT, nullptr,      0},
+    {"osc2_macro",    "MACRO",      SEC_OSC2,   PK_STEP, 101,  0,         63,  U_INT_PERCENT, nullptr,      0},
+    {"osc2_color",    "COLOR",      SEC_OSC2,   PK_STEP, 101,  0,         114, U_INT_PERCENT, nullptr,      0},
+    {"osc1_engine",   "ENGINE",     SEC_OSC1,   PK_STEP, 4,    0,         115, U_STEP,       kEngineLabels, 0},
+    {"osc2_engine",   "ENGINE",     SEC_OSC2,   PK_STEP, 4,    0,         116, U_STEP,       kEngineLabels, 0},
+    {"hold",          "HOLD",       SEC_VOICE,  PK_STEP, 2,    0,         69,  U_STEP,       kOnOffLabels,  0},
 };
 
 Params gParams;
@@ -89,6 +126,11 @@ bool Params::setFromCC(int id, int value7) {
   value7 = clampi(value7, 0, 127);
   if (d.kind == PK_STEP) return set(id, value7 * d.steps / 128);
   return set(id, (value7 * kPotMax + 63) / 127);
+}
+
+float Params::frac(int id) const {
+  int n = kParams[id].steps;
+  return n > 1 ? (float)val[id] / (float)(n - 1) : 0.0f;
 }
 
 int paramForCC(int cc) {
@@ -128,5 +170,11 @@ float mapDriveGain(float n) { return 1.0f + 15.0f * n * n; }
 float mapVolume(float n) { return 1.4f * n * n; }
 
 int mapLfoShape(float n) { return clampi((int)(n * (float)LFOS_COUNT), 0, LFOS_COUNT - 1); }
+
+float mapDelayTime(float f) { return 0.02f * exp2f_(f * 5.2288f); }
+
+float mapReverbTime(float f) { return 0.3f * exp2f_(f * 4.737f); }
+
+float mapFadeTime(float f) { return f < 0.005f ? 0.0f : 0.05f * exp2f_(f * 6.644f); }
 
 }  // namespace fw

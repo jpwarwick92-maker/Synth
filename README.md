@@ -8,7 +8,7 @@ and the panel layout can be played before any hardware exists.
 
 | Path | What it is |
 |---|---|
-| `firmware/` | The firmware core in portable C++: sound engine, MIDI handling, the parameter table, control logic, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
+| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
 | `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer and plays its audio. |
@@ -29,7 +29,12 @@ Rules for code in `firmware/`:
 - no memory allocation, at start-up or while playing;
 - audio in blocks of at most 128 samples, at any sample rate;
 - only `<stdint.h>` and `<stddef.h>`; maths comes from `fw_math.h`;
-- the display is drawn with pixels, lines, fills and a bitmap font only.
+- the display is drawn with pixels, lines, fills and a bitmap font only, in a fixed
+  set of colours (the frame is 4 bits per pixel), and no text smaller than 2 mm tall
+  on the real display (font scale 2);
+- large tables and delay lines are 16-bit where that is inaudible, to fit the
+  Teensy's 1 MB of RAM. They stay in RAM: reading them from flash in the audio loop
+  is too slow.
 
 ## Build and run
 
@@ -51,9 +56,15 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
 
 ## Using the page
 
-- Knobs and faders: drag up and down. Hold Shift for fine movement.
-- Selectors: drag, or tap a stop's label.
-- Encoders: drag to turn, double-tap to push.
+- Knobs, selectors and encoders: press and circle the pointer round the control and it
+  turns with you. The **Knobs** button switches to dragging up and down instead.
+- Scrolling over any control also moves it (two fingers on a trackpad, or a mouse wheel).
+- Hold Shift for fine movement.
+- Selectors: you can also tap a stop's label. Encoders: double-tap to push.
+- Faders follow the pointer along their slot.
+- **Zoom display** shows the display enlarged with every pixel visible. On the panel it
+  is drawn at its true physical size, which on most screens is fewer pixels than the real
+  320x240 display has.
 - **1:1 size** shows the panel at true physical size. It asks once for calibration
   against a bank card held to the screen.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
@@ -61,14 +72,49 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
 
 ## What the prototype covers
 
-The whole A2 panel driving the core voice: two oscillators (saw, square with pulse
-width, triangle, sine) plus sub and noise, mixer, multimode filter (12 or 24 dB) with
-drive, filter and amp envelopes, one LFO, glide, and poly, mono and unison modes.
-The display shows a home screen with a live scope and a visual for each control as it
-moves. Of the six soft-control modes only **Engine** is live; the rest are placeholders.
+The whole A2 panel driving the voice: two oscillators plus sub and noise, mixer,
+multimode filter (12 or 24 dB) with drive, filter and amp envelopes, one LFO, glide,
+and poly, mono and unison modes. The display shows a home screen with a live scope and
+a visual for each control as it moves.
 
-Not built yet: effects, arpeggiator, the FM, wavetable and pluck engines, patch storage,
-and the iPad version (Safari on iPad has no Web MIDI, so it needs a small wrapper app).
+**Oscillator engines.** Each oscillator has an Engine button that steps through four
+engines. The Wave selector and the timbre controls mean something different under each:
+
+| Engine | Wave selector | Macro | Color |
+|---|---|---|---|
+| VA | saw, square, triangle, sine | pulse width | none |
+| FM | ratio 1:1, 2:1, 3:1, 3.5:1 | FM amount | feedback |
+| Wavetable | table 1 to 4 | position in the table | none |
+| Pluck | exciter: noise, soft, snap, string | damping | decay |
+
+Oscillator 1's Macro is the panel knob. Its Color, and oscillator 2's Macro and Color,
+are on page 2 of the Engine mode.
+
+**Soft-control modes.** A mode button puts four values on the encoders. Pressing the
+lit button steps to the mode's next page if it has one, then returns home. Pushing an
+encoder restores its default.
+
+| Button | Page | Encoders |
+|---|---|---|
+| FX 1 | Delay | time, tone, feedback, mix |
+| FX 2 | Chorus + reverb | chorus, reverb size, reverb tone, reverb mix |
+| Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
+| Arp | Arp | mode, tempo, octaves, gate |
+| Engine | 1: Voice | unison detune, sub octave, bend range, filter slope |
+| Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
+| Patch | not built yet | |
+
+**Arpeggiator and Hold.** The arp plays the held notes as sixteenth notes: up, down,
+up-down, random or as played, over 1 to 4 octaves. **Hold** (a ninth button, added to
+the layout while prototyping) keeps notes sounding after the keys are let go; the next
+chord replaces them. It works with the arp on or off. While the arp runs, the sustain
+pedal acts as a temporary Hold.
+
+**Output** is stereo once the chorus or reverb is on. With every effect off, both
+channels carry exactly the dry signal.
+
+Not built yet: patch storage, MIDI clock sync for the arp, and the iPad version
+(Safari on iPad has no Web MIDI, so it needs a small wrapper app).
 
 ## Publishing
 

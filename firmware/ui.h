@@ -17,8 +17,9 @@ class Ui {
   // A panel control or a MIDI controller moved this parameter: show its visual.
   void paramChanged(int id);
 
-  void modeButton(int which);       // one of the six mode buttons was pressed
-  void oscEngineButton(int osc);    // the engine button of oscillator 0 or 1 was pressed
+  // One of the six mode buttons was pressed. A mode can have several pages:
+  // pressing its lit button steps through them, then returns home.
+  void modeButton(int which);
   void encoderTurn(int enc, int delta);
   void encoderPush(int enc);
 
@@ -26,18 +27,20 @@ class Ui {
   bool tick(uint32_t dtMs);
 
   int mode() const { return mode_; }
+  int page() const { return page_; }
   int popupParam() const { return popupParam_; }
 
  private:
   void drawHome();
   void drawModePage();
   void drawParamPopup(int id);
-  void drawEnginePopup(int osc);
+  int pageParam(int enc) const;
 
   int8_t mode_;
+  int8_t page_;
   int16_t popupParam_;   // -1 = none
-  int8_t popupOsc_;      // -1 = none
   uint32_t popupMs_;
+  uint8_t burst_[4];     // encoder clicks since the last tick, for speeding up fast turns
   bool dirty_;
 };
 

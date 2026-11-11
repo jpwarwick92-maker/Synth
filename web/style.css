@@ -58,7 +58,14 @@ button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft)
 #stage { flex: 1 1 auto; overflow: auto; padding: 14px; min-height: 0; }
 #panelwrap { position: relative; width: 100%; max-width: 1700px; margin: 0 auto; }
 #panel { display: block; width: 100%; height: auto; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-#lcd { position: absolute; image-rendering: pixelated; background: #000; pointer-events: none; }
+#lcd { position: absolute; background: #000; pointer-events: none; }
+#zoom {
+  position: fixed; right: 14px; bottom: 150px; z-index: 5;
+  padding: 8px; background: #0a0b0d; border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+}
+#zoom[hidden] { display: none; }
+#lcd-zoom { display: block; width: 640px; max-width: calc(100vw - 46px); height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; }
 
 .plate { fill: var(--plate); }
 .section { fill: none; stroke: var(--line); stroke-width: .35; }

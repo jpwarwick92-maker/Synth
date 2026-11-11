@@ -83,13 +83,25 @@ async function press(page, id) {
   await page.mouse.down();
   await page.mouse.up();
 }
-// Counts display pixels close to a colour, to tell screens apart.
-const lcdCount = (page, rgb, y0 = 0, y1 = 240) => page.evaluate(([c, a, b]) => {
-  const d = document.getElementById('lcd').getContext('2d').getImageData(0, a, 320, b - a).data;
-  let n = 0;
-  for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - c[0]) < 12 && Math.abs(d[i + 1] - c[1]) < 12 && Math.abs(d[i + 2] - c[2]) < 12) n++;
-  return n;
-}, [rgb, y0, y1]);
+// Counts pixels close to a colour in the firmware's own 320x240 frame, to tell screens apart.
+const lcdCount = (page, rgb, y0 = 0, y1 = 240) => page.evaluate(([c, a, b]) => window.__synth.lcdCount(c, a, b), [rgb, y0, y1]);
+// Moves the pressed mouse round a control's centre from one clock angle to another (degrees, 0 = up).
+async function arc(page, id, fromDeg, toDeg, radius = 20) {
+  const c = await centre(page, id);
+  const at = (deg) => ({ x: c.x + radius * Math.sin((deg * Math.PI) / 180), y: c.y - radius * Math.cos((deg * Math.PI) / 180) });
+  const p0 = at(fromDeg);
+  await page.mouse.move(p0.x, p0.y);
+  await page.mouse.down();
+  const steps = Math.max(4, Math.round(Math.abs(toDeg - fromDeg) / 6));
+  for (let i = 1; i <= steps; i++) {
+    const p = at(fromDeg + ((toDeg - fromDeg) * i) / steps);
+    await page.mouse.move(p.x, p.y);
+  }
+  await page.mouse.up();
+}
+const setKnobs = async (page, mode) => {
+  if (await page.evaluate(() => window.__synth.knobMode) !== mode) await page.click('#knob-mode');
+};
 const AMBER = [0xe8, 0xa3, 0x3d], TEAL = [0x7f, 0xe0, 0xc4], WHITE = [0xed, 0xed, 0xed];
 
 try {
@@ -101,11 +113,11 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 12, '12 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 7, '7 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.knob') === 11, '11 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 8, '8 rotary selectors', String(await count('#panel .ctl.selector')));
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
-    check(await count('#panel .ctl.button') === 8, '8 buttons', String(await count('#panel .ctl.button')));
+    check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
     check(await count('#rear .ctl.knob') === 1, 'rear-panel volume knob');
 
     // the display sits where the layout says, at 4:3
@@ -137,7 +149,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 44, '44 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 45, '45 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -150,9 +162,85 @@ try {
     check((await page.locator('#midi-status').textContent()).startsWith('Keyboard:'), 'AC10 keyboard status is shown');
   }
 
-  // ------------------------------------------------------------------ mouse
-  section('AC12  every control type works with a mouse; AC6 moving one shows its visual');
+  // ------------------------------------------------------------------ display rendering
+  section('display: drawn on the screen\'s own pixel grid, with a zoomed view');
   {
+    const grid = await page.evaluate(() => {
+      const c = document.getElementById('lcd');
+      return { w: c.width, h: c.height, cw: c.clientWidth, ch: c.clientHeight, dpr: devicePixelRatio };
+    });
+    check(grid.w === Math.round(grid.cw * grid.dpr) && grid.h === Math.round(grid.ch * grid.dpr),
+      'the visible display has one canvas pixel per screen pixel (nothing dropped by scaling)', JSON.stringify(grid));
+    // Hands-on finding: shown smaller than 320 px wide, nearest-pixel scaling
+    // lost whole columns. Every lit column of the title must survive.
+    const lost = await page.evaluate(() => {
+      const c = document.getElementById('lcd'), ctx = c.getContext('2d');
+      const d = ctx.getImageData(0, 0, c.width, Math.round(c.height * 30 / 240)).data;
+      const lit = new Array(c.width).fill(false);
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 40) lit[(i / 4) % c.width] = true;
+      // title "001 INIT" spans frame columns 114..206; map to canvas columns
+      const a = Math.ceil(116 * c.width / 320), b = Math.floor(204 * c.width / 320);
+      let dark = 0, run = 0, longest = 0;
+      for (let x = a; x <= b; x++) { if (!lit[x]) { dark++; run++; longest = Math.max(longest, run); } else run = 0; }
+      return { dark, longest, width: b - a + 1, canvas: c.width };
+    });
+    check(lost.canvas < 320, 'this check runs with the display shown smaller than its 320 pixels', JSON.stringify(lost));
+    check(lost.dark < lost.width * 0.5, 'the title is still legible when the display is shown small', JSON.stringify(lost));
+    await page.click('#zoom-toggle');
+    const zoom = await page.evaluate(() => {
+      const z = document.getElementById('lcd-zoom'), d = z.getContext('2d').getImageData(0, 0, 640, 60).data;
+      let amber = 0;
+      for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - 0xe8) < 12 && Math.abs(d[i + 1] - 0xa3) < 12) amber++;
+      return { shown: !document.getElementById('zoom').hidden, amber };
+    });
+    check(zoom.shown && zoom.amber > 400, 'Zoom display shows the frame at 2x with crisp pixels', JSON.stringify(zoom));
+    await page.screenshot({ path: path.join(shotDir, 'page_zoom.png') });
+    await page.click('#zoom-toggle');
+    check(await page.locator('#zoom').isHidden(), 'Zoom display toggles off');
+  }
+
+  // ------------------------------------------------------------------ turning with the pointer
+  section('AC12  knobs, selectors and encoders turn with the pointer (default)');
+  {
+    check(await page.evaluate(() => window.__synth.knobMode) === 'turn', 'turning is the default');
+    const v0 = await pos(page, 'filter_resonance');
+    await arc(page, 'filter_resonance', -90, 0);          // a quarter turn clockwise
+    const v1 = await pos(page, 'filter_resonance');
+    check(Math.abs(v1 - v0 - 1365) < 70, 'knob: a quarter turn of the pointer is a quarter turn of the knob', `${v0} -> ${v1}`);
+    await arc(page, 'filter_resonance', 0, -90);          // and back
+    const v2 = await pos(page, 'filter_resonance');
+    check(Math.abs(v2 - v0) < 70, 'knob: turning back returns to where it started', `${v0} -> ${v1} -> ${v2}`);
+    await arc(page, 'filter_resonance', 0, 720, 24);      // two full circles: stops at the end, does not wrap
+    check(await pos(page, 'filter_resonance') === 4095, 'knob: stops at the end of its travel', String(await pos(page, 'filter_resonance')));
+    await page.evaluate(() => window.__synth.midi([0xb0, 71, 26]));   // put it back near its default
+
+    await arc(page, 'osc1_octave', 0, 80, 18);            // point at +2
+    check(await pos(page, 'osc1_octave') === 4, 'selector: points at the stop the cursor is nearest', String(await pos(page, 'osc1_octave')));
+    await arc(page, 'osc1_octave', 80, 0, 18);            // back to 0
+    check(await pos(page, 'osc1_octave') === 2, 'selector: follows the cursor back', String(await pos(page, 'osc1_octave')));
+
+    const e0 = await pos(page, 'enc2');
+    await arc(page, 'enc2', -45, 45);                     // 90 degrees = 6 clicks
+    const turned = ((await pos(page, 'enc2')) - e0 + 65536) % 65536;
+    check(turned === 5 || turned === 6, 'encoder: one click per 15 degrees of turn', String(turned));
+
+    // scrolling over a control: a trackpad sends many small amounts
+    const s0 = await pos(page, 'lfo_rate');
+    const c = await centre(page, 'lfo_rate');
+    await page.mouse.move(c.x, c.y);
+    for (let i = 0; i < 30; i++) await page.mouse.wheel(0, -4);
+    const s1 = await pos(page, 'lfo_rate');
+    check(Math.abs(s1 - s0 - 410) < 40, 'scrolling 120 px over a knob moves it a tenth of its travel, however the scroll is chopped up', `${s0} -> ${s1}`);
+    await page.mouse.wheel(0, 120);
+    check(Math.abs((await pos(page, 'lfo_rate')) - s0) < 40, 'scrolling back returns it');
+    await sleep(1800);
+  }
+
+  // ------------------------------------------------------------------ dragging up and down
+  section('AC12  the same controls with "drag up/down" chosen; AC6 moving one shows its visual');
+  {
+    await setKnobs(page, 'updown');
+    check((await page.locator('#knob-mode').textContent()).includes('up/down'), 'the button says which way is active');
     const before = await pos(page, 'filter_cutoff');
     await drag(page, 'filter_cutoff', -60, {
       hold: async () => {
@@ -183,10 +271,10 @@ try {
     await press(page, 'btn_engine');
     await sleep(150);
     check(await page.locator('[data-id="btn_engine"]').evaluate((e) => e.classList.contains('lit')), 'Engine button lights');
-    const shown = await lcdCount(page, WHITE, 36, 70);
+    const shown = await lcdCount(page, WHITE, 40, 70);
     check(shown > 100, 'Engine page shows encoder values');
     await page.screenshot({ path: path.join(shotDir, 'page_engine.png') });
-    const snap = () => page.evaluate(() => document.getElementById('lcd').toDataURL());
+    const snap = () => page.evaluate(() => window.__synth.lcdHash());
     const a = await snap();
     await drag(page, 'enc1', -60);                      // five clicks clockwise
     await sleep(150);
@@ -203,13 +291,31 @@ try {
     await sleep(150);
     check(await page.locator('[data-id="btn_fx1"]').evaluate((e) => e.classList.contains('lit')), 'FX 1 lights');
     check(!(await page.locator('[data-id="btn_engine"]').evaluate((e) => e.classList.contains('lit'))), 'Engine light goes out');
+    check(await lcdCount(page, WHITE, 44, 70) > 100, 'FX 1 is a live page with values on the encoders');
+    await page.screenshot({ path: path.join(shotDir, 'page_fx1.png') });
     await press(page, 'btn_fx1');
     await sleep(150);
     check(!(await page.locator('[data-id="btn_fx1"]').evaluate((e) => e.classList.contains('lit'))), 'pressing the lit button returns home');
+
+    const lit = (id) => page.locator(`[data-id="${id}"]`).evaluate((e) => e.classList.contains('lit'));
     await press(page, 'btn_osc1_engine');
     await sleep(150);
-    check(await lcdCount(page, WHITE, 90, 125) > 500, 'oscillator engine button shows "VA only"');
+    check(await lit('btn_osc1_engine'), 'an oscillator engine button lights when its engine is no longer VA');
+    check(await lcdCount(page, WHITE, 0, 44) > 60, 'and the display names the engine');
+    for (let i = 0; i < 3; i++) { await press(page, 'btn_osc1_engine'); await sleep(60); }
+    await sleep(150);
+    check(!(await lit('btn_osc1_engine')), 'three more presses come back round to VA');
+
+    await press(page, 'btn_hold');
+    await sleep(150);
+    check(await lit('btn_hold'), 'Hold lights when pressed');
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x80, 60, 0]));   // a key pressed and let go
     await sleep(1700);
+    check(await lcdCount(page, TEAL, 222, 236) === 64, 'with Hold on, a note keeps sounding after its key is released', String(await lcdCount(page, TEAL, 222, 236)));
+    await press(page, 'btn_hold');
+    await sleep(900);
+    check(!(await lit('btn_hold')) && await lcdCount(page, TEAL, 222, 236) === 0, 'Hold off lets it go');
+    await sleep(900);
   }
 
   // ------------------------------------------------------------------ MIDI
@@ -232,7 +338,7 @@ try {
     await sleep(500);
     const loud = await lcdCount(page, TEAL, 40, 208);
     check(loud > quiet + 150, 'Test note: the scope shows a waveform', `${quiet} -> ${loud}`);
-    check(await lcdCount(page, TEAL, 220, 232) === 4 * 49, 'Test note: four voices light in the status strip', String(await lcdCount(page, TEAL, 220, 232)));
+    check(await lcdCount(page, TEAL, 222, 236) === 4 * 64, 'Test note: four voices light in the status strip', String(await lcdCount(page, TEAL, 222, 236)));
     await page.screenshot({ path: path.join(shotDir, 'page_playing.png') });
     const box = await page.locator('#mod').boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height - 4);
@@ -250,7 +356,7 @@ try {
     check(bendValue === 0.5, 'bend wheel springs back to centre', String(bendValue));
     await page.click('#panic');
     await sleep(300);
-    check(await lcdCount(page, TEAL, 220, 232) === 0, 'AC10 Panic silences every voice', String(await lcdCount(page, TEAL, 220, 232)));
+    check(await lcdCount(page, TEAL, 222, 236) === 0, 'AC10 Panic silences every voice', String(await lcdCount(page, TEAL, 222, 236)));
     check(await page.locator('#test-note').getAttribute('aria-pressed') === 'false', 'Panic clears Test note');
   }
 
@@ -290,7 +396,7 @@ try {
     const w = (await again.page.locator('#panel').boundingBox()).width;
     check(Math.abs(w - 464 * 4.25) < 1, '1:1 panel is 464 mm at the calibrated scale', String(w));
     const a = await again.page.locator('[data-id="lfo_rate"] .cap').boundingBox(), b = await again.page.locator('[data-id="lfo_depth"] .cap').boundingBox();
-    check(Math.abs((b.x - a.x) / 4.25 - 24) < 0.1, 'two knobs 24 mm apart in the file are 24 mm apart on screen', String((b.x - a.x) / 4.25));
+    check(Math.abs((b.x - a.x) / 4.25 - 22) < 0.1, 'two knobs 22 mm apart in the file are 22 mm apart on screen', String((b.x - a.x) / 4.25));
     check(await again.page.evaluate(() => { const s = document.getElementById('stage'); return s.scrollWidth > s.clientWidth; }), 'the 1:1 panel can be panned');
     await again.page.click('#view-toggle');
     check((await again.page.locator('#panel').boundingBox()).width < 1500, 'toggling back fits the panel to the window');

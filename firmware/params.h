@@ -45,11 +45,41 @@ enum ParamId : uint8_t {
   P_LFO_DEST,
   // ---- rear panel ----
   P_VOLUME,
-  // ---- soft controls (Engine page) ----
+  // ---- soft controls. New ones are only ever added at the end, so saved
+  // state from an older build still lines up. ----
+  // Engine page 1: voice
   P_UNI_DETUNE,
   P_SUB_OCTAVE,
   P_BEND_RANGE,
   P_FILT_SLOPE,
+  // FX 1: delay
+  P_DLY_TIME,
+  P_DLY_TONE,
+  P_DLY_FDBK,
+  P_DLY_MIX,
+  // FX 2: chorus and reverb
+  P_CHORUS,
+  P_RVB_SIZE,
+  P_RVB_TONE,
+  P_RVB_MIX,
+  // Mod
+  P_LFO_FADE,
+  P_VEL_CUTOFF,
+  P_FENV_PITCH,
+  P_LFO_SYNC,
+  // Arp
+  P_ARP_MODE,
+  P_ARP_TEMPO,
+  P_ARP_OCTAVES,
+  P_ARP_GATE,
+  // Engine page 2: oscillator engines
+  P_OSC1_COLOR,
+  P_OSC2_MACRO,
+  P_OSC2_COLOR,
+  // set by buttons
+  P_OSC1_ENGINE,
+  P_OSC2_ENGINE,
+  P_HOLD,
 
   P_COUNT,
   P_PANEL_COUNT = P_UNI_DETUNE,  // params with their own physical control
@@ -66,6 +96,10 @@ enum Section : uint8_t {
   SEC_LFO,
   SEC_OUTPUT,
   SEC_ENGINE,
+  SEC_FX1,
+  SEC_FX2,
+  SEC_MOD,
+  SEC_ARP,
   SEC_COUNT,
 };
 
@@ -82,9 +116,15 @@ enum Unit : uint8_t {
   U_TIME,       // envelope time
   U_LFOHZ,      // LFO rate
   U_GLIDE,      // glide time
-  U_LFOSHAPE,   // one of five shapes
   U_INT_CENTS,  // integer steps shown as cents
   U_INT_SEMI,   // integer steps shown as semitones
+  U_INT_PERCENT,  // stepped 0..100%
+  U_INT_PLAIN,    // integer
+  U_BPM,
+  U_GATE,         // arp gate, 5..100%
+  U_DLY_TIME,
+  U_RVB_TIME,
+  U_FADE_TIME,
 };
 
 enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN };
@@ -92,6 +132,8 @@ enum FilterType : uint8_t { FILT_LP, FILT_BP, FILT_HP };
 enum VoiceMode : uint8_t { MODE_POLY, MODE_MONO, MODE_UNI };
 enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_PW };
 enum LfoShape : uint8_t { LFOS_SINE, LFOS_TRI, LFOS_SAW, LFOS_SQUARE, LFOS_RANDOM, LFOS_COUNT };
+enum Engine : uint8_t { ENG_VA, ENG_FM, ENG_WAVETABLE, ENG_PLUCK, ENG_COUNT };
+enum ArpMode : uint8_t { ARP_OFF, ARP_UP, ARP_DOWN, ARP_UPDOWN, ARP_RANDOM, ARP_PLAYED };
 
 constexpr int kPotMax = 4095;
 
@@ -122,6 +164,8 @@ struct Params {
 
   float norm(int id) const { return (float)val[id] * (1.0f / (float)kPotMax); }
   int step(int id) const { return val[id]; }
+  // A stepped parameter as a fraction of its range, 0..1.
+  float frac(int id) const;
 };
 
 extern Params gParams;
@@ -140,6 +184,15 @@ float mapDetuneCents(float n);    // -100 .. +100 cents, fine near centre
 float mapPulseWidth(float n);     // 0.5 .. 0.95
 float mapDriveGain(float n);      // 1 .. 16
 float mapVolume(float n);         // output gain
-int mapLfoShape(float n);         // LfoShape
+int mapLfoShape(float n);         // LfoShape from an old pot position (the Shape control was once a knob)
+float mapDelayTime(float f);      // 20 ms .. 750 ms
+float mapReverbTime(float f);     // 0.3 .. 8 s
+float mapFadeTime(float f);       // 0 .. 5 s
+
+// What an oscillator's Wave selector, Macro and Color mean under each engine.
+extern const char* const kEngineWaveName[ENG_COUNT];
+extern const char* const kEngineMacroName[ENG_COUNT];
+extern const char* const kEngineColorName[ENG_COUNT];   // "" = this engine has none
+extern const char* const kEngineWaveLabels[ENG_COUNT][4];
 
 }  // namespace fw
