@@ -37,7 +37,7 @@ struct Synth::Patch {
   float k, comp;         // filter damping, resonance loudness trim
   float envAmt;          // octaves
   float keytrack;        // 0..1
-  float driveGain, driveMakeup;
+  DriveSettings drive;
   float glideCoef;       // 1 = no glide
   EnvCoef aenv, fenv;
   float velAmt;
@@ -709,8 +709,7 @@ void Synth::derive(Patch& p, int len) {
   p.velCut = gParams.frac(P_VEL_CUTOFF) * 4.0f;
   float dn = sm[P_DRIVE];
   p.driveOn = dn > 0.002f;
-  p.driveGain = mapDriveGain(dn);
-  p.driveMakeup = 1.0f / (1.0f + 0.09f * (p.driveGain - 1.0f));
+  p.drive = mapDrive(dn);
 
   // ---- voice ----
   float glide = mapGlideTime(sm[P_GLIDE]);
@@ -853,10 +852,11 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* out, int n) 
     advance(v.sub, incSub);
     if (onNoise) x += nextNoise(v.rng) * m4;
 
-    if (p.driveOn) x = tanhf_(x * p.driveGain) * p.driveMakeup;
+    if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.pre) * p.drive.preTrim - x);
     x *= p.comp;
     if (p.slope24) x = svfTick(v.f1, x, c1, p.ftype);
     x = svfTick(v.f2, x, c2, p.ftype);
+    if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.post) * p.drive.postTrim - x);  // after the filter: these harmonics stay
 
     out[i] += x * ae * amp;
   }

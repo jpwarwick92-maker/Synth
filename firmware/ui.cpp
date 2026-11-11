@@ -368,38 +368,123 @@ float filterStage(float w, float k, int type) {
   }
 }
 
-// The filter's frequency response, 20 Hz to 20 kHz, as it is set right now.
-void drawFilterCurve() {
-  const int x0 = 8, w = 304, y0 = 54, h = 156;
-  const float topDb = 18.0f, rangeDb = 66.0f;
-  int zero = y0 + (int)(topDb / rangeDb * (float)h);
-  gfxHLine(x0, zero, w, kGrid);
+// ---- the filter pictures ----
+// All share one frame: frequency left to right, 20 Hz to 20 kHz, level up and down.
+constexpr int kFx0 = 8, kFw = 304, kFy0 = 54, kFh = 156;
+constexpr float kFTopDb = 18.0f, kFRangeDb = 66.0f;
+
+int freqX(float hz) { return kFx0 + clampi((int)(log2f_(maxf(hz, 20.0f) / 20.0f) * 0.1f * (float)kFw), 0, kFw - 1); }
+
+void drawFilterAxes() {
+  int zero = kFy0 + (int)(kFTopDb / kFRangeDb * (float)kFh);
+  gfxHLine(kFx0, zero, kFw, kGrid);
   static const float kMarks[3] = {100.0f, 1000.0f, 10000.0f};
   static const char* const kMarkNames[3] = {"100", "1k", "10k"};
   for (int i = 0; i < 3; ++i) {
-    int x = x0 + (int)(log2f_(kMarks[i] / 20.0f) * 0.1f * (float)w);
-    gfxVLine(x, y0, h, kGrid);
-    gfxTextCentre(x, y0 + h + 4, kMarkNames[i], kGrey, 2);
+    int x = freqX(kMarks[i]);
+    gfxVLine(x, kFy0, kFh, kGrid);
+    gfxTextCentre(x, kFy0 + kFh + 4, kMarkNames[i], kGrey, 2);
   }
+}
 
-  float fc = mapCutoffHz(gParams.norm(P_CUTOFF));
+// The filter's response with its cutoff at `fc`, everything else as set now.
+void plotFilter(float fc, Colour c) {
   float q = mapResonanceQ(gParams.norm(P_RESONANCE));
   float k = 1.0f / q;
   float comp = q > 1.0f ? 1.0f / sqrtf_(q) : 1.0f;
   int type = gParams.step(P_FILT_TYPE);
   bool slope24 = gParams.step(P_FILT_SLOPE) == 1;
-
   int py = 0;
-  for (int px = 0; px < w; ++px) {
-    float f = 20.0f * exp2f_(10.0f * (float)px / (float)(w - 1));
+  for (int px = 0; px < kFw; ++px) {
+    float f = 20.0f * exp2f_(10.0f * (float)px / (float)(kFw - 1));
     float wn = f / fc;
     float mag = filterStage(wn, k, type) * comp;
     if (slope24) mag *= filterStage(wn, 1.41421356f, type);
     float db = 6.0206f * log2f_(maxf(mag, 1e-6f));
-    int yy = clampi(y0 + (int)((topDb - db) / rangeDb * (float)h), y0, y0 + h - 2);
-    plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
+    int yy = clampi(kFy0 + (int)((kFTopDb - db) / kFRangeDb * (float)kFh), kFy0, kFy0 + kFh - 2);
+    plotColumn(kFx0 + px, px > 0 ? py : yy, yy, c);
     py = yy;
   }
+}
+
+float cutoffNow() { return mapCutoffHz(gParams.norm(P_CUTOFF)); }
+float clampCutoff(float hz) { return clampf(hz, 20.0f, 20480.0f); }
+
+// Cutoff, Resonance, Type: the response as it is set right now.
+void drawFilterCurve() {
+  drawFilterAxes();
+  plotFilter(cutoffNow(), kTeal);
+}
+
+// Env amount: where the filter rests, where the envelope pushes it at its
+// peak, and an arrow for the sweep between the two.
+void drawFilterEnvAmount() {
+  drawFilterAxes();
+  float rest = cutoffNow();
+  float oct = mapEnvAmtOct(gParams.norm(P_FILT_ENV_AMT));
+  float peak = clampCutoff(rest * exp2f_(oct));
+  if (oct == 0.0f) {
+    plotFilter(rest, kTeal);
+    gfxTextCentre(160, kFy0 + 2, "NO SWEEP", kGrey, 2);
+    return;
+  }
+  plotFilter(rest, kDimTeal);
+  plotFilter(peak, kAmber);
+  int x0 = freqX(rest), x1 = freqX(peak), y = kFy0 + 6;
+  if (x1 == x0) {  // the cutoff is already as far as it goes that way: nothing left to sweep
+    gfxTextCentre(160, kFy0 + 2, oct > 0.0f ? "CUTOFF ALREADY OPEN" : "CUTOFF ALREADY SHUT", kGrey, 2);
+    return;
+  }
+  int dir = x1 > x0 ? 1 : -1;
+  gfxFill(x0 < x1 ? x0 : x1, y, (x1 > x0 ? x1 - x0 : x0 - x1) + 1, 2, kAmber);
+  for (int i = 1; i <= 5; ++i) gfxFill(x1 - dir * i, y - i, 2, 2 * i + 2, kAmber);  // arrow head at the peak end
+  gfxFill(x0, y - 4, 2, 10, kAmber);                                               // a tick where it rests
+}
+
+// Keytrack: the response for a low, a middle and a high key. With no
+// tracking the three sit on top of each other; with full tracking the
+// filter moves two octaves for two octaves of keys.
+void drawFilterKeytrack() {
+  drawFilterAxes();
+  float kt = gParams.norm(P_KEYTRACK);
+  float mid = cutoffNow();
+  float low = clampCutoff(mid * exp2f_(-2.0f * kt)), high = clampCutoff(mid * exp2f_(2.0f * kt));
+  plotFilter(low, kDimTeal);
+  plotFilter(high, kDimTeal);
+  plotFilter(mid, kTeal);
+  int xl = freqX(low), xm = freqX(mid), xh = freqX(high);
+  if (xh - xl < 60) {
+    gfxTextCentre(160, kFy0 + 2, kt < 0.02f ? "SAME FOR EVERY KEY" : "LOW AND HIGH KEYS", kGrey, 2);
+    return;
+  }
+  gfxTextCentre(clampi(xl, 20, 300), kFy0 + 2, "C2", kGrey, 2);
+  gfxTextCentre(clampi(xh, 20, 300), kFy0 + 2, "C6", kGrey, 2);
+  if (xm - xl > 44 && xh - xm > 44) gfxTextCentre(xm, kFy0 + 2, "C4", kTeal, 2);
+}
+
+// Drive: a smooth wave going in (dim) and what the two saturators make of
+// it (bright). The squarer it gets, the more harmonics are added.
+void drawFilterDrive() {
+  const int x0 = 10, w = 300, mid = 132, amp = 62;
+  gfxHLine(x0, mid, w, kGrid);
+  DriveSettings d = mapDrive(gParams.norm(P_DRIVE));
+  const float kIn = 0.5f, kBetween = 0.3f;  // typical levels at the two stages
+  auto through = [&](float x) {
+    return driveStage(driveStage(x, d.pre, d.preTrim, d.mix) * (kBetween / kIn), d.post, d.postTrim, d.mix);
+  };
+  float full = through(kIn);
+  int pyIn = 0, pyOut = 0;
+  for (int px = 0; px < w; ++px) {
+    float s = sinf_(kTwoPi * 2.0f * (float)px / (float)w);
+    float out = through(s * kIn) / full;
+    int yIn = mid - (int)(s * (float)amp), yOut = mid - (int)(out * (float)amp);
+    plotColumn(x0 + px, px > 0 ? pyIn : yIn, yIn, kGrey);
+    pyIn = yIn;
+    plotColumn(x0 + px, px > 0 ? pyOut : yOut, yOut, kTeal);
+    pyOut = yOut;
+  }
+  gfxText(8, 204, "IN", kGrey, 2);
+  gfxTextRight(312, 204, "OUT", kTeal, 2);
 }
 
 void drawAdsr(int firstParam, int selected) {
@@ -627,7 +712,10 @@ void Ui::drawParamPopup(int id) {
       drawMixer(id);
       break;
     case SEC_FILTER:
-      drawFilterCurve();
+      if (id == P_FILT_ENV_AMT) drawFilterEnvAmount();
+      else if (id == P_KEYTRACK) drawFilterKeytrack();
+      else if (id == P_DRIVE) drawFilterDrive();
+      else drawFilterCurve();
       break;
     case SEC_FENV:
       drawAdsr(P_FENV_A, id);

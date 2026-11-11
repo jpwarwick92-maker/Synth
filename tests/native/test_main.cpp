@@ -1411,6 +1411,135 @@ static void testEverySoftParameter() {
   }
 }
 
+// Share of the sound's energy above `hz`, in dB.
+static double shareAbove(const std::vector<float>& x, double hz) {
+  const size_t n = 32768;
+  std::vector<double> m = spectrum(x, (size_t)(0.25 * gSr), n);
+  double all = 0, hi = 0;
+  for (size_t i = 2; i < m.size(); ++i) {
+    double p = m[i] * m[i];
+    all += p;
+    if ((double)i * gSr / (double)n > hz) hi += p;
+  }
+  return 10 * std::log10(hi / all + 1e-30);
+}
+
+static long countDiff(const std::vector<uint8_t>& a, int y0, int y1) {
+  long n = 0;
+  for (int y = y0; y < y1; ++y)
+    for (int x = 0; x < fw::kDisplayW; ++x) {
+      uint8_t b = a[(size_t)(y * fw::kDisplayW + x) >> 1];
+      n += ((x & 1) ? (b & 0x0F) : (b >> 4)) != fw::gfxGet(x, y);
+    }
+  return n;
+}
+
+// Hands-on finding, 2026-11-11: Env amount, Keytrack and Drive all showed
+// the same unchanging filter curve, and Drive was hard to hear.
+static void testFilterControls() {
+  section("filter: Env amount sweeps the cutoff, from the default patch");
+  auto chord = [] {
+    for (int k : {48, 55, 60, 63}) midi({0x90, k, 100});
+    return renderNew(1.2);
+  };
+  double env[3];
+  const double envSet[3] = {0.0, 0.5, 1.0};
+  for (int i = 0; i < 3; ++i) {
+    boot(48000);
+    setPot("filter_env_amount", envSet[i]);
+    renderNew(0.1);
+    env[i] = shareAbove(chord(), 3000);
+  }
+  CHECK(env[2] > env[1] + 15 && env[0] < env[1] - 10, "energy above 3 kHz: fully down %.1f dB, centre %.1f dB, fully up %.1f dB", env[0], env[1], env[2]);
+
+  section("filter: Keytrack opens the filter for high keys and closes it for low ones, pivoting on middle C");
+  double kt[3][2];
+  const int ktNotes[3] = {36, 60, 84};
+  for (int n = 0; n < 3; ++n)
+    for (int v = 0; v < 2; ++v) {
+      boot(48000);
+      setPot("filter_keytrack", v ? 1.0 : 0.0);
+      renderNew(0.1);
+      midi({0x90, ktNotes[n], 100});
+      kt[n][v] = shareAbove(renderNew(1.2), 3000);
+    }
+  CHECK(kt[2][1] > kt[2][0] + 10, "C6: none %.1f dB, full %.1f dB above 3 kHz", kt[2][0], kt[2][1]);
+  CHECK(kt[0][1] < kt[0][0] - 10, "C2: none %.1f dB, full %.1f dB above 3 kHz", kt[0][0], kt[0][1]);
+  CHECK(std::fabs(kt[1][1] - kt[1][0]) < 1.5, "middle C should not change: %.1f dB against %.1f dB", kt[1][0], kt[1][1]);
+
+  section("filter: Drive adds harmonics above the cutoff without a jump in loudness");
+  double hi[3], level[3];
+  const double driveSet[3] = {0.0, 0.5, 1.0};
+  for (int i = 0; i < 3; ++i) {
+    boot(48000);
+    setPot("filter_drive", driveSet[i]);
+    renderNew(0.1);
+    std::vector<float> x = chord();
+    hi[i] = shareAbove(x, 3000);
+    level[i] = 20 * std::log10(rmsOf(x, 0.25, 1.2));
+  }
+  CHECK(hi[1] > hi[0] + 4 && hi[2] > hi[1] + 4, "energy above 3 kHz: off %.1f dB, half %.1f dB, full %.1f dB", hi[0], hi[1], hi[2]);
+  CHECK(std::fabs(level[1] - level[0]) < 3 && std::fabs(level[2] - level[0]) < 3, "level: off %.1f dB, half %.1f dB, full %.1f dB", level[0], level[1], level[2]);
+  std::printf("    drive off / half / full: above 3 kHz %.1f / %.1f / %.1f dB, level %.1f / %.1f / %.1f dB\n", hi[0], hi[1], hi[2], level[0], level[1], level[2]);
+
+  section("filter: each of the three has its own picture, and the picture follows the knob");
+  struct Shot {
+    const char* control;
+    double a, b;
+    const char* name;
+  };
+  const Shot shots[] = {
+      {"filter_env_amount", 0.5, 0.9, "popup_filter_env_amount"},
+      {"filter_keytrack", 0.0, 1.0, "popup_filter_keytrack"},
+      {"filter_drive", 0.25, 0.8, "popup_filter_drive"},
+  };
+  boot(48000);
+  setPot("filter_cutoff", 0.55);
+  fw::tick(33);
+  std::vector<uint8_t> plain = grabFrame();  // the ordinary curve, as Cutoff shows it
+  for (const Shot& s : shots) {
+    setPot(s.control, s.a);
+    fw::tick(33);
+    std::vector<uint8_t> first = grabFrame();
+    saveFrame((std::string(s.name) + "_a").c_str());
+    setPot(s.control, s.b);
+    fw::tick(33);
+    saveFrame((std::string(s.name) + "_b").c_str());
+    CHECK(countDiff(first, 50, 216) > 300, "%s: the picture barely changed between two settings (%ld pixels)", s.control, countDiff(first, 50, 216));
+    CHECK(countDiff(plain, 50, 216) > 300, "%s: the picture is the plain filter curve", s.control);
+  }
+  // Env amount: an amber curve for the envelope's peak, none when there is no sweep
+  setPot("filter_env_amount", 0.6);
+  setPot("filter_env_amount", 0.9);
+  fw::tick(33);
+  CHECK(countColour(fw::kAmber, 50, 216) > 300, "Env amount up: no curve for the envelope's peak");
+  setPot("filter_env_amount", 0.5);
+  fw::tick(33);
+  CHECK(countColour(fw::kAmber, 50, 216) == 0, "Env amount at centre: there should be no sweep drawn");
+  // with the cutoff wide open there is nowhere to sweep to, and the display says so
+  setPot("filter_cutoff", 1.0);
+  setPot("filter_env_amount", 0.9);
+  fw::tick(33);
+  saveFrame("popup_filter_env_amount_open");
+  CHECK(countColour(fw::kGrey, 54, 72) > 200, "cutoff fully open: the display should say the sweep has nowhere to go");
+  setPot("filter_cutoff", 0.55);
+  // Keytrack: the low and high keys' curves separate from the middle one
+  setPot("filter_keytrack", 0.0);
+  fw::tick(33);
+  long together = countColour(fw::kDimTeal, 74, 216);
+  setPot("filter_keytrack", 1.0);
+  fw::tick(33);
+  CHECK(together == 0 && countColour(fw::kDimTeal, 74, 216) > 300, "Keytrack: dim curves %ld at none, %ld at full", together, countColour(fw::kDimTeal, 74, 216));
+  // Drive: the output wave pulls away from the input wave
+  setPot("filter_drive", 0.3);
+  setPot("filter_drive", 0.0);
+  fw::tick(33);
+  long hidden = countColour(fw::kGrey, 60, 200);
+  setPot("filter_drive", 1.0);
+  fw::tick(33);
+  CHECK(hidden < 40 && countColour(fw::kGrey, 60, 200) > 200, "Drive: input wave showing %ld px at none, %ld at full", hidden, countColour(fw::kGrey, 60, 200));
+}
+
 static void testLfoShapes() {
   section("LFO Shape is a five-stop selector, and each stop is a different shape");
   int i = ctl("lfo_shape");
@@ -1665,6 +1794,7 @@ int main(int argc, char** argv) {
   testState();
   testOlderSavedState();
   testLfoShapes();
+  testFilterControls();
   testArpAndHold();
   testEffects();
   testMod();

@@ -165,7 +165,22 @@ float mapDetuneCents(float n) {
 
 float mapPulseWidth(float n) { return 0.5f + 0.45f * n; }
 
-float mapDriveGain(float n) { return 1.0f + 15.0f * n * n; }
+DriveSettings mapDrive(float n) {
+  // Each stage's trim keeps a signal of typical size at the same peak
+  // level, so turning Drive up changes the tone and thickens the sound
+  // without a jump in loudness.
+  const float kPreLevel = 0.5f, kPostLevel = 0.3f;
+  DriveSettings d;
+  d.pre = 1.0f + 5.0f * n;
+  d.preTrim = tanhf_(kPreLevel) / tanhf_(kPreLevel * d.pre);
+  d.post = 1.0f + 3.0f * n + 12.0f * n * n;
+  d.postTrim = tanhf_(kPostLevel) / tanhf_(kPostLevel * d.post);
+  // Fully clean at zero, and no step in the sound as the knob leaves zero.
+  d.mix = clampf(n * 5.0f, 0.0f, 1.0f);
+  return d;
+}
+
+float driveStage(float x, float gain, float trim, float mix) { return x + mix * (tanhf_(x * gain) * trim - x); }
 
 float mapVolume(float n) { return 1.4f * n * n; }
 

@@ -182,7 +182,16 @@ float mapLfoHz(float n);          // 0.05 .. 30 Hz
 float mapGlideTime(float n);      // 0 .. 3 s
 float mapDetuneCents(float n);    // -100 .. +100 cents, fine near centre
 float mapPulseWidth(float n);     // 0.5 .. 0.95
-float mapDriveGain(float n);      // 1 .. 16
+// Drive saturates the sound twice: going into the filter, and again coming
+// out of it, where the harmonics it adds are not filtered away.
+struct DriveSettings {
+  float pre, preTrim;    // gain into the first saturator, and the level trim after it
+  float post, postTrim;  // the same for the one after the filter
+  float mix;             // 0..1: fades the saturators in over the first part of the knob
+};
+DriveSettings mapDrive(float n);
+// One sample through a saturator stage as mapDrive describes it.
+float driveStage(float x, float gain, float trim, float mix);
 float mapVolume(float n);         // output gain
 int mapLfoShape(float n);         // LfoShape from an old pot position (the Shape control was once a knob)
 float mapDelayTime(float f);      // 20 ms .. 750 ms
