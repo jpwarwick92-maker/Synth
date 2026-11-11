@@ -1,0 +1,9 @@
+{
+  "name": "synth-page-tests",
+  "private": true,
+  "description": "Headless-browser tests for the synth prototype page.",
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

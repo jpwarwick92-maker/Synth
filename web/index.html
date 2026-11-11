@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Synth firmware prototype</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="bar">
+  <span class="name">Synth firmware prototype</span>
+  <span class="stat" title="MIDI keyboard"><i id="midi-dot" class="dot"></i><span id="midi-status">Keyboard: not started</span></span>
+  <span class="stat" title="Delay between the firmware and the speaker, as the browser reports it">Audio delay: <b id="audio-delay">–</b></span>
+  <span class="stat">Build: <b id="build">–</b></span>
+  <span class="spacer"></span>
+  <button id="view-toggle" type="button" aria-pressed="false">1:1 size</button>
+  <button id="calibrate" type="button">Calibrate</button>
+</header>
+
+<main id="stage">
+  <div id="panelwrap">
+    <svg id="panel" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Synth control panel"></svg>
+    <canvas id="lcd" width="320" height="240" aria-label="Synth display"></canvas>
+  </div>
+</main>
+
+<section id="aids" aria-label="Test aids">
+  <div class="aid">
+    <svg id="rear" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 26" aria-label="Rear panel"></svg>
+    <span class="aidnote">Rear panel</span>
+  </div>
+  <div class="aid wheels">
+    <div class="wheelbox"><div class="wheel" id="bend" data-spring="1"><div class="thumb"></div></div><span>Bend</span></div>
+    <div class="wheelbox"><div class="wheel" id="mod"><div class="thumb"></div></div><span>Mod</span></div>
+    <span class="aidnote">Stand-ins for a keyboard's wheels</span>
+  </div>
+  <div class="aid buttons">
+    <button id="test-note" type="button" aria-pressed="false">Test note</button>
+    <button id="sustain" type="button" aria-pressed="false">Sustain pedal</button>
+    <button id="panic" type="button">Panic</button>
+    <span class="aidnote">Test aids, not part of the panel</span>
+  </div>
+  <p class="hint">Drag knobs and faders up and down (hold Shift for fine). Drag a selector or tap a stop's label. Drag an encoder to turn it, double-tap to push.</p>
+</section>
+
+<div id="start">
+  <div class="card">
+    <h1>Synth firmware prototype</h1>
+    <p>Plug in the keyboard, turn its own volume down, then press Start. The browser will ask to allow MIDI so the page can hear the keyboard.</p>
+    <button id="start-btn" type="button">Start</button>
+    <p id="start-error" role="alert"></p>
+  </div>
+</div>
+
+<dialog id="cal">
+  <h2>Calibrate 1:1 size</h2>
+  <p>Hold a bank card flat against the screen and drag the slider until the outline is exactly the card's size.</p>
+  <div id="cal-card"></div>
+  <input id="cal-slider" type="range" min="2" max="12" step="0.01" aria-label="Screen pixels per millimetre">
+  <div class="row"><span id="cal-value"></span><button id="cal-save" type="button">Save</button></div>
+</dialog>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>

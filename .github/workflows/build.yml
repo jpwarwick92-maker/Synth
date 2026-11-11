@@ -1,0 +1,99 @@
+name: build
+
+# Every push: engine tests, the browser build with its page tests, and a
+# Teensy 4.1 compile of the same firmware source. Pushes to main also
+# publish the page to GitHub Pages.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Engine tests, browser build, page tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image normally ships clang with its WebAssembly linker,
+      # so only install them if a trial build fails.
+      - name: Check for the WebAssembly compiler
+        timeout-minutes: 10
+        run: |
+          echo 'int probe(void) { return 1; }' > /tmp/probe.c
+          if clang --target=wasm32 -nostdlib -Wl,--no-entry -o /tmp/probe.wasm /tmp/probe.c; then
+            echo "clang and its WebAssembly linker are already installed"
+          else
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang lld
+          fi
+          clang++ --version
+
+      - name: Engine tests
+        run: make test
+
+      - name: Build the page
+        run: make site BUILD_LABEL=${GITHUB_SHA::7}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # System libraries for the browser are installed only if it will not start.
+      - name: Install the test browser
+        working-directory: tests/page
+        timeout-minutes: 10
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install chromium
+          node -e "import('playwright').then(p => p.chromium.launch()).then(b => b.close())" \
+            || sudo env "PATH=$PATH" DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
+
+      - name: Page tests
+        run: node tests/page/run.mjs build/site build/out
+
+      - name: Keep the built page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  teensy:
+    name: Teensy 4.1 compile check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Compile the firmware for the Teensy 4.1
+        run: pio run -d targets/teensy
+
+  deploy:
+    name: Publish to GitHub Pages
+    if: github.ref == 'refs/heads/main'
+    needs: [test, teensy]
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4
