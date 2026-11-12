@@ -267,6 +267,7 @@ void drawStatus() {
   const int y = 222;
   for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kTeal : kDarkGrey);
   if (gParams.step(P_HOLD)) gfxText(104, y, "HOLD", kAmber, 2);
+  else if (gSynth.chordOn()) gfxText(104, y, "CHRD", kAmber, 2);
   else gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
 
   float peak = minf(gSynth.peakLevel(), 1.0f);
@@ -427,13 +428,21 @@ void plotFilter(float fc, Colour c) {
   float k = 1.0f / q;
   float comp = q > 1.0f ? 1.0f / sqrtf_(q) : 1.0f;
   int type = gParams.step(P_FILT_TYPE);
-  bool slope24 = gParams.step(P_FILT_SLOPE) == 1;
+  int slope = gParams.step(P_FILT_SLOPE);
+  float lk = mapLadderFeedback(gParams.norm(P_RESONANCE));
   int py = 0;
   for (int px = 0; px < kFw; ++px) {
     float f = 20.0f * exp2f_(10.0f * (float)px / (float)(kFw - 1));
     float wn = f / fc;
-    float mag = filterStage(wn, k, type) * comp;
-    if (slope24) mag *= filterStage(wn, 1.41421356f, type);
+    float mag;
+    if (slope == SLOPE_LADDER) {  // four stages and their feedback: (1 + jw)^4 + k
+      float a = 1.0f - wn * wn, b = 2.0f * wn;
+      float re = a * a - b * b + lk, im = 2.0f * a * b;
+      mag = (1.0f + 0.5f * lk) / sqrtf_(maxf(re * re + im * im, 1e-12f));
+    } else {
+      mag = filterStage(wn, k, type) * comp;
+      if (slope == SLOPE_24) mag *= filterStage(wn, 1.41421356f, type);
+    }
     float db = 6.0206f * log2f_(maxf(mag, 1e-6f));
     int yy = clampi(kFy0 + (int)((kFTopDb - db) / kFRangeDb * (float)kFh), kFy0, kFy0 + kFh - 2);
     plotColumn(kFx0 + px, px > 0 ? py : yy, yy, c);

@@ -108,6 +108,37 @@ async function arc(page, id, fromDeg, toDeg, radius = 20) {
 const setKnobs = async (page, mode) => {
   if (await page.evaluate(() => window.__synth.knobMode) !== mode) await page.click('#knob-mode');
 };
+// Measured on the drawn panel: every piece of lettering and every control body, in millimetres.
+// Returns a description of each overlap, or of lettering that leaves its section or the panel.
+const findClashes = (page) => page.evaluate(() => {
+  const svg = document.getElementById('panel');
+  const mm = svg.viewBox.baseVal.width / svg.getBoundingClientRect().width;
+  const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left * mm, t: r.top * mm, r: r.right * mm, b: r.bottom * mm }; };
+  const owner = (e) => e.closest('.ctl')?.dataset.id || '';
+  const hits = (a, b, gap) => a.l < b.r - gap && b.l < a.r - gap && a.t < b.b - gap && b.t < a.b - gap;
+  const texts = [...svg.querySelectorAll('text')].map((e) => ({ what: `"${e.textContent}"`, id: owner(e), ...box(e) }));
+  const bodies = [...svg.querySelectorAll('.cap, .enc, .btn, .tslot, .fcap, .bezel')].map((e) => ({ what: owner(e) || 'display', id: owner(e), ...box(e) }));
+  const frame = box(svg.querySelector('.plate'));
+  const out = [];
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i];
+    if (t.l < frame.l || t.r > frame.r || t.t < frame.t || t.b > frame.b) out.push(`${t.what} runs off the panel`);
+    for (let j = i + 1; j < texts.length; j++) if (hits(t, texts[j], 0.15)) out.push(`${t.what} on ${texts[j].what}`);
+    for (const b of bodies) if (b.id !== t.id && hits(t, b, 0.15)) out.push(`${t.what} on ${b.what}`);
+  }
+  for (let i = 0; i < bodies.length; i++)
+    for (let j = i + 1; j < bodies.length; j++)
+      if (bodies[i].id !== bodies[j].id && hits(bodies[i], bodies[j], 0)) out.push(`${bodies[i].what} on ${bodies[j].what}`);
+  // lettering must also stay inside the section outline it belongs to
+  const sections = [...svg.querySelectorAll('.section')].map(box);
+  for (const t of texts) {
+    if (!t.id) continue;
+    const s = sections.find((q) => (t.l + t.r) / 2 > q.l && (t.l + t.r) / 2 < q.r && (t.t + t.b) / 2 > q.t && (t.t + t.b) / 2 < q.b);
+    if (!s || t.l < s.l + 0.5 || t.r > s.r - 0.5 || t.t < s.t + 0.5 || t.b > s.b - 0.5) out.push(`${t.what} crosses its section's outline`);
+  }
+  return out;
+});
+
 const AMBER = [0xe8, 0xa3, 0x3d], TEAL = [0x7f, 0xe0, 0xc4], WHITE = [0xed, 0xed, 0xed];
 
 try {
@@ -125,7 +156,7 @@ try {
     check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
-    check(await count('#panel .ctl.button') === 8, '8 buttons', String(await count('#panel .ctl.button')));
+    check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
     check(await count('#rear .ctl.knob') === 1, 'rear-panel volume knob');
 
     // the display sits where the layout says, at 4:3
@@ -134,7 +165,51 @@ try {
     check(Math.abs((lcd.x - panel.x) / mm - layout.display.x) < 0.5 && Math.abs((lcd.y - panel.y) / mm - layout.display.y) < 0.5, 'display position', JSON.stringify(lcd));
     check(Math.abs(lcd.width / mm - 48.96) < 0.3 && Math.abs(lcd.height / mm - 36.72) < 0.3, 'display size');
     check(errors.length === 0, 'no page errors before start', errors.join(' | '));
+
+    section('layout rules: spacing between controls, and no lettering on top of anything');
+    {
+      const round = layout.controls.filter((c) => ['knob', 'selector', 'encoder', 'toggle'].includes(c.type));
+      const faders = layout.controls.filter((c) => c.type === 'fader');
+      const tight = [];
+      const minKnob = layout.rules.knobSpacingMin, minFader = layout.rules.faderSpacingMin;
+      for (let i = 0; i < round.length; i++)
+        for (let j = i + 1; j < round.length; j++) {
+          const d = Math.hypot(round[i].x - round[j].x, round[i].y - round[j].y);
+          if (d < minKnob) tight.push(`${round[i].id}/${round[j].id} ${d.toFixed(1)} mm`);
+        }
+      for (let i = 0; i < faders.length; i++)
+        for (let j = i + 1; j < faders.length; j++) {
+          const d = Math.hypot(faders[i].x - faders[j].x, faders[i].y - faders[j].y);
+          if (d < minFader) tight.push(`${faders[i].id}/${faders[j].id} ${d.toFixed(1)} mm`);
+        }
+      for (const f of faders)
+        for (const r of round)
+          if (Math.abs(f.x - r.x) < 18 && Math.abs(f.y - r.y) < f.travel / 2 + 12) tight.push(`${f.id}/${r.id} too close`);
+      check(tight.length === 0, `knob, selector, encoder and switch centres at least ${minKnob} mm apart; faders at least ${minFader} mm`, tight.join(', '));
+
+      // every control, with its lettering, sits inside one section and inside the panel
+      const outside = layout.controls.filter((c) => !layout.sections.some((s) => c.x > s.x + 3 && c.x < s.x + s.w - 3 && c.y > s.y + 8 && c.y < s.y + s.h - 3)).map((c) => c.id);
+      check(outside.length === 0, 'every control is inside a section', outside.join(', '));
+
+      // measured on the drawn panel: boxes of all lettering and all control bodies
+      const clashes = await findClashes(page);
+      check(clashes.length === 0, 'no label overlaps another label, a control or a section outline', clashes.slice(0, 12).join('; '));
+    }
     await page.close();
+
+    // the overlap check must be able to fail: push one knob's label onto its neighbour
+    const broken = await open(context, {
+      start: false,
+      tweak: (p) => p.route('**/layouts/a3.json', async (route) => {
+        const res = await route.fetch();
+        const json = await res.json();
+        json.controls.find((c) => c.id === 'filter_env_amount').x -= 14;
+        await route.fulfill({ response: res, json });
+      }),
+    });
+    const found = await findClashes(broken.page);
+    check(found.length > 0, 'the overlap check notices a knob moved onto its neighbour', found.slice(0, 3).join('; '));
+    await broken.page.close();
 
     // change one position in the layout file only: the control moves
     const moved = await open(context, {
@@ -147,7 +222,8 @@ try {
       }),
     });
     const t = await moved.page.locator('[data-id="osc1_macro"]').getAttribute('transform');
-    check(t === 'translate(70 50)', 'editing the layout file moves the control', t);
+    const macroY = layout.controls.find((c) => c.id === 'osc1_macro').y;
+    check(t === `translate(70 ${macroY})`, 'editing the layout file moves the control', t);
     await moved.page.close();
   }
 
@@ -157,7 +233,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 52, '52 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 53, '53 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -327,6 +403,21 @@ try {
     await sleep(150);
     check(!(await lit('btn_osc1_engine')), 'three more presses come back round to VA');
 
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100]));   // hold a chord...
+    await sleep(150);
+    await press(page, 'btn_chord');                                                                 // ...and have it remembered
+    await sleep(150);
+    check(await lit('btn_chord'), 'Chord lights once a held chord has been learned');
+    await page.evaluate(() => window.__synth.midi([0x80, 60, 0, 0x80, 64, 0, 0x80, 67, 0]));
+    await sleep(1700);
+    await page.evaluate(() => window.__synth.midi([0x90, 50, 100]));                                 // one key
+    await sleep(300);
+    check(await lcdCount(page, TEAL, 222, 236) === 3 * 64, 'with Chord on, one key sounds three voices', String(await lcdCount(page, TEAL, 222, 236)));
+    await page.evaluate(() => window.__synth.midi([0x80, 50, 0]));
+    await press(page, 'btn_chord');
+    await sleep(1700);
+    check(!(await lit('btn_chord')), 'Chord switches off again');
+
     await press(page, 'btn_hold');
     await sleep(150);
     check(await lit('btn_hold'), 'Hold lights when pressed');
@@ -417,7 +508,9 @@ try {
     const w = (await again.page.locator('#panel').boundingBox()).width;
     check(Math.abs(w - PANEL_MM * 4.25) < 1, `1:1 panel is ${PANEL_MM} mm at the calibrated scale`, String(w));
     const a = await again.page.locator('[data-id="lfo_rate"] .cap').boundingBox(), b = await again.page.locator('[data-id="lfo_depth"] .cap').boundingBox();
-    check(Math.abs((b.x - a.x) / 4.25 - 22) < 0.1, 'two knobs 22 mm apart in the file are 22 mm apart on screen', String((b.x - a.x) / 4.25));
+    const xOf = (id) => layout.controls.find((c) => c.id === id).x;
+    const apart = xOf('lfo_depth') - xOf('lfo_rate');
+    check(Math.abs((b.x - a.x) / 4.25 - apart) < 0.1, `two knobs ${apart} mm apart in the file are ${apart} mm apart on screen`, String((b.x - a.x) / 4.25));
     check(await again.page.evaluate(() => { const s = document.getElementById('stage'); return s.scrollWidth > s.clientWidth; }), 'the 1:1 panel can be panned');
     await again.page.click('#view-toggle');
     check((await again.page.locator('#panel').boundingBox()).width < 1500, 'toggling back fits the panel to the window');

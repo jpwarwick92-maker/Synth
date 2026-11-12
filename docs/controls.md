@@ -61,7 +61,7 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `unison_detune` | ENGINE | UNI DETUNE | 0 to 50 | 110 |
 | `sub_octave` | ENGINE | SUB OCTAVE | -1 OCT, -2 OCT | 111 |
 | `bend_range` | ENGINE | BEND RANGE | 1 to 12 | 112 |
-| `filter_slope` | ENGINE | FILT SLOPE | 12 dB, 24 dB | 113 |
+| `filter_slope` | ENGINE | FILT SLOPE | 12 dB, 24 dB, LADDER | 113 |
 | `delay_time` | FX 1 | TIME | 0 to 100 | 46 |
 | `delay_tone` | FX 1 | TONE | 0 to 100 | 47 |
 | `delay_feedback` | FX 1 | FEEDBACK | 0 to 100 | 48 |
@@ -97,3 +97,4 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `btn_osc1_engine` | button |
 | `btn_osc2_engine` | button |
 | `btn_hold` | button |
+| `btn_chord` | button |

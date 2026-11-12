@@ -139,6 +139,8 @@ enum Unit : uint8_t {
 
 enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN, WAVE_SUPER, WAVE_COUNT };
 enum FilterType : uint8_t { FILT_LP, FILT_BP, FILT_HP };
+enum FilterSlope : uint8_t { SLOPE_12, SLOPE_24, SLOPE_LADDER };
+float mapLadderFeedback(float n);  // 0 .. 3.9; the ladder whistles on its own at 4
 enum VoiceMode : uint8_t { MODE_POLY, MODE_MONO, MODE_UNI };
 enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_PW };
 enum LfoShape : uint8_t { LFOS_SINE, LFOS_TRI, LFOS_SAW, LFOS_SQUARE, LFOS_RANDOM, LFOS_COUNT };

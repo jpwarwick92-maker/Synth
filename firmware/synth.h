@@ -78,6 +78,7 @@ enum EventType : uint8_t {
   EV_MOD_WHEEL,
   EV_ALL_NOTES_OFF,
   EV_ALL_SOUND_OFF,
+  EV_CHORD,         // the Chord button was pressed
 };
 
 struct OscRun;  // one oscillator's settings for one control block (synth.cpp)
@@ -97,6 +98,7 @@ class Synth {
   bool voiceActive(int i) const { return voices_[i].active; }
   float peakLevel() const { return peak_; }
   float sampleRate() const { return sr_; }
+  bool chordOn() const { return chordOn_; }
   const float* scope() const { return scope_; }
   uint32_t scopeWritePos() const { return scopePos_; }
 
@@ -108,6 +110,12 @@ class Synth {
   void keyDown(uint8_t note, uint8_t velocity);
   void keyUp(uint8_t note);
   void dropUnheld();
+  void toggleChord();
+  int keyNotes(int i, uint8_t* out) const;
+  bool neededElsewhere(uint8_t note, int except) const;
+  void soundKey(int i);
+  void silenceKey(int i);
+  void removeKey(int i);
   bool latching() const { return hold_ || (arpMode_ != ARP_OFF && pedal_); }
   void arpAdvance(int len);
   int arpPick(uint8_t& velocity);
@@ -142,7 +150,13 @@ class Synth {
   int physN_;
   uint8_t setNote_[16];
   uint8_t setVel_[16];
+  bool setChord_[16];         // this key plays the remembered chord, not just itself
   int setN_;
+
+  // chord memory: the shape of a chord, as semitones above its lowest note
+  bool chordOn_;
+  int8_t chordStep_[6];
+  int chordN_;
   bool hold_;
   bool pedal_;
 

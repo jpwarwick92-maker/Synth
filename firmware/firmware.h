@@ -21,7 +21,7 @@ struct ControlInfo {
 };
 
 constexpr int kNumEncoders = 4;
-constexpr int kNumButtons = 8;  // five mode buttons, two oscillator engine buttons, Hold
+constexpr int kNumButtons = 9;  // five mode buttons, two oscillator engine buttons, Hold, Chord
 constexpr int kFirstEncoder = kPanelCount;
 constexpr int kFirstButton = kFirstEncoder + kNumEncoders;
 constexpr int kNumControls = kFirstButton + kNumButtons;

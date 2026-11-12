@@ -33,7 +33,7 @@ const float kVoiceCut[kNumVoices] = {-0.5f, 0.9f, 0.2f, -1.0f, 0.6f, -0.3f, 1.0f
 struct Synth::Patch {
   uint8_t wave1, wave2, ftype;
   uint8_t eng1, eng2;
-  bool slope24, driveOn;
+  bool slope24, ladder, driveOn;
   float oct1, oct2;      // semitones
   float detune2;         // semitones
   float macro1, macro2;  // 0..1: each oscillator's main timbre control
@@ -46,6 +46,7 @@ struct Synth::Patch {
   float velCut;          // octaves at full velocity
   float fenvPitch;       // semitones at full envelope
   float k, comp;         // filter damping, resonance loudness trim
+  float ladderK, ladderComp;  // ladder: feedback amount, and the level it costs put back
   float envAmt;          // octaves
   float keytrack;        // 0..1
   DriveSettings drive;
@@ -299,6 +300,8 @@ void Synth::init(float sampleRate) {
   lastPitch_ = 60.0f;
   stackN_ = 0;
   physN_ = setN_ = 0;
+  chordOn_ = false;
+  chordN_ = 0;
   hold_ = gParams.step(P_HOLD) != 0;
   pedal_ = false;
   arpMode_ = (uint8_t)gParams.step(P_ARP_MODE);
@@ -384,11 +387,62 @@ void Synth::handleEvent(uint8_t type, uint8_t a, uint8_t b) {
       arpNote_ = -1;
       break;
     case EV_ALL_SOUND_OFF: killAll(); break;
+    case EV_CHORD: toggleChord(); break;
     default: break;
   }
 }
 
 // ---------------------------------------------------------------- keys, Hold, arpeggiator
+
+// The notes one played key sounds: itself, or, with chord memory on, the
+// remembered chord built up from it. Returns how many.
+int Synth::keyNotes(int i, uint8_t* out) const {
+  if (!chordOn_ || !setChord_[i]) {
+    out[0] = setNote_[i];
+    return 1;
+  }
+  int n = 0;
+  for (int k = 0; k < chordN_; ++k) {
+    int note = setNote_[i] + chordStep_[k];
+    if (note <= 127) out[n++] = (uint8_t)note;
+  }
+  return n;
+}
+
+// Is `note` also sounded by a key other than number `except`?
+bool Synth::neededElsewhere(uint8_t note, int except) const {
+  uint8_t notes[6];
+  for (int i = 0; i < setN_; ++i) {
+    if (i == except) continue;
+    int n = keyNotes(i, notes);
+    for (int k = 0; k < n; ++k)
+      if (notes[k] == note) return true;
+  }
+  return false;
+}
+
+void Synth::soundKey(int i) {
+  uint8_t notes[6];
+  int n = keyNotes(i, notes);
+  for (int k = 0; k < n; ++k) noteOn(notes[k], setVel_[i]);
+}
+
+// Stops what a key sounds, except notes another held key is also sounding.
+void Synth::silenceKey(int i) {
+  uint8_t notes[6];
+  int n = keyNotes(i, notes);
+  for (int k = 0; k < n; ++k)
+    if (!neededElsewhere(notes[k], i)) noteOff(notes[k]);
+}
+
+void Synth::removeKey(int i) {
+  for (int k = i + 1; k < setN_; ++k) {
+    setNote_[k - 1] = setNote_[k];
+    setVel_[k - 1] = setVel_[k];
+    setChord_[k - 1] = setChord_[k];
+  }
+  --setN_;
+}
 
 void Synth::keyDown(uint8_t note, uint8_t velocity) {
   bool arp = arpMode_ != ARP_OFF;
@@ -396,7 +450,10 @@ void Synth::keyDown(uint8_t note, uint8_t velocity) {
   // fresh chord: what was latched gives way to it.
   if (latching() && physN_ == 0 && setN_ > 0) {
     if (!arp)
-      for (int i = 0; i < setN_; ++i) noteOff(setNote_[i]);
+      for (int i = setN_ - 1; i >= 0; --i) {
+        silenceKey(i);
+        removeKey(i);
+      }
     setN_ = 0;
     arpRestart_ = true;
   }
@@ -404,47 +461,97 @@ void Synth::keyDown(uint8_t note, uint8_t velocity) {
   dropNote(physNote_, nullptr, physN_, note);
   if (physN_ < 16) physNote_[physN_++] = note;
 
-  dropNote(setNote_, setVel_, setN_, note);
-  if (setN_ == 16) dropNote(setNote_, setVel_, setN_, setNote_[0]);
+  for (int i = 0; i < setN_; ++i)
+    if (setNote_[i] == note) {  // the same key again: it is replaced, and sounds afresh below
+      removeKey(i);
+      break;
+    }
+  if (setN_ == 16) {
+    if (!arp) silenceKey(0);
+    removeKey(0);
+  }
   setNote_[setN_] = note;
   setVel_[setN_] = velocity;
+  setChord_[setN_] = chordOn_;
   ++setN_;
 
-  if (!arp) noteOn(note, velocity);
+  if (!arp) soundKey(setN_ - 1);
   else if (setN_ == 1) arpRestart_ = true;  // first note: start on it at once
 }
 
 void Synth::keyUp(uint8_t note) {
   dropNote(physNote_, nullptr, physN_, note);
   if (latching()) return;  // Hold keeps it sounding
-  bool was = false;
-  for (int i = 0; i < setN_; ++i) was = was || setNote_[i] == note;
-  dropNote(setNote_, setVel_, setN_, note);
-  if (was && arpMode_ == ARP_OFF) noteOff(note);
+  for (int i = 0; i < setN_; ++i)
+    if (setNote_[i] == note) {
+      if (arpMode_ == ARP_OFF) silenceKey(i);
+      removeKey(i);
+      return;
+    }
 }
 
 // Hold (or the pedal) was let go: every note without a finger on it stops.
 void Synth::dropUnheld() {
   for (int i = setN_ - 1; i >= 0; --i) {
-    uint8_t note = setNote_[i];
     bool down = false;
-    for (int k = 0; k < physN_; ++k) down = down || physNote_[k] == note;
+    for (int k = 0; k < physN_; ++k) down = down || physNote_[k] == setNote_[i];
     if (down) continue;
-    dropNote(setNote_, setVel_, setN_, note);
-    if (arpMode_ == ARP_OFF) noteOff(note);
+    if (arpMode_ == ARP_OFF) silenceKey(i);
+    removeKey(i);
   }
+}
+
+// The Chord button. Off -> on: remember the shape of the chord being held
+// (two notes or more); from then on each key plays that shape. On -> off:
+// forget it, and keys that were playing it go back to single notes.
+void Synth::toggleChord() {
+  if (chordOn_) {
+    for (int i = 0; i < setN_; ++i) {
+      if (!setChord_[i]) continue;
+      uint8_t notes[6];
+      int n = keyNotes(i, notes);
+      setChord_[i] = false;
+      if (arpMode_ != ARP_OFF) continue;
+      for (int k = 0; k < n; ++k)
+        if (notes[k] != setNote_[i] && !neededElsewhere(notes[k], -1)) noteOff(notes[k]);
+    }
+    chordOn_ = false;
+    return;
+  }
+  if (setN_ < 2) return;  // nothing held to learn from
+  uint8_t sorted[16];
+  for (int i = 0; i < setN_; ++i) sorted[i] = setNote_[i];
+  for (int i = 1; i < setN_; ++i) {
+    uint8_t v = sorted[i];
+    int j = i - 1;
+    for (; j >= 0 && sorted[j] > v; --j) sorted[j + 1] = sorted[j];
+    sorted[j + 1] = v;
+  }
+  chordN_ = setN_ < 6 ? setN_ : 6;
+  for (int i = 0; i < chordN_; ++i) chordStep_[i] = (int8_t)(sorted[i] - sorted[0]);
+  chordOn_ = true;  // the keys held now carry on as they are; the next key plays the chord
 }
 
 // Which note the arpeggiator plays next, or -1 with nothing held.
 int Synth::arpPick(uint8_t& velocity) {
   if (setN_ == 0) return -1;
-  uint8_t notes[16], vels[16];
+  // every note the held keys sound, in the order played, each once
+  uint8_t notes[32], vels[32];
+  int count = 0;
   for (int i = 0; i < setN_; ++i) {
-    notes[i] = setNote_[i];
-    vels[i] = setVel_[i];
+    uint8_t key[6];
+    int n = keyNotes(i, key);
+    for (int k = 0; k < n && count < 32; ++k) {
+      bool have = false;
+      for (int c = 0; c < count; ++c) have = have || notes[c] == key[k];
+      if (have) continue;
+      notes[count] = key[k];
+      vels[count] = setVel_[i];
+      ++count;
+    }
   }
   if (arpMode_ != ARP_PLAYED) {  // every pattern but "as played" works from low to high
-    for (int i = 1; i < setN_; ++i) {
+    for (int i = 1; i < count; ++i) {
       uint8_t n = notes[i], v = vels[i];
       int j = i - 1;
       for (; j >= 0 && notes[j] > n; --j) {
@@ -456,7 +563,7 @@ int Synth::arpPick(uint8_t& velocity) {
     }
   }
   int octaves = gParams.step(P_ARP_OCTAVES) + 1;
-  int m = setN_ * octaves;
+  int m = count * octaves;
   int k;
   switch (arpMode_) {
     case ARP_DOWN: k = m - 1 - arpIndex_ % m; break;
@@ -474,9 +581,9 @@ int Synth::arpPick(uint8_t& velocity) {
       break;
     default: k = arpIndex_ % m; break;  // up, and as played
   }
-  int note = notes[k % setN_] + 12 * (k / setN_);
+  int note = notes[k % count] + 12 * (k / count);
   while (note > 127) note -= 12;
-  velocity = vels[k % setN_];
+  velocity = vels[k % count];
   return note;
 }
 
@@ -739,7 +846,10 @@ void Synth::derive(Patch& p, int len) {
 
   // ---- filter ----
   p.ftype = (uint8_t)gParams.step(P_FILT_TYPE);
-  p.slope24 = gParams.step(P_FILT_SLOPE) == 1;
+  p.slope24 = gParams.step(P_FILT_SLOPE) == SLOPE_24;
+  p.ladder = gParams.step(P_FILT_SLOPE) == SLOPE_LADDER;
+  p.ladderK = mapLadderFeedback(sm[P_RESONANCE]);
+  p.ladderComp = 1.0f + 0.5f * p.ladderK;  // a ladder loses bass as resonance rises; give half of it back
   p.cutoffOct = sm[P_CUTOFF] * 10.0f;
   float q = mapResonanceQ(sm[P_RESONANCE]);
   p.k = 1.0f / q;
@@ -908,6 +1018,11 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float g = tanf_(kPi * fc * invSr);
   SvfCoef c2 = svfCoef(g, p.k);
   SvfCoef c1 = svfCoef(g, 1.41421356f);  // first stage of the 24 dB slope: no peak of its own
+  // Ladder: four simple low-pass stages in a row with feedback round all
+  // four, solved together so it stays in tune and stable at any cutoff.
+  float lG = g / (1.0f + g), lA = 1.0f - lG;
+  float lG2 = lG * lG, lG3 = lG2 * lG;
+  float lDen = 1.0f / (1.0f + p.ladderK * lG2 * lG2);
 
   float velGain = 1.0f - p.velAmt * (1.0f - v.vel);
   float trem = 1.0f - (1.0f - p.tremGain) * v.lfoAmt;
@@ -961,9 +1076,27 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
     if (onNoise) x += nextNoise(v.rng) * m4;
 
     if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.pre) * p.drive.preTrim - x);
-    x *= p.comp;
-    if (p.slope24) x = svfTick(v.f1, x, c1, p.ftype);
-    x = svfTick(v.f2, x, c2, p.ftype);
+    if (p.ladder) {
+      float& z1 = v.f1.ic1;
+      float& z2 = v.f1.ic2;
+      float& z3 = v.f2.ic1;
+      float& z4 = v.f2.ic2;
+      float fed = lA * (lG3 * z1 + lG2 * z2 + lG * z3 + z4);  // what the four stages are about to hand back
+      // Saturating here keeps a whistle from running away. The limit is set
+      // high (at 2, not 1) so ordinary levels pass almost untouched: pushed
+      // hard, the saturator also pulls the resonance flat, as analog ladders do.
+      float u = 2.0f * tanhf_(0.5f * (x * p.ladderComp - p.ladderK * fed) * lDen);
+      float y = u;
+      float t = (y - z1) * lG; y = t + z1; z1 = y + t;
+      t = (y - z2) * lG; y = t + z2; z2 = y + t;
+      t = (y - z3) * lG; y = t + z3; z3 = y + t;
+      t = (y - z4) * lG; y = t + z4; z4 = y + t;
+      x = y;
+    } else {
+      x *= p.comp;
+      if (p.slope24) x = svfTick(v.f1, x, c1, p.ftype);
+      x = svfTick(v.f2, x, c2, p.ftype);
+    }
     if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.post) * p.drive.postTrim - x);  // after the filter: these harmonics stay
 
     float out = x * ae;
@@ -998,7 +1131,7 @@ void Synth::process(float* outL, float* outR, int n) {
     arpRestart_ = true;
     arpMode_ = arp;
     if (arp == ARP_OFF)
-      for (int i = 0; i < setN_; ++i) noteOn(setNote_[i], setVel_[i]);
+      for (int i = 0; i < setN_; ++i) soundKey(i);
   }
   arpMode_ = arp;
   uint8_t mode = (uint8_t)gParams.step(P_VOICE_MODE);
@@ -1007,7 +1140,7 @@ void Synth::process(float* outL, float* outR, int n) {
     mode_ = mode;
     arpNote_ = -1;
     if (arpMode_ == ARP_OFF)
-      for (int i = 0; i < setN_; ++i) noteOn(setNote_[i], setVel_[i]);
+      for (int i = 0; i < setN_; ++i) soundKey(i);
   }
 
   int done = 0;

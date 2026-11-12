@@ -13,9 +13,10 @@ namespace {
 const char* const kEncoderNames[kNumEncoders] = {"enc1", "enc2", "enc3", "enc4"};
 const char* const kButtonNames[kNumButtons] = {
     "btn_fx1", "btn_fx2", "btn_mod", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine", "btn_hold",
+    "btn_chord",
 };
-// after the mode buttons: oscillator 1's engine button, oscillator 2's, then Hold
-constexpr int kButtonOsc1Engine = MB_COUNT, kButtonHold = MB_COUNT + 2;
+// after the mode buttons: oscillator 1's engine button, oscillator 2's, Hold, Chord
+constexpr int kButtonOsc1Engine = MB_COUNT, kButtonHold = MB_COUNT + 2, kButtonChord = MB_COUNT + 3;
 
 constexpr uint32_t kSaveDelayMs = 1000;  // save once the controls have been still this long
 // Version 2: the LFO Shape control became a five-stop selector. Version 1
@@ -125,6 +126,8 @@ void controlSet(int index, int raw) {
   int b = index - kFirstButton;
   if (b < MB_COUNT) {
     gUi.modeButton(b);
+  } else if (b == kButtonChord) {  // learns the chord being held, or forgets it
+    gSynth.post(EV_CHORD);
   } else if (b == kButtonHold) {  // Hold latches; press again to let go
     gParams.set(P_HOLD, gParams.step(P_HOLD) ? 0 : 1);
     onParamChanged(P_HOLD);
@@ -149,6 +152,7 @@ int controlGet(int index) {
   int b = index - kFirstButton;
   if (b < MB_COUNT) return gUi.mode() == b ? 1 : 0;
   if (b == kButtonHold) return gParams.step(P_HOLD);
+  if (b == kButtonChord) return gSynth.chordOn() ? 1 : 0;
   // an engine button is lit while its oscillator is on anything but the plain VA engine
   return gParams.step(b == kButtonOsc1Engine ? P_OSC1_ENGINE : P_OSC2_ENGINE) != ENG_VA ? 1 : 0;
 }

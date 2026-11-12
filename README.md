@@ -88,7 +88,17 @@ scope and a visual for each control as it moves.
   Mod page's Env>Pitch moves oscillator 2 only, which gives the classic sync sweep.
 - **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
   fader down.
-- **Arp** has its own section: Mode, Octaves, Tempo, Gate and Hold.
+- **Arp** has its own section: Mode, Octaves, Tempo, Gate, Hold and Chord.
+- **Chord** remembers the shape of a chord. Hold a chord and press Chord; after that
+  each single key plays that chord, moved to the key. With the arp running, one key
+  arpeggiates it. Press Chord again to forget it.
+- **Ladder filter** is a third setting of the filter slope on the Engine page
+  (12 dB, 24 dB, Ladder): four stages with feedback round all of them, low-pass only,
+  losing some bass as resonance rises. The Type selector does nothing while it is chosen.
+
+The layout keeps knob, selector and encoder centres at least 22 mm apart and fader
+centres at least 17 mm apart, and the page tests fail if any label overlaps another
+label, a control, or its section's outline. The panel is 485 x 152 mm.
 
 **Oscillator engines.** Each oscillator has an Engine button that steps through four
 engines. The Wave selector and the timbre controls mean something different under each:
@@ -112,7 +122,7 @@ encoder restores its default.
 | FX 1 | Delay | time, tone, feedback, mix |
 | FX 2 | Chorus + reverb | chorus, reverb size, reverb tone, reverb mix |
 | Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
-| Engine | 1: Voice | unison detune, sub octave, bend range, filter slope |
+| Engine | 1: Voice | unison detune, sub octave, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | not built yet | |
 

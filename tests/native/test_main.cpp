@@ -7,6 +7,7 @@
 //   build/tests <outdir>     run every test; writes display frames to <outdir>
 //   build/tests --controls   print docs/controls.md
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -1568,7 +1569,7 @@ static double worstBelow(const std::vector<float>& x, double hz) {
 
 static void testPanelRegistry() {
   section("panel: every control maps to its own parameter, and old control numbers are unchanged");
-  CHECK(fw::kFirstEncoder == 40 && fw::kNumControls == 52, "%d panel controls, %d controls in all", fw::kFirstEncoder, fw::kNumControls);
+  CHECK(fw::kFirstEncoder == 40 && fw::kNumControls == 53, "%d panel controls, %d controls in all", fw::kFirstEncoder, fw::kNumControls);
   for (int c = 0; c < 32; ++c) CHECK(fw::controlParam(c) == c, "control %d moved to parameter %d", c, fw::controlParam(c));
   for (int a = 0; a < fw::kNumControls; ++a)
     for (int b = a + 1; b < fw::kNumControls; ++b) {
@@ -1804,6 +1805,214 @@ static void testVersion2State() {
   CHECK(fw::mapTempoBpm(fw::gParams.norm(fw::P_ARP_TEMPO)) == 200.0f, "tempo: %.0f BPM, expected 200", fw::mapTempoBpm(fw::gParams.norm(fw::P_ARP_TEMPO)));
   CHECK(fw::mapArpGate(fw::gParams.norm(fw::P_ARP_GATE)) > 0.999f, "gate: %.3f, expected 1", fw::mapArpGate(fw::gParams.norm(fw::P_ARP_GATE)));
   CHECK(fw::gParams.val[fw::P_DRIFT] == 0 && fw::gParams.step(fw::P_SYNC) == 0, "controls that did not exist yet should be at their defaults");
+}
+
+// Frequency of the strongest partial.
+static double peakHz(const std::vector<float>& x) {
+  const size_t n = 32768;
+  std::vector<double> m = spectrum(x, (size_t)(0.3 * gSr), n);
+  size_t pk = 8;
+  for (size_t i = 8; i < m.size(); ++i)
+    if (m[i] > m[pk]) pk = i;
+  double a = m[pk - 1], b = m[pk], c = m[pk + 1];
+  return ((double)pk + 0.5 * (a - c) / (a - 2 * b + c)) * gSr / (double)n;
+}
+
+static void testLadderFilter() {
+  section("ladder filter: a third slope on the Engine page, with its own sound");
+  CHECK(fw::kParams[fw::P_FILT_SLOPE].steps == 3, "filter slope should have three settings");
+  std::vector<float> take[3];
+  for (int slope = 0; slope < 3; ++slope) {
+    boot(48000);
+    setPot("filter_cutoff", 0.5);
+    setPot("filter_resonance", 0.7);
+    setStep(fw::P_FILT_SLOPE, slope);
+    renderNew(0.1);
+    for (int k : {48, 55, 60}) midi({0x90, k, 100});
+    take[slope] = renderNew(1.0);
+  }
+  CHECK(rmsDiff(take[2], take[1]) > 0.005 && rmsDiff(take[2], take[0]) > 0.005, "ladder should not sound like the 12 or 24 dB filter");
+
+  section("ladder filter: the resonant peak sits at the cutoff, at either sample rate");
+  for (double sr : {48000.0, 44100.0})
+    for (double cut : {0.45, 0.6, 0.75}) {
+      boot(sr);
+      cleanTone(fw::WAVE_SAW);
+      setPot("mix_osc1", 0.0);
+      setPot("mix_noise", 0.15);         // quiet noise in: the filter's own peak is what comes out
+      setPot("filter_cutoff", cut);
+      setPot("filter_resonance", 0.97);
+      setStep(fw::P_FILT_SLOPE, fw::SLOPE_LADDER);
+      renderNew(0.1);
+      midi({0x90, 60, 100});
+      double want = 20.0 * std::pow(2.0, cut * 10.0);
+      // (averaged over several stretches: one stretch of noise has random peaks of its own)
+      double got = 0;
+      for (int rep = 0; rep < 6; ++rep) got += peakHz(renderNew(1.2)) / 6.0;
+      CHECK(std::fabs(got / want - 1) < 0.05, "cutoff %.0f Hz @%.0f: peak at %.0f Hz", want, sr, got);
+    }
+
+  section("ladder filter: falls away at 24 dB per octave, and stays in bounds whatever is thrown at it");
+  boot(48000);
+  cleanTone(fw::WAVE_SAW);
+  setPot("mix_osc1", 0.0);
+  setPot("mix_noise", 1.0);
+  setPot("filter_cutoff", 0.5);          // 640 Hz
+  setStep(fw::P_FILT_SLOPE, fw::SLOPE_LADDER);
+  renderNew(0.1);
+  midi({0x90, 60, 100});
+  std::vector<float> x = renderNew(1.5);
+  std::vector<double> m = spectrum(x, (size_t)(0.3 * gSr), 32768);
+  auto band = [&](double lo, double hi) {
+    double e = 0;
+    int n = 0;
+    for (size_t i = 0; i < m.size(); ++i) {
+      double f = (double)i * gSr / 32768.0;
+      if (f >= lo && f < hi) {
+        e += m[i] * m[i];
+        ++n;
+      }
+    }
+    return 10 * std::log10(e / n + 1e-300);
+  };
+  double pass = band(100, 300), twoUp = band(2400, 2700), threeUp = band(4800, 5400);
+  CHECK(pass - twoUp > 38 && pass - twoUp < 56, "two octaves above the cutoff: %.1f dB down, expected about 46", pass - twoUp);
+  CHECK(twoUp - threeUp > 18 && twoUp - threeUp < 30, "the next octave: a further %.1f dB, expected about 24", twoUp - threeUp);
+
+  boot(48000);
+  setStep(fw::P_FILT_SLOPE, fw::SLOPE_LADDER);
+  setPot("filter_resonance", 1.0);
+  setPot("filter_drive", 1.0);
+  setPot("mix_noise", 1.0);
+  setPot("mix_sub", 1.0);
+  for (int i = 0; i < 8; ++i) midi({0x90, 30 + i * 9, 127});
+  bool finite = true;
+  double pk = 0;
+  for (int sweep = 0; sweep <= 20; ++sweep) {
+    setPot("filter_cutoff", sweep / 20.0);
+    std::vector<float> y = renderNew(0.2);
+    for (float v : y) finite = finite && std::isfinite(v);
+    pk = std::max(pk, peakOf(y));
+  }
+  CHECK(finite && pk < 0.99, "full resonance, full drive, cutoff swept end to end: peak %.3f", pk);
+
+  boot(48000);
+  setStep(fw::P_FILT_SLOPE, fw::SLOPE_LADDER);
+  setPot("filter_resonance", 0.8);
+  fw::tick(33);
+  saveFrame("popup_filter_ladder");
+}
+
+// Pitches of the strongest partials in a sound, as MIDI note numbers.
+static std::vector<int> soundingNotes(const std::vector<float>& x, int howMany) {
+  const size_t n = 32768;
+  std::vector<double> m = spectrum(x, (size_t)(0.15 * gSr), n);
+  std::vector<int> notes;
+  for (int k = 0; k < howMany; ++k) {
+    size_t pk = 8;
+    for (size_t i = 8; i < m.size() - 1; ++i)
+      if (m[i] > m[pk]) pk = i;
+    notes.push_back((int)std::lround(69 + 12 * std::log2((double)pk * gSr / (double)n / 440.0)));
+    for (size_t i = pk > 30 ? pk - 30 : 0; i < pk + 30 && i < m.size(); ++i) m[i] = 0;
+  }
+  std::sort(notes.begin(), notes.end());
+  return notes;
+}
+
+static void testChordMemory() {
+  section("chord memory: learn a held chord, then play it from one key");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  press("btn_chord");
+  renderNew(0.05);
+  CHECK(fw::controlGet(ctl("btn_chord")) == 0, "with nothing held there is nothing to learn: the light should stay off");
+  for (int k : {60, 64, 67}) midi({0x90, k, 100});
+  renderNew(0.1);
+  press("btn_chord");
+  renderNew(0.05);
+  CHECK(fw::controlGet(ctl("btn_chord")) == 1, "Chord should light once it has learned a chord");
+  CHECK(fw::gSynth.activeVoices() == 3, "the keys being held should carry on unchanged (%d voices)", fw::gSynth.activeVoices());
+  for (int k : {60, 64, 67}) midi({0x80, k, 0});
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "letting the chord go should silence it");
+
+  midi({0x90, 62, 100});  // one key: D
+  std::vector<float> x = renderNew(0.8);
+  CHECK(fw::gSynth.activeVoices() == 3, "one key should sound three voices (%d)", fw::gSynth.activeVoices());
+  std::vector<int> got = soundingNotes(x, 3);
+  CHECK((got == std::vector<int>{62, 66, 69}), "D should play D, F sharp, A: got %s", show(got).c_str());
+  fw::tick(1600);  // let the last control's visual clear
+  fw::tick(33);
+  saveFrame("home_chord");
+  CHECK(countColour(fw::kAmber, 222, 236) > 100, "the display should show that chord memory is on");
+
+  // two keys whose chords share notes: letting one go must not cut the other's notes
+  midi({0x90, 66, 100});  // F sharp major: F#, A#, C#; shares F# with the D chord
+  renderNew(0.3);
+  CHECK(fw::gSynth.activeVoices() == 5, "D and F sharp chords together: %d voices, expected 5 (they share one note)", fw::gSynth.activeVoices());
+  midi({0x80, 62, 0});
+  x = renderNew(1.2);
+  CHECK(fw::gSynth.activeVoices() == 3, "after releasing D: %d voices, expected the three of F sharp major", fw::gSynth.activeVoices());
+  got = soundingNotes(renderNew(0.8), 3);
+  CHECK((got == std::vector<int>{66, 70, 73}), "the F sharp chord should be intact: got %s", show(got).c_str());
+  midi({0x80, 66, 0});
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "all keys up: silence");
+
+  section("chord memory: switching it off returns keys to single notes, even one being held");
+  midi({0x90, 62, 100});
+  renderNew(0.3);
+  press("btn_chord");
+  renderNew(1.0);
+  CHECK(fw::controlGet(ctl("btn_chord")) == 0, "second press should switch Chord off");
+  CHECK(fw::gSynth.activeVoices() == 1, "the held key should drop back to its own note (%d voices)", fw::gSynth.activeVoices());
+  x = renderNew(0.5);
+  CHECK(std::fabs(measureFreq(x, 0, x.size()) / 293.66 - 1) < 0.003, "and that note should be the key itself");
+  midi({0x80, 62, 0});
+  midi({0x90, 65, 100});
+  renderNew(0.3);
+  CHECK(fw::gSynth.activeVoices() <= 2, "with Chord off a key is one note again");
+  midi({0x80, 65, 0});
+
+  section("chord memory with the arp: one key arpeggiates the remembered chord");
+  boot(48000);
+  arpTone();
+  for (int k : {60, 63, 67, 70}) midi({0x90, k, 100});  // C minor seventh
+  renderNew(0.1);
+  press("btn_chord");
+  renderNew(0.05);
+  for (int k : {60, 63, 67, 70}) midi({0x80, k, 0});
+  renderNew(0.5);
+  setSel("arp_mode", fw::ARP_UP);
+  renderNew(0.05);
+  midi({0x90, 57, 100});  // one key: A
+  std::vector<int> seq = stepNotes(renderNew(1.0), 0.125, 8);
+  CHECK((seq == std::vector<int>{57, 60, 64, 67, 57, 60, 64, 67}), "one key should arpeggiate A minor seventh: got %s", show(seq).c_str());
+  midi({0x80, 57, 0});
+  x = renderNew(0.6);
+  CHECK(rmsOf(x, 0.3, 0.6) < 1e-4, "and stop when the key is let go");
+
+  section("chord memory with Hold: the held chord is replaced by the next key's chord");
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  for (int k : {60, 64, 67}) midi({0x90, k, 100});
+  renderNew(0.1);
+  press("btn_chord");
+  renderNew(0.05);
+  for (int k : {60, 64, 67}) midi({0x80, k, 0});
+  renderNew(1.0);
+  press("btn_hold");
+  midi({0x90, 62, 100});
+  renderNew(0.2);
+  midi({0x80, 62, 0});
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 3, "Hold should keep the chord sounding (%d voices)", fw::gSynth.activeVoices());
+  midi({0x90, 65, 100});
+  renderNew(0.2);
+  midi({0x80, 65, 0});
+  renderNew(1.2);
+  got = soundingNotes(renderNew(0.8), 3);
+  CHECK(fw::gSynth.activeVoices() == 3 && (got == std::vector<int>{65, 69, 72}), "the next key's chord should replace it: %d voices, %s", fw::gSynth.activeVoices(), show(got).c_str());
 }
 
 static void testLfoShapes() {
@@ -2068,6 +2277,8 @@ int main(int argc, char** argv) {
   testPanelRegistry();
   testDriftAndSpread();
   testSupersawSyncXmod();
+  testLadderFilter();
+  testChordMemory();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

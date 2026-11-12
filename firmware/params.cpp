@@ -13,7 +13,7 @@ const char* const kFilterLabels[] = {"LP", "BP", "HP"};
 const char* const kModeLabels[] = {"POLY", "MONO", "UNI"};
 const char* const kDestLabels[] = {"PITCH", "CUTOFF", "AMP", "PW"};
 const char* const kSubLabels[] = {"-1 OCT", "-2 OCT"};
-const char* const kSlopeLabels[] = {"12 dB", "24 dB"};
+const char* const kSlopeLabels[] = {"12 dB", "24 dB", "LADDER"};
 const char* const kSyncLabels[] = {"FREE", "KEY"};
 const char* const kArpLabels[] = {"OFF", "UP", "DOWN", "UP-DOWN", "RANDOM", "PLAYED"};
 const char* const kEngineLabels[] = {"VA", "FM", "WAVETABLE", "PLUCK"};
@@ -100,7 +100,7 @@ const ParamDef kParams[P_COUNT] = {
     {"unison_detune", "UNI DETUNE", SEC_ENGINE, PK_STEP, 51,   15,        110, U_INT_CENTS,  nullptr,       0},
     {"sub_octave",    "SUB OCTAVE", SEC_ENGINE, PK_STEP, 2,    0,         111, U_STEP,       kSubLabels,    0},
     {"bend_range",    "BEND RANGE", SEC_ENGINE, PK_STEP, 12,   1,         112, U_INT_SEMI,   nullptr,       1},
-    {"filter_slope",  "FILT SLOPE", SEC_ENGINE, PK_STEP, 2,    1,         113, U_STEP,       kSlopeLabels,  0},
+    {"filter_slope",  "FILT SLOPE", SEC_ENGINE, PK_STEP, 3,    1,         113, U_STEP,       kSlopeLabels,  0},
     {"delay_time",    "TIME",       SEC_FX1,    PK_STEP, 101,  55,        46,  U_DLY_TIME,   nullptr,       0},
     {"delay_tone",    "TONE",       SEC_FX1,    PK_STEP, 101,  60,        47,  U_INT_PERCENT, nullptr,      0},
     {"delay_feedback", "FEEDBACK",  SEC_FX1,    PK_STEP, 101,  35,        48,  U_INT_PERCENT, nullptr,      0},
@@ -167,6 +167,8 @@ int paramForCC(int cc) {
 float mapCutoffHz(float n) { return 20.0f * exp2f_(n * 10.0f); }
 
 float mapResonanceQ(float n) { return 0.5f * exp2f_(n * 4.585f); }
+
+float mapLadderFeedback(float n) { return 3.9f * n; }
 
 float mapEnvAmtOct(float n) {
   float u = 2.0f * n - 1.0f;
