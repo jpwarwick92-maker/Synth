@@ -12,15 +12,16 @@ namespace {
 
 const char* const kEncoderNames[kNumEncoders] = {"enc1", "enc2", "enc3", "enc4"};
 const char* const kButtonNames[kNumButtons] = {
-    "btn_fx1", "btn_fx2", "btn_mod", "btn_arp", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine",
-    "btn_hold",
+    "btn_fx1", "btn_fx2", "btn_mod", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine", "btn_hold",
 };
-constexpr int kButtonOsc1Engine = MB_COUNT, kButtonOsc2Engine = MB_COUNT + 1, kButtonHold = MB_COUNT + 2;
+// after the mode buttons: oscillator 1's engine button, oscillator 2's, then Hold
+constexpr int kButtonOsc1Engine = MB_COUNT, kButtonHold = MB_COUNT + 2;
 
 constexpr uint32_t kSaveDelayMs = 1000;  // save once the controls have been still this long
 // Version 2: the LFO Shape control became a five-stop selector. Version 1
 // stored it as a pot position; that is converted on loading.
-constexpr uint8_t kStateVersion = 2;
+// Version 3: arp Tempo and Gate became panel pots (they were stepped encoder values).
+constexpr uint8_t kStateVersion = 3;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
@@ -51,7 +52,7 @@ bool stateRead(const uint8_t* src, uint32_t len) {
   if (len < 8 || len > kStateSize) return false;
   if (src[0] != 'S' || src[1] != 'Y' || src[2] != 'N' || src[3] != 'T') return false;
   uint8_t version = src[4];
-  if (version != 1 && version != kStateVersion) return false;
+  if (version < 1 || version > kStateVersion) return false;
   int count = src[5];  // parameters are only ever added at the end, so an older blob is a prefix
   if (count < 1 || count > P_COUNT || len != 6u + (uint32_t)count * 2u + 2u) return false;
   uint16_t sum = 0;
@@ -66,6 +67,8 @@ bool stateRead(const uint8_t* src, uint32_t len) {
   for (int i = 0; i < count; ++i) {
     int v = p[0] | (p[1] << 8);
     if (version == 1 && i == P_LFO_SHAPE) v = mapLfoShape((float)v * (1.0f / (float)kPotMax));
+    if (version < 3 && i == P_ARP_TEMPO) v = v * kPotMax / 200;  // was 0..200 for 40..240 BPM
+    if (version < 3 && i == P_ARP_GATE) v = v * kPotMax / 19;    // was 0..19 for 5..100%
     gParams.set(i, v);
     p += 2;
   }
@@ -94,10 +97,12 @@ void onParamChanged(int id) {
   gSaveMs = kSaveDelayMs;
 }
 
+int controlParam(int index) { return index >= 0 && index < kFirstEncoder ? kPanelParams[index] : -1; }
+
 ControlInfo controlInfo(int index) {
   if (index < 0 || index >= kNumControls) return ControlInfo{"", CK_BUTTON, 0};
   if (index < kFirstEncoder) {
-    const ParamDef& d = kParams[index];
+    const ParamDef& d = kParams[kPanelParams[index]];
     if (d.kind == PK_STEP) return ControlInfo{d.key, CK_SELECTOR, d.steps};
     return ControlInfo{d.key, CK_POT, 0};
   }
@@ -107,8 +112,9 @@ ControlInfo controlInfo(int index) {
 
 void controlSet(int index, int raw) {
   if (index < 0 || index >= kNumControls) return;
-  if (index < kFirstEncoder) {  // pot or selector: the control is the parameter
-    if (gParams.set(index, raw)) onParamChanged(index);
+  if (index < kFirstEncoder) {  // pot, selector or switch: the control is the parameter
+    int id = kPanelParams[index];
+    if (gParams.set(id, raw)) onParamChanged(id);
     return;
   }
   if (raw == 0) return;  // buttons and encoder pushes act when pressed
@@ -138,7 +144,7 @@ void encoderTurn(int index, int delta) {
 
 int controlGet(int index) {
   if (index < 0 || index >= kNumControls) return 0;
-  if (index < kFirstEncoder) return gParams.val[index];
+  if (index < kFirstEncoder) return gParams.val[kPanelParams[index]];
   if (index < kFirstButton) return gEncoderPos[index - kFirstEncoder];
   int b = index - kFirstButton;
   if (b < MB_COUNT) return gUi.mode() == b ? 1 : 0;

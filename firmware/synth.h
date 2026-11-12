@@ -45,6 +45,8 @@ struct Osc {
   int excite;           // Pluck: samples of excitation still to feed in
   int exciteLen;
   bool pluck;           // Pluck: pluck the string at the next block
+  float ss[6];          // Supersaw: phases of the six saws either side of the centre one
+  float blep;           // Sync: second half of the correction that smooths a reset, due next sample
 };
 
 struct Voice {
@@ -61,6 +63,8 @@ struct Voice {
   uint8_t wave1, wave2;
   uint8_t eng1, eng2;
   float lfoAmt;     // 0..1, fades the LFO in after the note starts
+  float drift1, drift2, driftCut;  // slow random wander of each oscillator's pitch and of the cutoff
+  uint32_t driftRng;
   Svf f1, f2;
   Env aenv, fenv;
   uint32_t rng;
@@ -117,7 +121,7 @@ class Synth {
   void trigger(Voice& v, uint8_t note, float vel);
   void releaseVoice(Voice& v);
   void derive(Patch& p, int len);
-  void renderVoice(Voice& v, int index, const Patch& p, float* out, int n);
+  void renderVoice(Voice& v, int index, const Patch& p, float* outL, float* outR, int n);
   void prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, uint8_t engine, uint8_t wave, float inc,
                float macro, float color, float pw);
 

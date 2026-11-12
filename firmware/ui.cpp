@@ -14,7 +14,7 @@ Ui gUi;
 
 namespace {
 
-const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ARP", "ENGINE", "PATCH"};
+const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ENGINE", "PATCH"};
 
 // The soft-control pages. One parameter per encoder, in encoder order
 // (left-top, left-bottom, right-top, right-bottom); kNone leaves a slot empty.
@@ -28,7 +28,6 @@ const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
     /* FX 2   */ {{"CHORUS + REVERB", {P_CHORUS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
     /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
-    /* ARP    */ {{"ARP", {P_ARP_MODE, P_ARP_TEMPO, P_ARP_OCTAVES, P_ARP_GATE}}, {nullptr, {}}},
     /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
     /* PATCH  */ {{nullptr, {}}, {nullptr, {}}},
@@ -59,7 +58,10 @@ const char* paramName(int id) {
   if (osc >= 0) {
     int e = engineOf(osc);
     if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) return kEngineWaveName[e];
-    if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) return kEngineMacroName[e];
+    if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) {
+      bool super = e == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
+      return super ? "SAW DETUNE" : kEngineMacroName[e];  // under the supersaw, Macro spreads the seven saws
+    }
     if (id == P_OSC1_COLOR || id == P_OSC2_COLOR) return kEngineColorName[e];
   }
   return kParams[id].name;
@@ -125,7 +127,13 @@ void formatParam(int id, Str& s) {
   int osc = oscOf(id);
   int engine = osc >= 0 ? engineOf(osc) : ENG_VA;
   if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) {  // the stops mean something else under each engine
-    s.add(kEngineWaveLabels[engine][st & 3]);
+    s.add(kEngineWaveLabels[engine][st < WAVE_COUNT ? st : 0]);
+    return;
+  }
+  bool superSaw = osc >= 0 && engine == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
+  if ((id == P_OSC1_MACRO || id == P_OSC2_MACRO) && superSaw) {
+    s.addInt((int)((id == P_OSC1_MACRO ? n : gParams.frac(id)) * 100.0f + 0.5f));
+    s.add('%');
     return;
   }
   if (id == P_OSC1_MACRO && engine != ENG_VA) {
@@ -146,11 +154,11 @@ void formatParam(int id, Str& s) {
       break;
     case U_INT_PLAIN: s.addInt(st + d.intMin); break;
     case U_BPM:
-      s.addInt(st + d.intMin);
+      s.addInt((int)mapTempoBpm(n));
       s.add(" BPM");
       break;
     case U_GATE:
-      s.addInt((st + 1) * 5);
+      s.addInt((int)(mapArpGate(n) * 100.0f + 0.5f));
       s.add('%');
       break;
     case U_DLY_TIME: s.addTime(mapDelayTime(gParams.frac(id))); break;
@@ -306,13 +314,23 @@ float waveShape(int wave, float ph, float pw) {
 // One point of an oscillator's wave as it is set now, whichever engine it runs.
 float oscShape(int osc, float ph) {
   int engine = engineOf(osc);
-  int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) & 3;
+  int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE);
+  if (wave >= WAVE_COUNT) wave = 0;
   float macro = osc == 0 ? gParams.norm(P_OSC1_MACRO) : gParams.frac(P_OSC2_MACRO);
   float color = gParams.frac(osc == 0 ? P_OSC1_COLOR : P_OSC2_COLOR);
   switch (engine) {
-    case ENG_VA: return waveShape(wave, ph, mapPulseWidth(macro));
+    case ENG_VA:
+      if (wave == WAVE_SUPER) {  // a few of the seven saws, drifting apart as the detune goes up
+        float spread = 0.05f + 0.95f * macro * macro;
+        float a = 2.0f * ph - 1.0f;
+        float p2 = ph * (1.0f + 0.11f * spread) + 0.31f, p3 = ph * (1.0f - 0.11f * spread) + 0.67f;
+        p2 -= floorf_(p2);
+        p3 -= floorf_(p3);
+        return (a + 0.6f * (2.0f * p2 - 1.0f) + 0.6f * (2.0f * p3 - 1.0f)) * 0.5f;
+      }
+      return waveShape(wave, ph, mapPulseWidth(macro));
     case ENG_FM: {
-      static const float kRatios[4] = {1.0f, 2.0f, 3.0f, 3.5f};
+      static const float kRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f};
       float m = sinf_(kTwoPi * ph * kRatios[wave]);
       return sinf_(kTwoPi * ph + macro * macro * 8.0f * m);
     }
@@ -334,10 +352,11 @@ void drawOscWave(int osc) {
   const int x0 = 10, w = 300, mid = 138, amp = 64;
   gfxHLine(x0, mid, w, kGrid);
   bool once = engineOf(osc) == ENG_PLUCK;  // a pluck is one event, not a repeating wave
+  bool super = engineOf(osc) == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
   int py = 0;
   for (int px = 0; px < w; ++px) {
-    float ph = (float)px * ((once ? 1.0f : 2.0f) / (float)w);
-    if (!once) ph -= floorf_(ph);
+    float ph = (float)px * ((once ? 1.0f : super ? 4.0f : 2.0f) / (float)w);
+    if (!once && !super) ph -= floorf_(ph);
     int yy = clampi(mid - (int)(oscShape(osc, ph) * (float)amp), 56, 216);
     plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
@@ -366,6 +385,21 @@ float filterStage(float w, float k, int type) {
     case FILT_BP: return (k > 1.0f ? k : 1.0f) * w / den;
     default: return w2 / den;
   }
+}
+
+// Spread: where each of the eight voices sits between the two speakers.
+void drawSpread() {
+  static const float kPan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
+  const int mid = 160, half = 130, y = 128;
+  float spread = gParams.norm(P_SPREAD);
+  gfxHLine(mid - half, y + 5, 2 * half + 1, kGrid);
+  gfxVLine(mid, y - 30, 70, kGrid);
+  for (int i = 0; i < kNumVoices; ++i) {
+    int x = mid + (int)(kPan[i] * spread * (float)half);
+    gfxFill(x - 5, y - 14 + (i % 4) * 9, 10, 8, gSynth.voiceActive(i) ? kAmber : kTeal);
+  }
+  gfxText(mid - half, 190, "L", kGrey, 2);
+  gfxTextRight(mid + half, 190, "R", kGrey, 2);
 }
 
 // ---- the filter pictures ----
@@ -706,7 +740,9 @@ void Ui::drawParamPopup(int id) {
       drawOscWave(0);
       break;
     case SEC_OSC2:
-      drawOscWave(1);
+      if (id == P_XMOD) drawBar(gParams.norm(id));
+      else if (id == P_SYNC) drawSteps(d, gParams.step(id));
+      else drawOscWave(1);
       break;
     case SEC_MIXER:
       drawMixer(id);
@@ -728,7 +764,8 @@ void Ui::drawParamPopup(int id) {
       drawLfo();
       break;
     default:
-      if (d.kind == PK_STEP && d.labels) drawSteps(d, gParams.step(id));
+      if (id == P_SPREAD) drawSpread();
+      else if (d.kind == PK_STEP && d.labels) drawSteps(d, gParams.step(id));
       else if (d.kind == PK_STEP) drawBar(gParams.frac(id));
       else drawBar(gParams.norm(id));
       break;

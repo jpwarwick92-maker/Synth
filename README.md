@@ -12,7 +12,7 @@ and the panel layout can be played before any hardware exists.
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
 | `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer and plays its audio. |
-| `layouts/a2.json` | The panel layout in millimetres. The page draws whatever this file says. |
+| `layouts/a3.json` | The panel layout in millimetres. The page draws whatever this file says. |
 | `tests/native/` | Engine and display tests that render audio and display frames with no browser. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
 | `docs/controls.md` | Every control with its MIDI controller number, generated from the firmware's table. |
@@ -72,20 +72,33 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
 
 ## What the prototype covers
 
-The whole A2 panel driving the voice: two oscillators plus sub and noise, mixer,
-multimode filter (12 or 24 dB) with drive, filter and amp envelopes, one LFO, glide,
-and poly, mono and unison modes. The display shows a home screen with a live scope and
-a visual for each control as it moves.
+The whole panel (layout A3) driving the voice: two oscillators plus sub and noise,
+mixer, multimode filter (12 or 24 dB) with drive, filter and amp envelopes, one LFO,
+glide, and poly, mono and unison modes. The display shows a home screen with a live
+scope and a visual for each control as it moves.
+
+**Panel features added while prototyping.**
+
+- **Drift** makes each voice slightly and slowly out of tune with the others, in pitch
+  and filter cutoff, as the voices of an analog poly are. At zero every voice is exact.
+- **Spread** fans the voices out between the two speakers.
+- **Supersaw** is the fifth stop on each Wave selector: seven saws, with Macro setting
+  how far apart they are tuned.
+- **Sync** restarts oscillator 2 with every cycle of oscillator 1. With Sync on, the
+  Mod page's Env>Pitch moves oscillator 2 only, which gives the classic sync sweep.
+- **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
+  fader down.
+- **Arp** has its own section: Mode, Octaves, Tempo, Gate and Hold.
 
 **Oscillator engines.** Each oscillator has an Engine button that steps through four
 engines. The Wave selector and the timbre controls mean something different under each:
 
 | Engine | Wave selector | Macro | Color |
 |---|---|---|---|
-| VA | saw, square, triangle, sine | pulse width | none |
-| FM | ratio 1:1, 2:1, 3:1, 3.5:1 | FM amount | feedback |
-| Wavetable | table 1 to 4 | position in the table | none |
-| Pluck | exciter: noise, soft, snap, string | damping | decay |
+| VA | saw, square, triangle, sine, supersaw | pulse width (supersaw: detune) | none |
+| FM | ratio 1:1, 2:1, 3:1, 3.5:1, 4:1 | FM amount | feedback |
+| Wavetable | table 1 to 5 | position in the table | none |
+| Pluck | exciter: noise, soft, snap, string, pick | damping | decay |
 
 Oscillator 1's Macro is the panel knob. Its Color, and oscillator 2's Macro and Color,
 are on page 2 of the Engine mode.
@@ -99,16 +112,14 @@ encoder restores its default.
 | FX 1 | Delay | time, tone, feedback, mix |
 | FX 2 | Chorus + reverb | chorus, reverb size, reverb tone, reverb mix |
 | Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
-| Arp | Arp | mode, tempo, octaves, gate |
 | Engine | 1: Voice | unison detune, sub octave, bend range, filter slope |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | not built yet | |
 
 **Arpeggiator and Hold.** The arp plays the held notes as sixteenth notes: up, down,
-up-down, random or as played, over 1 to 4 octaves. **Hold** (a ninth button, added to
-the layout while prototyping) keeps notes sounding after the keys are let go; the next
-chord replaces them. It works with the arp on or off. While the arp runs, the sustain
-pedal acts as a temporary Hold.
+up-down, random or as played, over 1 to 4 octaves, at 40 to 240 BPM. **Hold** keeps
+notes sounding after the keys are let go; the next chord replaces them. It works with
+the arp on or off. While the arp runs, the sustain pedal acts as a temporary Hold.
 
 **Output** is stereo once the chorus or reverb is on. With every effect off, both
 channels carry exactly the dry signal.

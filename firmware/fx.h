@@ -1,8 +1,7 @@
 // Effects after the voices: chorus, delay, reverb, in that order.
 //
-// Mono in, stereo out. Each effect is skipped completely when its amount is
-// zero, so with everything off the output is exactly the dry signal on both
-// channels. No allocation: every delay line is a fixed static buffer.
+// Stereo in, stereo out. Each effect is skipped completely when its amount
+// is zero, so with everything off the output is exactly the input. No allocation: every delay line is a fixed static buffer.
 #pragma once
 
 #include "fw_config.h"
@@ -23,8 +22,8 @@ struct FxSettings {
 class Effects {
  public:
   void init(float sampleRate);
-  // in: n mono samples. outL/outR: n samples each. n <= kMaxBlock.
-  void process(const float* in, float* outL, float* outR, int n, const FxSettings& s);
+  // n samples in each buffer, n <= kMaxBlock.
+  void process(const float* inL, const float* inR, float* outL, float* outR, int n, const FxSettings& s);
 
  private:
   float sr_;

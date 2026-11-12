@@ -80,10 +80,20 @@ enum ParamId : uint8_t {
   P_OSC1_ENGINE,
   P_OSC2_ENGINE,
   P_HOLD,
+  // panel controls added with layout A3
+  P_DRIFT,
+  P_SPREAD,
+  P_XMOD,
+  P_SYNC,
 
   P_COUNT,
-  P_PANEL_COUNT = P_UNI_DETUNE,  // params with their own physical control
 };
+
+// The parameters that have their own knob, fader, selector or switch on the
+// panel, in control order. A control's index is its place in this list.
+constexpr int kPanelCount = 40;
+extern const uint8_t kPanelParams[kPanelCount];
+bool isPanelParam(int id);
 
 enum Section : uint8_t {
   SEC_OSC1,
@@ -127,7 +137,7 @@ enum Unit : uint8_t {
   U_FADE_TIME,
 };
 
-enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN };
+enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN, WAVE_SUPER, WAVE_COUNT };
 enum FilterType : uint8_t { FILT_LP, FILT_BP, FILT_HP };
 enum VoiceMode : uint8_t { MODE_POLY, MODE_MONO, MODE_UNI };
 enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_PW };
@@ -202,6 +212,8 @@ float mapFadeTime(float f);       // 0 .. 5 s
 extern const char* const kEngineWaveName[ENG_COUNT];
 extern const char* const kEngineMacroName[ENG_COUNT];
 extern const char* const kEngineColorName[ENG_COUNT];   // "" = this engine has none
-extern const char* const kEngineWaveLabels[ENG_COUNT][4];
+extern const char* const kEngineWaveLabels[ENG_COUNT][WAVE_COUNT];
+float mapTempoBpm(float n);       // 40 .. 240
+float mapArpGate(float n);        // 0.05 .. 1 of a step
 
 }  // namespace fw

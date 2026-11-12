@@ -1,0 +1,108 @@
+{
+  "name": "A3",
+  "description": "Layout A2 grown while prototyping: the arpeggiator has its own section, and Drift, Spread, X-Mod and Sync are on the panel. 16 knobs, 10 rotary selectors, 1 toggle switch, 12 faders, 4 push-encoders, 8 buttons, 2.4 inch display.",
+  "units": "mm",
+  "panel": { "width": 563, "height": 192 },
+
+  "sizes": {
+    "knob": 13,
+    "knobLarge": 20,
+    "selector": 7.7,
+    "encoder": 13,
+    "faderCap": [9.5, 4.7],
+    "faderSlot": 1.8,
+    "toggle": [6, 11]
+  },
+
+  "sections": [
+    { "title": "Osc 1", "x": 12, "y": 16, "w": 96, "h": 70 },
+    { "title": "Osc 2", "x": 114, "y": 16, "w": 150, "h": 70 },
+    { "title": "Mixer", "x": 270, "y": 16, "w": 74, "h": 70 },
+    { "title": "Filter", "x": 350, "y": 16, "w": 115, "h": 70 },
+    { "title": "Voice", "x": 471, "y": 16, "w": 80, "h": 70 },
+    { "title": "Filter envelope", "x": 12, "y": 92, "w": 82, "h": 82 },
+    { "title": "Amp envelope", "x": 100, "y": 92, "w": 98, "h": 82 },
+    { "title": "LFO", "x": 204, "y": 92, "w": 118, "h": 82 },
+    { "title": "Arp", "x": 328, "y": 92, "w": 92, "h": 82 },
+    { "title": "Soft controls", "x": 426, "y": 92, "w": 125, "h": 82, "accent": "soft" }
+  ],
+
+  "display": { "x": 464, "y": 106, "w": 48.96, "h": 36.72, "bezel": 1.6 },
+
+  "controls": [
+    { "id": "osc1_wave", "type": "selector", "x": 35, "y": 52, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP"] },
+    { "id": "osc1_octave", "type": "selector", "x": 66, "y": 52, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
+    { "id": "osc1_macro", "type": "knob", "x": 93, "y": 50, "label": "Macro" },
+    { "id": "btn_osc1_engine", "type": "button", "x": 23, "y": 77, "w": 10, "h": 5, "caption": "Engine" },
+
+    { "id": "osc2_wave", "type": "selector", "x": 137, "y": 52, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP"] },
+    { "id": "osc2_octave", "type": "selector", "x": 168, "y": 52, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
+    { "id": "osc2_detune", "type": "knob", "x": 195, "y": 50, "label": "Detune" },
+    { "id": "osc_xmod", "type": "knob", "x": 220, "y": 50, "label": "X-Mod" },
+    { "id": "osc_sync", "type": "toggle", "x": 246, "y": 49, "label": "Sync", "stops": ["OFF", "ON"] },
+    { "id": "btn_osc2_engine", "type": "button", "x": 125, "y": 77, "w": 10, "h": 5, "caption": "Engine" },
+
+    { "id": "mix_osc1", "type": "fader", "x": 282, "y": 49, "travel": 34, "label": "Osc 1" },
+    { "id": "mix_osc2", "type": "fader", "x": 299, "y": 49, "travel": 34, "label": "Osc 2" },
+    { "id": "mix_sub", "type": "fader", "x": 316, "y": 49, "travel": 34, "label": "Sub" },
+    { "id": "mix_noise", "type": "fader", "x": 333, "y": 49, "travel": 34, "label": "Noise" },
+
+    { "id": "filter_cutoff", "type": "knob", "size": "large", "x": 372, "y": 52, "label": "Cutoff" },
+    { "id": "filter_resonance", "type": "knob", "x": 402, "y": 39, "label": "Resonance" },
+    { "id": "filter_env_amount", "type": "knob", "x": 426, "y": 39, "label": "Env amount" },
+    { "id": "filter_keytrack", "type": "knob", "x": 402, "y": 65, "label": "Keytrack" },
+    { "id": "filter_drive", "type": "knob", "x": 426, "y": 65, "label": "Drive" },
+    { "id": "filter_type", "type": "selector", "x": 451, "y": 56, "label": "Type", "stops": ["LP", "BP", "HP"] },
+
+    { "id": "voice_glide", "type": "knob", "x": 491, "y": 39, "label": "Glide" },
+    { "id": "voice_mode", "type": "selector", "x": 531, "y": 44, "label": "Mode", "stops": ["POLY", "MONO", "UNI"] },
+    { "id": "voice_drift", "type": "knob", "x": 491, "y": 66, "label": "Drift" },
+    { "id": "voice_spread", "type": "knob", "x": 531, "y": 66, "label": "Spread" },
+
+    { "id": "fenv_attack", "type": "fader", "x": 26, "y": 131, "travel": 34, "label": "Attack" },
+    { "id": "fenv_decay", "type": "fader", "x": 44, "y": 131, "travel": 34, "label": "Decay" },
+    { "id": "fenv_sustain", "type": "fader", "x": 62, "y": 131, "travel": 34, "label": "Sustain" },
+    { "id": "fenv_release", "type": "fader", "x": 80, "y": 131, "travel": 34, "label": "Release" },
+
+    { "id": "aenv_attack", "type": "fader", "x": 114, "y": 131, "travel": 34, "label": "Attack" },
+    { "id": "aenv_decay", "type": "fader", "x": 132, "y": 131, "travel": 34, "label": "Decay" },
+    { "id": "aenv_sustain", "type": "fader", "x": 150, "y": 131, "travel": 34, "label": "Sustain" },
+    { "id": "aenv_release", "type": "fader", "x": 168, "y": 131, "travel": 34, "label": "Release" },
+    { "id": "aenv_velocity", "type": "knob", "x": 186, "y": 129, "label": "Velocity" },
+
+    { "id": "lfo_rate", "type": "knob", "x": 219, "y": 128, "label": "Rate" },
+    { "id": "lfo_depth", "type": "knob", "x": 241, "y": 128, "label": "Depth" },
+    { "id": "lfo_shape", "type": "selector", "x": 266, "y": 132, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"] },
+    { "id": "lfo_destination", "type": "selector", "x": 300, "y": 132, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
+
+    { "id": "arp_mode", "type": "selector", "x": 354, "y": 122, "label": "Mode", "stops": ["OFF", "UP", "DOWN", "U-D", "RND", "PLAY"] },
+    { "id": "arp_octaves", "type": "selector", "x": 398, "y": 122, "label": "Octaves", "stops": ["1", "2", "3", "4"] },
+    { "id": "arp_tempo", "type": "knob", "x": 345, "y": 151, "label": "Tempo" },
+    { "id": "arp_gate", "type": "knob", "x": 371, "y": 151, "label": "Gate" },
+    { "id": "btn_hold", "type": "button", "x": 401, "y": 152, "w": 17, "h": 7, "label": "HOLD" },
+
+    { "id": "enc1", "type": "encoder", "x": 445, "y": 112 },
+    { "id": "enc2", "type": "encoder", "x": 445, "y": 137 },
+    { "id": "enc3", "type": "encoder", "x": 532, "y": 112 },
+    { "id": "enc4", "type": "encoder", "x": 532, "y": 137 },
+
+    { "id": "btn_fx1", "type": "button", "x": 441.5, "y": 159, "w": 20, "h": 7, "label": "FX 1" },
+    { "id": "btn_fx2", "type": "button", "x": 465, "y": 159, "w": 20, "h": 7, "label": "FX 2" },
+    { "id": "btn_mod", "type": "button", "x": 488.5, "y": 159, "w": 20, "h": 7, "label": "MOD" },
+    { "id": "btn_engine", "type": "button", "x": 512, "y": 159, "w": 20, "h": 7, "label": "ENGINE" },
+    { "id": "btn_patch", "type": "button", "x": 535.5, "y": 159, "w": 20, "h": 7, "label": "PATCH" }
+  ],
+
+  "rear": [
+    { "id": "volume", "type": "knob", "label": "Volume" }
+  ],
+
+  "texts": [
+    { "x": 12, "y": 10.5, "text": "POLY-8", "size": 5, "style": "title" },
+    { "x": 551, "y": 10, "text": "8-VOICE · LAYOUT A3", "size": 2.6, "anchor": "end", "style": "note" },
+    { "x": 209, "y": 167, "text": "Mod wheel adds depth", "size": 2.8, "style": "note" },
+    { "x": 545, "y": 99.5, "text": "2.4\" IPS", "size": 2.4, "anchor": "end", "style": "note" },
+    { "x": 12, "y": 184, "text": "VOLUME KNOB, MIDI IN, USB HOST, LINE IN, LINE OUT, PHONES ON REAR PANEL", "size": 2.6, "style": "note" },
+    { "x": 551, "y": 184, "text": "16 KNOBS · 10 ROTARY SELECTORS · 1 TOGGLE · 12 FADERS · 4 PUSH-ENCODERS · 8 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
+  ]
+}

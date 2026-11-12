@@ -21,8 +21,8 @@ struct ControlInfo {
 };
 
 constexpr int kNumEncoders = 4;
-constexpr int kNumButtons = 9;  // six mode buttons, two oscillator engine buttons, Hold
-constexpr int kFirstEncoder = P_PANEL_COUNT;
+constexpr int kNumButtons = 8;  // five mode buttons, two oscillator engine buttons, Hold
+constexpr int kFirstEncoder = kPanelCount;
 constexpr int kFirstButton = kFirstEncoder + kNumEncoders;
 constexpr int kNumControls = kFirstButton + kNumButtons;
 
@@ -36,6 +36,8 @@ void process(float* outL, float* outR, int n);
 void midiByte(uint8_t b);
 
 ControlInfo controlInfo(int index);
+// The parameter a pot, fader, selector or switch sets, or -1 for encoders and buttons.
+int controlParam(int index);
 // Pot: raw position. Selector: stop index. Button or encoder push: 1 = down, 0 = up.
 void controlSet(int index, int raw);
 // Encoder turned by `delta` clicks (positive = clockwise).

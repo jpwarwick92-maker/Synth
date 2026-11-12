@@ -6,7 +6,7 @@
 
 namespace fw {
 
-enum ModeButton : int8_t { MB_NONE = -1, MB_FX1, MB_FX2, MB_MOD, MB_ARP, MB_ENGINE, MB_PATCH, MB_COUNT };
+enum ModeButton : int8_t { MB_NONE = -1, MB_FX1, MB_FX2, MB_MOD, MB_ENGINE, MB_PATCH, MB_COUNT };
 
 constexpr uint32_t kPopupMs = 1500;  // how long a control's visual stays up
 
@@ -17,7 +17,7 @@ class Ui {
   // A panel control or a MIDI controller moved this parameter: show its visual.
   void paramChanged(int id);
 
-  // One of the six mode buttons was pressed. A mode can have several pages:
+  // One of the five mode buttons was pressed. A mode can have several pages:
   // pressing its lit button steps through them, then returns home.
   void modeButton(int which);
   void encoderTurn(int enc, int delta);

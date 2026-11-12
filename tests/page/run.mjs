@@ -13,6 +13,9 @@ const { chromium } = require('playwright');
 
 const siteDir = path.resolve(process.argv[2] || 'build/site');
 const shotDir = path.resolve(process.argv[3] || 'build/out');
+// The layout file the page draws: positions and sizes below are checked against it.
+const layout = JSON.parse(await readFile(path.join(siteDir, 'layouts/a3.json'), 'utf8'));
+const PANEL_MM = layout.panel.width;
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm' };
 
@@ -89,9 +92,12 @@ const lcdCount = (page, rgb, y0 = 0, y1 = 240) => page.evaluate(([c, a, b]) => w
 async function arc(page, id, fromDeg, toDeg, radius = 20) {
   const c = await centre(page, id);
   const at = (deg) => ({ x: c.x + radius * Math.sin((deg * Math.PI) / 180), y: c.y - radius * Math.cos((deg * Math.PI) / 180) });
+  // press on the control itself, slide out along the same bearing, then go round
+  const grab = { x: c.x + 10 * Math.sin((fromDeg * Math.PI) / 180), y: c.y - 10 * Math.cos((fromDeg * Math.PI) / 180) };
   const p0 = at(fromDeg);
-  await page.mouse.move(p0.x, p0.y);
+  await page.mouse.move(grab.x, grab.y);
   await page.mouse.down();
+  await page.mouse.move(p0.x, p0.y);
   const steps = Math.max(4, Math.round(Math.abs(toDeg - fromDeg) / 6));
   for (let i = 1; i <= steps; i++) {
     const p = at(fromDeg + ((toDeg - fromDeg) * i) / steps);
@@ -113,17 +119,19 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 11, '11 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 8, '8 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.knob') === 16, '16 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 10, '10 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.toggle') === 1, '1 toggle switch', String(await count('#panel .ctl.toggle')));
+    check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
-    check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
+    check(await count('#panel .ctl.button') === 8, '8 buttons', String(await count('#panel .ctl.button')));
     check(await count('#rear .ctl.knob') === 1, 'rear-panel volume knob');
 
     // the display sits where the layout says, at 4:3
     const lcd = await page.locator('#lcd').boundingBox(), panel = await page.locator('#panel').boundingBox();
-    const mm = panel.width / 464;
-    check(Math.abs((lcd.x - panel.x) / mm - 365) < 0.5 && Math.abs((lcd.y - panel.y) / mm - 106) < 0.5, 'display position', JSON.stringify(lcd));
+    const mm = panel.width / PANEL_MM;
+    check(Math.abs((lcd.x - panel.x) / mm - layout.display.x) < 0.5 && Math.abs((lcd.y - panel.y) / mm - layout.display.y) < 0.5, 'display position', JSON.stringify(lcd));
     check(Math.abs(lcd.width / mm - 48.96) < 0.3 && Math.abs(lcd.height / mm - 36.72) < 0.3, 'display size');
     check(errors.length === 0, 'no page errors before start', errors.join(' | '));
     await page.close();
@@ -131,7 +139,7 @@ try {
     // change one position in the layout file only: the control moves
     const moved = await open(context, {
       start: false,
-      tweak: (p) => p.route('**/layouts/a2.json', async (route) => {
+      tweak: (p) => p.route('**/layouts/a3.json', async (route) => {
         const res = await route.fetch();
         const json = await res.json();
         json.controls.find((c) => c.id === 'osc1_macro').x = 70;
@@ -149,7 +157,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 45, '45 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 52, '52 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -223,6 +231,19 @@ try {
     await arc(page, 'enc2', -45, 45);                     // 90 degrees = 6 clicks
     const turned = ((await pos(page, 'enc2')) - e0 + 65536) % 65536;
     check(turned === 5 || turned === 6, 'encoder: one click per 15 degrees of turn', String(turned));
+
+    // the arpeggiator's own panel controls, and the Sync switch
+    await arc(page, 'arp_mode', -85, -51, 18);            // from OFF to UP
+    check(await pos(page, 'arp_mode') === 1, 'arp Mode selector: six stops, turned to UP', String(await pos(page, 'arp_mode')));
+    await arc(page, 'arp_mode', -51, -85, 18);
+    check(await pos(page, 'arp_mode') === 0, 'arp Mode back to OFF', String(await pos(page, 'arp_mode')));
+    const sw = await centre(page, 'osc_sync');
+    await page.mouse.click(sw.x, sw.y);
+    check(await pos(page, 'osc_sync') === 1, 'Sync switch: a tap flips it on', String(await pos(page, 'osc_sync')));
+    check(await page.locator('[data-id="osc_sync"]').evaluate((e) => e.classList.contains('lit')), 'Sync switch shows it is on');
+    await page.mouse.click(sw.x, sw.y);
+    check(await pos(page, 'osc_sync') === 0, 'Sync switch: a second tap flips it off', String(await pos(page, 'osc_sync')));
+    await sleep(1700);
 
     // scrolling over a control: a trackpad sends many small amounts
     const s0 = await pos(page, 'lfo_rate');
@@ -373,13 +394,13 @@ try {
     const want = {};
     for (const id of ids) want[id] = await pos(page, id);
     const blob = await page.evaluate(() => localStorage.getItem('synth.state.v1'));
-    check(ids.length === 32 && blob && blob.length > 50, 'state is stored for the next visit');
+    check(ids.length === 40 && blob && blob.length > 50, 'state is stored for the next visit');
     await page.close();
 
     const again = await open(context);
     let wrong = [];
     for (const id of ids) if (await pos(again.page, id) !== want[id]) wrong.push(id);
-    check(wrong.length === 0, 'all 32 controls are where they were left', wrong.join(', '));
+    check(wrong.length === 0, 'all 40 controls are where they were left', wrong.join(', '));
     check(want.filter_cutoff > 3000 && want.osc1_wave === 3, 'and those are the moved positions, not defaults');
     check(await again.page.evaluate(() => localStorage.getItem('synth.state.v1')) === blob, 'saved state is unchanged by the reload');
     check(again.errors.length === 0, 'no page errors', again.errors.join(' | '));
@@ -394,7 +415,7 @@ try {
     check(Math.abs(card.width - 85.6 * 4.25) < 1.5 && Math.abs(card.height - 53.98 * 4.25) < 1.5, 'calibration outline is one bank card at the chosen scale', JSON.stringify(card));
     await again.page.click('#cal-save');
     const w = (await again.page.locator('#panel').boundingBox()).width;
-    check(Math.abs(w - 464 * 4.25) < 1, '1:1 panel is 464 mm at the calibrated scale', String(w));
+    check(Math.abs(w - PANEL_MM * 4.25) < 1, `1:1 panel is ${PANEL_MM} mm at the calibrated scale`, String(w));
     const a = await again.page.locator('[data-id="lfo_rate"] .cap').boundingBox(), b = await again.page.locator('[data-id="lfo_depth"] .cap').boundingBox();
     check(Math.abs((b.x - a.x) / 4.25 - 22) < 0.1, 'two knobs 22 mm apart in the file are 22 mm apart on screen', String((b.x - a.x) / 4.25));
     check(await again.page.evaluate(() => { const s = document.getElementById('stage'); return s.scrollWidth > s.clientWidth; }), 'the 1:1 panel can be panned');

@@ -170,7 +170,7 @@ function makeFader(g, def, sizes, c, send) {
 function makeSelector(g, def, sizes, c, send) {
   const stops = def.stops;
   const n = stops.length;
-  const spacing = n === 3 ? 45 : 40;
+  const spacing = n === 3 ? 45 : n >= 6 ? 34 : 40;   // six stops are packed a little closer, to keep them all above the knob
   const angle = (i) => (i - (n - 1) / 2) * spacing;
   const r = sizes.selector / 2;
   const ticks = [], labels = [];
@@ -179,12 +179,13 @@ function makeSelector(g, def, sizes, c, send) {
     const sx = Math.sin(a), cy = -Math.cos(a);
     ticks.push(el('line', { x1: sx * (r + 1.6), y1: cy * (r + 1.6), x2: sx * (r + 3.4), y2: cy * (r + 3.4), class: 'tick' }, g));
     const anchor = angle(i) < -10 ? 'end' : angle(i) > 10 ? 'start' : 'middle';
-    const t = el('text', { x: sx * (r + 5), y: cy * (r + 5) + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
+    const lr = r + (n >= 6 ? 8 : 5);   // six labels need a wider ring to keep clear of each other
+    const t = el('text', { x: sx * lr, y: cy * lr + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
     labels.push(t);
     // tapping a stop's label turns the switch straight to it
     const w = Math.max(5, stops[i].length * 1.9 + 2);
-    const hx = sx * (r + 5) - (anchor === 'end' ? w - 1 : anchor === 'start' ? 1 : w / 2);
-    const stopHit = el('rect', { x: hx, y: cy * (r + 5) - 3.2, width: w, height: 5, class: 'hit' }, g);
+    const hx = sx * lr - (anchor === 'end' ? w - 1 : anchor === 'start' ? 1 : w / 2);
+    const stopHit = el('rect', { x: hx, y: cy * lr - 3.2, width: w, height: 5, class: 'hit' }, g);
     stopHit.addEventListener('pointerdown', (e) => { e.preventDefault(); setStop(i); });
   }
   el('circle', { r, class: 'cap' }, g);
@@ -287,7 +288,36 @@ function makeButton(g, def, sizes, c, send) {
   });
 }
 
-const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton };
+// A two-position lever switch. To the firmware it is a selector with two stops.
+function makeToggle(g, def, sizes, c, send) {
+  const [w, h] = sizes.toggle || [6, 11];
+  el('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: w / 2, class: 'tslot' }, g);
+  const lever = el('circle', { r: w / 2 - 0.6, class: 'tlever' }, g);
+  const on = el('text', { y: -h / 2 - 1.6, class: 'stop' , 'text-anchor': 'middle' }, g, def.stops[1]);
+  const off = el('text', { y: h / 2 + 3.6, class: 'stop', 'text-anchor': 'middle' }, g, def.stops[0]);
+  if (def.label) el('text', { y: h / 2 + 8.6, class: 'label' }, g, def.label);
+  const hit = el('rect', { x: -w / 2 - 3, y: -h / 2 - 5, width: w + 6, height: h + 10, class: 'hit' }, g);
+
+  c.draw = () => {
+    lever.setAttribute('cy', c.value ? -h / 2 + w / 2 : h / 2 - w / 2);   // up is on
+    on.classList.toggle('on', c.value > 0);
+    off.classList.toggle('on', c.value === 0);
+    g.classList.toggle('lit', c.value > 0);
+  };
+  const flip = (v) => {
+    if (v === c.value) return;
+    c.value = v;
+    c.touched();
+    c.draw();
+    send(def.id, 'set', v);
+  };
+  onDrag(hit, {
+    move: (e, st) => { if (st.moved) flip(e.clientY < st.y0 ? 1 : 0); },   // a flick up or down
+    up: (e, st) => { if (!st.moved) flip(c.value ? 0 : 1); },             // a tap flips it
+  });
+}
+
+const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton, toggle: makeToggle };
 
 // Creates one control inside `parent` (an <svg> or <g>). `send(id, kind, value)`
 // reports hardware activity; the returned object's set() shows a position

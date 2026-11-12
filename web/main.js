@@ -119,8 +119,8 @@ function checkLayoutAgainstFirmware() {
   for (const c of fwControls) if (!inLayout.has(c.name)) problems.push(`firmware control "${c.name}" is not in the layout`);
   for (const d of layout.controls) {
     const i = fwIndex.get(d.id);
-    if (i !== undefined && d.type === 'selector' && d.stops.length !== fwControls[i].steps)
-      problems.push(`selector "${d.id}" has ${d.stops.length} stops in the layout, ${fwControls[i].steps} in the firmware`);
+    if (i !== undefined && (d.type === 'selector' || d.type === 'toggle') && d.stops.length !== fwControls[i].steps)
+      problems.push(`"${d.id}" has ${d.stops.length} stops in the layout, ${fwControls[i].steps} in the firmware`);
   }
   if (problems.length) console.warn('Layout problems:\n' + problems.join('\n'));
 }
@@ -128,7 +128,7 @@ function checkLayoutAgainstFirmware() {
 // ---------------------------------------------------------------- panel
 
 async function loadPanel() {
-  layout = await (await fetch('layouts/a2.json')).json();
+  layout = await (await fetch('layouts/a3.json')).json();
   controls = buildPanel($('panel'), layout, send);
 
   // the display sits where the layout file says, at its true size
@@ -186,7 +186,7 @@ function applyKnobMode() {
   setKnobMode(mode);
   $('knob-mode').textContent = mode === 'turn' ? 'Knobs: turn' : 'Knobs: drag up/down';
   $('hint').textContent = `${HINTS[mode]} Scrolling over any control also moves it (two fingers on a trackpad). Hold Shift for fine. `
-    + 'Selectors: or tap a stop\'s label. Encoders: double-tap to push. Faders follow the pointer.';
+    + 'Selectors: or tap a stop\'s label. Encoders: double-tap to push. Faders follow the pointer. Switches: tap to flip.';
   window.__synth.knobMode = mode;
 }
 

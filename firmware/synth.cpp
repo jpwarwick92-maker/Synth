@@ -14,7 +14,18 @@ namespace {
 // this to 64 KB; the string's own decay hides the rounding.
 int16_t gStrings[kNumVoices][2][kKsLen];
 
-const float kFmRatios[4] = {1.0f, 2.0f, 3.0f, 3.5f};
+const float kFmRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f};
+
+// Supersaw: how far each of the six side saws sits from the centre one at
+// full detune (as a fraction of its frequency), and how loud the sides are.
+const float kSuperDetune[6] = {-0.11002313f, -0.06288439f, -0.01952356f, 0.01991221f, 0.06216538f, 0.10745242f};
+constexpr float kSuperSide = 0.6f, kSuperGain = 0.42f;
+
+// Each voice's place in the stereo field at full Spread, and its fixed
+// share of mistuning at full Drift (as analog voice cards differ).
+const float kVoicePan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
+const float kVoiceTune[kNumVoices] = {0.3f, -0.7f, 1.0f, -0.2f, -1.0f, 0.6f, -0.4f, 0.8f};
+const float kVoiceCut[kNumVoices] = {-0.5f, 0.9f, 0.2f, -1.0f, 0.6f, -0.3f, 1.0f, -0.8f};
 }  // namespace
 
 // Everything the voices need for one control block, worked out once from
@@ -47,6 +58,10 @@ struct Synth::Patch {
   float uniDetune;       // semitones, half the total spread
   float subDiv;          // sub frequency as a fraction of osc 1
   float volume;
+  float drift, driftCoef;  // 0..1, and how fast the wander moves per block
+  float spread;            // 0..1
+  float xmod;              // 0..1: oscillator 2 bending oscillator 1
+  bool sync;               // oscillator 2 restarts with each cycle of oscillator 1
   FxSettings fx;
 };
 
@@ -59,6 +74,7 @@ struct OscRun {
   const int16_t* wtB;
   float wtMix;
   float ksDelay, ksDamp, ksGain;
+  float ssInc[6];  // supersaw: the six side saws' speeds
 };
 
 namespace {
@@ -126,8 +142,7 @@ inline void advance(Osc& o, float inc) {
 }
 
 // A pulse is the difference of two saws, so it is band-limited too.
-inline float pulseRead(const Osc& o, float pw) {
-  float ph = o.phase;
+inline float pulseAt(const Osc& o, float ph, float pw) {
   float ph2 = ph + 1.0f - pw;
   if (ph2 >= 1.0f) ph2 -= 1.0f;
   return readTable(o, ph) - readTable(o, ph2) - (2.0f * pw - 1.0f);
@@ -149,34 +164,42 @@ inline float exciteSample(Osc& o, uint8_t type, uint32_t& rng) {
       o.fb += 0.25f * (nextNoise(rng) - o.fb);
       return o.fb * 2.0f;
     case 2: return n * 4 < o.exciteLen ? nextNoise(rng) * 1.5f : 0.0f;   // a short snap
-    default: return 2.0f * (float)n / (float)o.exciteLen - 1.0f;       // a ramp: pitched, string-like
+    case 3: return 2.0f * (float)n / (float)o.exciteLen - 1.0f;        // a ramp: pitched, string-like
+    default: {                                                         // a thin, bright pick
+      float nz = nextNoise(rng);
+      float y = nz - o.fb;
+      o.fb = nz;
+      return y * 0.7f;
+    }
   }
 }
 
-// One sample from one oscillator, whichever engine it is running.
-inline float oscRun(Osc& o, const OscRun& r, uint32_t& rng) {
+// An oscillator's output now, whichever engine it is running. `pm` shifts
+// the phase it is read at (cross-modulation), in cycles. Does not move the
+// oscillator on, except for the pluck engine, whose string steps as it is read.
+inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
   switch (r.engine) {
     case ENG_VA: {
-      float y;
+      float ph = pm == 0.0f ? o.phase : wrap01(o.phase + pm);
       switch (r.wave) {
-        case WAVE_SAW: y = readTable(o, o.phase); break;
-        case WAVE_SQR: y = pulseRead(o, r.pw); break;
-        case WAVE_TRI: y = readTable(o, o.phase); break;
-        default: y = tabRead(gSine, o.phase); break;
+        case WAVE_SAW:
+        case WAVE_TRI: return readTable(o, ph);
+        case WAVE_SQR: return pulseAt(o, ph, r.pw);
+        case WAVE_SUPER: {  // seven saws: one in tune, three either side
+          float sides = 0.0f;
+          for (int k = 0; k < 6; ++k) sides += tabRead16(o.tab, pm == 0.0f ? o.ss[k] : wrap01(o.ss[k] + pm));
+          return (readTable(o, ph) + kSuperSide * sides) * kSuperGain;
+        }
+        default: return tabRead(gSine, ph);
       }
-      advance(o, r.inc);
-      return y;
     }
     case ENG_FM: {  // one sine bending the phase of another
       float m = tabRead(gSine, wrap01(o.phase2 + r.fmFeedback * o.fb));
       o.fb = m;
-      float y = tabRead(gSine, wrap01(o.phase + r.fmIndex * m));
-      o.phase2 = wrap01(o.phase2 + r.inc * r.fmRatio);
-      advance(o, r.inc);
-      return y;
+      return tabRead(gSine, wrap01(o.phase + pm + r.fmIndex * m));
     }
     case ENG_WAVETABLE: {  // morph between two neighbouring frames
-      float p = o.phase * (float)kWtLen;
+      float p = (pm == 0.0f ? o.phase : wrap01(o.phase + pm)) * (float)kWtLen;
       int i = (int)p;
       float f = p - (float)i;
       const int m = kWtLen - 1;
@@ -190,7 +213,6 @@ inline float oscRun(Osc& o, const OscRun& r, uint32_t& rng) {
       float c1 = 0.5f * (y2 - y0);
       float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
       float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-      advance(o, r.inc);
       return (((c3 * f + c2) * f + c1) * f + y1) * (1.0f / 32000.0f);
     }
     default: {  // pluck: a delay line fed back through a gentle filter
@@ -210,10 +232,22 @@ inline float oscRun(Osc& o, const OscRun& r, uint32_t& rng) {
       }
       o.ks[o.ksPos] = (int16_t)(clampf(in, -1.0f, 1.0f) * 32767.0f);
       o.ksPos = (o.ksPos + 1) & (kKsLen - 1);
-      advance(o, r.inc);
       return y;
     }
   }
+}
+
+// Moves an oscillator on by one sample.
+inline void oscStep(Osc& o, const OscRun& r) {
+  if (r.engine == ENG_FM) {
+    o.phase2 = wrap01(o.phase2 + r.inc * r.fmRatio);
+  } else if (r.engine == ENG_VA && r.wave == WAVE_SUPER) {
+    for (int k = 0; k < 6; ++k) {
+      float ph = o.ss[k] + r.ssInc[k];
+      o.ss[k] = ph >= 1.0f ? ph - 1.0f : ph;
+    }
+  }
+  advance(o, r.inc);
 }
 
 struct SvfCoef {
@@ -298,9 +332,15 @@ void Synth::init(float sampleRate) {
     v.vel = 0.0f;
     v.age = 0;
     v.pitch = v.target = 60.0f;
-    v.o1 = Osc{(float)i * 0.123f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][0], 0, 0, 1, false};
-    v.o2 = Osc{(float)i * 0.071f + 0.3f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][1], 0, 0, 1, false};
-    v.sub = Osc{0.0f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, nullptr, 0, 0, 1, false};
+    v.o1 = Osc{(float)i * 0.123f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][0], 0, 0, 1, false, {}, 0.0f};
+    v.o2 = Osc{(float)i * 0.071f + 0.3f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][1], 0, 0, 1, false, {}, 0.0f};
+    v.sub = Osc{0.0f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, nullptr, 0, 0, 1, false, {}, 0.0f};
+    for (int k = 0; k < 6; ++k) {  // the supersaw's saws start scattered, so they never line up into one
+      v.o1.ss[k] = wrap01(0.137f * (float)(k + 1) + 0.071f * (float)i);
+      v.o2.ss[k] = wrap01(0.211f * (float)(k + 1) + 0.053f * (float)i + 0.4f);
+    }
+    v.drift1 = v.drift2 = v.driftCut = 0.0f;
+    v.driftRng = 0x6C8E9CF5u * (uint32_t)(i + 3) | 1u;
     v.wave1 = v.wave2 = WAVE_SAW;
     v.eng1 = v.eng2 = ENG_VA;
     v.lfoAmt = 1.0f;
@@ -451,7 +491,7 @@ void Synth::arpAdvance(int len) {
     return;
   }
   // sixteenth notes at the set tempo
-  float bpm = (float)(gParams.step(P_ARP_TEMPO) + kParams[P_ARP_TEMPO].intMin);
+  float bpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
   float stepLen = sr_ * 60.0f / (bpm * 4.0f);
   if (arpRestart_) {
     arpClock_ = stepLen;
@@ -474,7 +514,7 @@ void Synth::arpAdvance(int len) {
   ++arpIndex_;
   if (arpNote_ < 0) return;
   noteOn((uint8_t)arpNote_, vel);
-  float gate = (float)(gParams.step(P_ARP_GATE) + 1) * 0.05f;
+  float gate = mapArpGate(gParams.norm(P_ARP_GATE));
   arpGateLeft_ = gate >= 0.999f ? stepLen * 2.0f : stepLen * gate;  // full gate: held until the next step
 }
 
@@ -734,6 +774,12 @@ void Synth::derive(Patch& p, int len) {
 
   p.volume = mapVolume(sm[P_VOLUME]) * 0.35f;  // 0.35 leaves headroom for 8 voices
 
+  p.drift = sm[P_DRIFT];
+  p.driftCoef = 1.0f - exp2f_(-1.4427f * kTwoPi * 0.8f * blockSec);  // wanders at under 1 Hz
+  p.spread = sm[P_SPREAD];
+  p.xmod = sm[P_XMOD];
+  p.sync = gParams.step(P_SYNC) != 0;
+
   // ---- effects ----
   p.fx.chorus = gParams.frac(P_CHORUS);
   p.fx.dlyTime = mapDelayTime(gParams.frac(P_DLY_TIME));
@@ -755,10 +801,17 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
   r.pw = pw;
   switch (engine) {
     case ENG_VA:
-      setTable(o, wave == WAVE_TRI ? triTableFor(inc) : sawTableFor(inc), sameSound);
+      if (wave == WAVE_SUPER) {
+        // Macro is the detune. Never quite zero, so it always sounds like more than one saw.
+        float amount = 0.05f + 0.95f * macro * macro;
+        for (int k = 0; k < 6; ++k) r.ssInc[k] = minf(inc * (1.0f + kSuperDetune[k] * amount), 0.45f);
+        setTable(o, sawTableFor(minf(inc * 1.11f, 0.45f)), sameSound);  // clean for the sharpest of the seven
+      } else {
+        setTable(o, wave == WAVE_TRI ? triTableFor(inc) : sawTableFor(inc), sameSound);
+      }
       break;
     case ENG_FM: {
-      r.fmRatio = kFmRatios[wave & 3];
+      r.fmRatio = kFmRatios[wave < WAVE_COUNT ? wave : 0];
       // More modulation means higher partials. Hold it back as the note
       // rises so that none of any strength reach half the sample rate.
       // `orders` is how many steps of the modulator's frequency fit between
@@ -777,8 +830,9 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
       int lvl = wtLevelFor(inc);
       float pos = macro * (float)(kWtFrames - 1);
       int f0 = pos >= (float)(kWtFrames - 1) ? kWtFrames - 2 : (int)pos;
-      r.wtA = gWt[wave & 3][f0][lvl];
-      r.wtB = gWt[wave & 3][f0 + 1][lvl];
+      int table = wave < kWtTables ? wave : 0;
+      r.wtA = gWt[table][f0][lvl];
+      r.wtB = gWt[table][f0 + 1][lvl];
       r.wtMix = pos - (float)f0;
       break;
     }
@@ -802,18 +856,35 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
   lastWave = wave;
 }
 
-void Synth::renderVoice(Voice& v, int index, const Patch& p, float* out, int n) {
+void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float* outR, int n) {
   // ---- modulation that belongs to this voice ----
   v.lfoAmt = minf(v.lfoAmt + p.lfoFadeStep, 1.0f);
   float lfoPw = p.lfoPw * v.lfoAmt;
 
+  // Drift: each voice is a little out of tune with the others, by a fixed
+  // amount plus a slow wander, as the voices of an analog poly are.
+  float drift1 = 0.0f, drift2 = 0.0f, driftCut = 0.0f;
+  if (p.drift > 0.0f) {
+    v.drift1 += (nextNoise(v.driftRng) - v.drift1) * p.driftCoef;
+    v.drift2 += (nextNoise(v.driftRng) - v.drift2) * p.driftCoef;
+    v.driftCut += (nextNoise(v.driftRng) - v.driftCut) * p.driftCoef;
+    drift1 = p.drift * (0.04f * kVoiceTune[index] + 3.0f * v.drift1);   // semitones
+    drift2 = p.drift * (-0.04f * kVoiceTune[index] + 3.0f * v.drift2);
+    driftCut = p.drift * (0.15f * kVoiceCut[index] + 8.0f * v.driftCut);  // octaves
+  }
+
   // ---- pitch ----
   v.pitch += (v.target - v.pitch) * p.glideCoef;
   float detune = mode_ == MODE_UNI ? p.uniDetune * ((float)index * (2.0f / (float)(kNumVoices - 1)) - 1.0f) : 0.0f;
-  float base = v.pitch + p.bendSemis + p.lfoPitch * v.lfoAmt + p.fenvPitch * v.fenv.level + detune - 69.0f;
+  float base = v.pitch + p.bendSemis + p.lfoPitch * v.lfoAmt + detune - 69.0f;
+  // Env>Pitch moves both oscillators. With Sync on it moves only oscillator
+  // 2, the one being reset, which is what makes the classic sync sweep.
+  float sweep = p.fenvPitch * v.fenv.level;
+  float base1 = base + drift1 + (p.sync ? 0.0f : sweep);
+  float base2 = base + drift2 + sweep;
   float invSr = 1.0f / sr_;
-  float inc1 = minf(440.0f * exp2f_((base + p.oct1) * (1.0f / 12.0f)) * invSr, 0.45f);
-  float inc2 = minf(440.0f * exp2f_((base + p.oct2 + p.detune2) * (1.0f / 12.0f)) * invSr, 0.45f);
+  float inc1 = minf(440.0f * exp2f_((base1 + p.oct1) * (1.0f / 12.0f)) * invSr, 0.45f);
+  float inc2 = minf(440.0f * exp2f_((base2 + p.oct2 + p.detune2) * (1.0f / 12.0f)) * invSr, 0.45f);
   float incSub = inc1 * p.subDiv;
 
   OscRun r1, r2;
@@ -824,8 +895,14 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* out, int n) 
   prepOsc(v.o2, r2, v.eng2, v.wave2, p.eng2, p.wave2, inc2, clampf(p.macro2 + lfoPw * 1.2f, 0.0f, 1.0f), p.color2, pw2);
   setTable(v.sub, sawTableFor(incSub), true);
 
+  // Cross-mod: oscillator 2's wave bends oscillator 1's phase. Like FM, it
+  // adds partials above the note, so it is held back as the notes get high.
+  float room = clampf((0.5f / maxf(inc1, inc2) - 6.0f) * (1.0f / 30.0f), 0.0f, 1.0f);
+  float xmod = p.xmod * p.xmod * 0.6f * room;  // cycles
+  bool sync = p.sync && p.eng2 != ENG_PLUCK;   // a string has no cycle to restart
+
   // ---- filter coefficients for this block ----
-  float oct = p.cutoffOct + p.lfoCut * v.lfoAmt + p.envAmt * v.fenv.level + p.velCut * v.vel +
+  float oct = p.cutoffOct + p.lfoCut * v.lfoAmt + p.envAmt * v.fenv.level + p.velCut * v.vel + driftCut +
               p.keytrack * (v.pitch - 60.0f) * (1.0f / 12.0f);
   float fc = clampf(20.0f * exp2f_(oct), 20.0f, 0.45f * sr_);
   float g = tanf_(kPi * fc * invSr);
@@ -836,19 +913,50 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* out, int n) 
   float trem = 1.0f - (1.0f - p.tremGain) * v.lfoAmt;
   float amp = velGain * trem * (mode_ == MODE_UNI ? 0.45f : 1.0f);
 
+  // Spread: where this voice sits between the speakers. A lone mono voice stays in the middle.
+  float pan = mode_ == MODE_MONO ? 0.0f : p.spread * kVoicePan[index];
+  float gainL = amp * (pan > 0.0f ? 1.0f - pan : 1.0f);
+  float gainR = amp * (pan < 0.0f ? 1.0f + pan : 1.0f);
+
   bool on1 = p.mix[0] > 1e-4f, on2 = p.mix[1] > 1e-4f, onSub = p.mix[2] > 1e-4f, onNoise = p.mix[3] > 1e-4f;
+  bool need2 = on2 || xmod > 0.0f;  // oscillator 2 is also needed, unheard, to bend oscillator 1
   float m1 = p.mix[0] * 0.5f, m2 = p.mix[1] * 0.5f, m3 = p.mix[2] * 0.5f, m4 = p.mix[3] * 0.5f;
 
   for (int i = 0; i < n; ++i) {
     envTick(v.fenv, p.fenv);
     float ae = envTick(v.aenv, p.aenv);
 
-    float x = 0.0f;
-    if (on1) x += oscRun(v.o1, r1, v.rng) * m1;
-    else advance(v.o1, inc1);
-    if (on2) x += oscRun(v.o2, r2, v.rng) * m2;
-    else advance(v.o2, inc2);
-    if (onSub) x += pulseRead(v.sub, 0.5f) * m3;
+    // oscillator 2 first: oscillator 1 may be bent by it, and may restart it
+    float s2 = 0.0f;
+    if (need2) {
+      s2 = oscValue(v.o2, r2, 0.0f, v.rng) + v.o2.blep;
+      v.o2.blep = 0.0f;
+    }
+    oscStep(v.o2, r2);
+
+    float before1 = v.o1.phase;
+    float s1 = on1 ? oscValue(v.o1, r1, xmod * s2, v.rng) : 0.0f;
+    oscStep(v.o1, r1);
+
+    if (sync && v.o1.phase < before1) {
+      // Oscillator 1 began a new cycle during this sample, `t` of a sample
+      // ago. Oscillator 2 restarts from that same instant. The jump in its
+      // wave is smoothed over this sample and the next, or it would ring
+      // with false tones.
+      float t = clampf(v.o1.phase / r1.inc, 0.0f, 1.0f);
+      float was = need2 ? oscValue(v.o2, r2, 0.0f, v.rng) : 0.0f;
+      v.o2.phase = wrap01(t * r2.inc);
+      if (r2.engine == ENG_FM) v.o2.phase2 = wrap01(t * r2.inc * r2.fmRatio);
+      if (need2) {
+        float jump = oscValue(v.o2, r2, 0.0f, v.rng) - was;
+        s2 += jump * t * t * 0.5f;
+        v.o2.blep = -jump * (1.0f - t) * (1.0f - t) * 0.5f;
+      }
+    }
+
+    float x = s1 * m1;
+    if (on2) x += s2 * m2;
+    if (onSub) x += pulseAt(v.sub, v.sub.phase, 0.5f) * m3;
     advance(v.sub, incSub);
     if (onNoise) x += nextNoise(v.rng) * m4;
 
@@ -858,7 +966,9 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* out, int n) 
     x = svfTick(v.f2, x, c2, p.ftype);
     if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.post) * p.drive.postTrim - x);  // after the filter: these harmonics stay
 
-    out[i] += x * ae * amp;
+    float out = x * ae;
+    outL[i] += out * gainL;
+    outR[i] += out * gainR;
   }
 
   if (v.aenv.stage == ENV_IDLE) {
@@ -902,10 +1012,10 @@ void Synth::process(float* outL, float* outR, int n) {
 
   int done = 0;
   int active = 0;
-  float mono[kCtrlBlock];
+  float busL[kCtrlBlock], busR[kCtrlBlock];
   while (done < n) {
     int len = n - done < kCtrlBlock ? n - done : kCtrlBlock;
-    for (int i = 0; i < len; ++i) mono[i] = 0.0f;
+    for (int i = 0; i < len; ++i) busL[i] = busR[i] = 0.0f;
 
     Patch p;
     derive(p, len);
@@ -914,14 +1024,17 @@ void Synth::process(float* outL, float* outR, int n) {
     active = 0;
     for (int i = 0; i < kNumVoices; ++i) {
       if (!voices_[i].active) continue;
-      renderVoice(voices_[i], i, p, mono, len);
+      renderVoice(voices_[i], i, p, busL, busR, len);
       ++active;
     }
 
-    for (int i = 0; i < len; ++i) mono[i] *= p.volume;
+    for (int i = 0; i < len; ++i) {
+      busL[i] *= p.volume;
+      busR[i] *= p.volume;
+    }
     float* l = outL + done;
     float* r = outR + done;
-    gFx.process(mono, l, r, len, p.fx);
+    gFx.process(busL, busR, l, r, len, p.fx);
 
     float peak = peak_ * peakDecay_;
     uint32_t pos = scopePos_;
