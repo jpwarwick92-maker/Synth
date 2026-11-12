@@ -16,6 +16,13 @@ class SynthProcessor extends AudioWorkletProcessor {
       new Uint8Array(x.memory.buffer, x.fw_storage_ptr(), o.state.length).set(o.state);
       x.fw_storage_set_len(o.state.length);
     }
+    // ...and its stored patches.
+    this.slots = x.fw_patch_slots();
+    (o.patches || []).forEach((bytes, slot) => {
+      if (!bytes || slot >= this.slots || bytes.length > x.fw_patch_capacity()) return;
+      new Uint8Array(x.memory.buffer, x.fw_patch_ptr(slot), bytes.length).set(bytes);
+      x.fw_patch_set_len(slot, bytes.length);
+    });
     x.fw_init(sampleRate);
 
     const mem = x.memory.buffer; // never grows: the firmware does not allocate
@@ -29,7 +36,9 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.frameBuf = new Uint16Array(mem, x.fw_display_ptr(), this.width * this.height);
     this.count = x.fw_control_count();
     this.positions = new Uint16Array(this.count);
+    this.leds = new Uint32Array(this.count);       // the light behind each control's label
     this.saveCount = x.fw_storage_save_count();
+    this.patchSaveCount = x.fw_patch_save_count();
     this.pool = [];            // display buffers handed back by the page, reused to avoid garbage
     this.first = true;
     this.frameSamples = sampleRate / 30;
@@ -84,7 +93,7 @@ class SynthProcessor extends AudioWorkletProcessor {
   }
 
   // About 30 times a second: advance the firmware's clock and pass on
-  // whatever changed (display pixels, control positions, saved state).
+  // whatever changed (display pixels, control positions, label lights, saved state, patches).
   frame(dtMs) {
     const x = this.x;
     const changed = x.fw_tick(dtMs);
@@ -110,6 +119,16 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
     }
     if (moved) msg.pos = this.positions.slice();
+
+    let lit = this.first || this.ticks % 15 === 0;
+    for (let i = 0; i < this.count; i++) {
+      const v = x.fw_led_rgb(i);
+      if (v !== this.leds[i]) {
+        this.leds[i] = v;
+        lit = true;
+      }
+    }
+    if (lit) msg.led = this.leds.slice();
     this.first = false;
 
     const saves = x.fw_storage_save_count();
@@ -118,7 +137,17 @@ class SynthProcessor extends AudioWorkletProcessor {
       msg.state = new Uint8Array(x.memory.buffer, x.fw_storage_ptr(), x.fw_storage_len()).slice();
     }
 
-    if (msg.fb || msg.pos || msg.state) this.port.postMessage(msg, transfer);
+    const patchSaves = x.fw_patch_save_count();
+    if (patchSaves !== this.patchSaveCount) {
+      this.patchSaveCount = patchSaves;
+      msg.patches = [];
+      for (let s = 0; s < this.slots; s++) {
+        const n = x.fw_patch_len(s);
+        msg.patches.push(n ? new Uint8Array(x.memory.buffer, x.fw_patch_ptr(s), n).slice() : null);
+      }
+    }
+
+    if (msg.fb || msg.pos || msg.led || msg.state || msg.patches) this.port.postMessage(msg, transfer);
   }
 }
 

@@ -8,10 +8,10 @@ and the panel layout can be played before any hardware exists.
 
 | Path | What it is |
 |---|---|
-| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
+| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
-| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer and plays its audio. |
+| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. |
 | `layouts/a3.json` | The panel layout in millimetres. The page draws whatever this file says. |
 | `tests/native/` | Engine and display tests that render audio and display frames with no browser. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
@@ -22,7 +22,8 @@ and the panel layout can be played before any hardware exists.
 Everything the real synth will run lives in `firmware/` and is built three ways from
 the same files: natively for the tests, as WebAssembly for the page, and for the Teensy.
 The page never decides what a control does. It reports "pot 10 is at 2731" or "button 36
-went down", exactly as panel hardware would, and shows the pixels the firmware draws.
+went down", exactly as panel hardware would, and shows the pixels the firmware draws. An
+on-screen knob never moves by itself, because a real one cannot.
 
 Rules for code in `firmware/`:
 
@@ -67,6 +68,9 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
   320x240 display has.
 - **1:1 size** shows the panel at true physical size. It asks once for calibration
   against a bank card held to the screen.
+- Each control's label stands in for a back-lit label on the real panel. It is plain
+  warm white normally, and turns orange or blue when the control is off a loaded patch
+  (see Patches below).
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
   and mod wheels, a Test note button that holds a chord, a sustain-pedal switch and Panic.
 
@@ -124,7 +128,34 @@ encoder restores its default.
 | Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
 | Engine | 1: Voice | unison detune, sub octave, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
-| Patch | not built yet | |
+| Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
+| Patch | 2: Name | cursor, (empty), letter, (empty) |
+
+**Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
+loading a patch cannot move it. Instead:
+
+- **Saving** stores every value except master volume and Hold. An empty slot saves on
+  one push of encoder 2; a used slot asks for a second push within three seconds.
+- **Loading** (push encoder 1, or send a MIDI program change) sets the sound from the
+  stored values. Any control that is somewhere else is then *following*: the sound uses
+  the stored value, and the control is ignored until it takes over.
+- **Take-over.** A pot or fader takes over when it is moved through the stored value, or
+  lands within 2.5% of its travel of it (1% for Detune), so the sound never jumps.
+  Touching one that has not got there shows a picture of where the panel and the patch
+  are and which way to go. A selector or switch takes over on any change.
+- **Guide lights.** After a load, the label of each control that is off the patch
+  lights: orange with a quick blink means move it up or clockwise, blue with a slow
+  blink means down or anticlockwise, and a pot's light dims as it closes in. When no
+  label is lit, the panel matches the patch. A selector's light stays on until it is on
+  the patch's stop, even though it is already live. Encoder 3 switches the lights
+  between On, Tint (a steady tint on anything still following) and Off.
+- **Manual** (push encoder 4) drops the patch: every control goes live where it stands.
+- The home screen shows the slot and name, with `*` once the sound has changed.
+- A MIDI controller message for a panel parameter is treated like a one-control load:
+  the control follows the incoming value until it is touched.
+
+On the Teensy the slots sit in the on-board EEPROM for now, which is why there are
+sixteen; a memory card or the board's flash would hold far more.
 
 **Arpeggiator and Hold.** The arp plays the held notes as sixteenth notes: up, down,
 up-down, random or as played, over 1 to 4 octaves, at 40 to 240 BPM. **Hold** keeps
@@ -134,7 +165,7 @@ the arp on or off. While the arp runs, the sustain pedal acts as a temporary Hol
 **Output** is stereo once the chorus or reverb is on. With every effect off, both
 channels carry exactly the dry signal.
 
-Not built yet: patch storage, MIDI clock sync for the arp, and the iPad version
+Not built yet: MIDI clock sync for the arp, loading patches from files, and the iPad version
 (Safari on iPad has no Web MIDI, so it needs a small wrapper app).
 
 ## Publishing

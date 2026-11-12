@@ -431,15 +431,103 @@ try {
   }
 
   // ------------------------------------------------------------------ MIDI
-  section('AC9  a MIDI controller number moves the on-screen control');
+  section('AC9  a MIDI controller number changes the sound; the real control stays put and its label lights');
+  const IDLE = 0x96876a;                                // the firmware's plain label light
+  const led = (pg, id) => pg.evaluate((i) => window.__synth.led(i), id);
+  const labelFill = (pg, id) => pg.locator(`[data-id="${id}"] text.label`).evaluate((e) => getComputedStyle(e).fill.match(/\d+/g).map(Number));
+  const push = async (pg, id) => {                      // double tap = encoder push
+    const c = await centre(pg, id);
+    await pg.mouse.click(c.x, c.y);
+    await pg.mouse.click(c.x, c.y);
+    await sleep(250);
+  };
   {
-    await page.evaluate(() => window.__synth.midi([0xb0, 71, 100]));
-    await page.waitForFunction(() => window.__synth.position('filter_resonance') === 3224, null, { timeout: 3000 }).catch(() => {});
-    check(await pos(page, 'filter_resonance') === 3224, 'CC 71 at 100 puts Resonance at 3224', String(await pos(page, 'filter_resonance')));
-    await page.evaluate(() => window.__synth.midi([0xb0, 89, 127]));
-    await page.waitForFunction(() => window.__synth.position('voice_mode') === 2, null, { timeout: 3000 }).catch(() => {});
-    check(await pos(page, 'voice_mode') === 2, 'CC 89 at 127 turns Mode to UNI', String(await pos(page, 'voice_mode')));
-    await page.evaluate(() => window.__synth.midi([0xb0, 89, 0]));
+    const before = await pos(page, 'filter_keytrack');
+    check(await led(page, 'filter_keytrack') === IDLE, 'an untouched control has a plain label light', (await led(page, 'filter_keytrack')).toString(16));
+    const plain = await labelFill(page, 'filter_keytrack');
+    check(plain[0] > 150 && plain[0] > plain[2], 'and its label is painted warm white', plain.join(','));
+    const shown = await page.evaluate(() => window.__synth.lcdHash());
+    await page.evaluate(() => window.__synth.midi([0xb0, 86, 100]));
+    await sleep(300);
+    check(await page.evaluate(() => window.__synth.lcdHash()) !== shown, 'CC 86 brings up the Keytrack picture');
+    check(await pos(page, 'filter_keytrack') === before, 'the knob itself has not moved', `${before} -> ${await pos(page, 'filter_keytrack')}`);
+    const seen = new Set();
+    let orange = true;
+    for (let i = 0; i < 12; i++) {
+      const v = await led(page, 'filter_keytrack');
+      seen.add(v);
+      orange = orange && ((v >> 16) & 255) > (v & 255);
+      await sleep(70);
+    }
+    check(!seen.has(IDLE) && orange, 'its label light turns orange: move up to reach the value', [...seen].map((v) => v.toString(16)).join(' '));
+    check(seen.size >= 2, 'and blinks', String(seen.size));
+    const lit = await labelFill(page, 'filter_keytrack');
+    check(lit[0] > 2 * lit[2], 'the label is painted in the light\'s colour', lit.join(','));
+    await drag(page, 'filter_keytrack', -80);            // up through the value sent (knobs are in drag mode here)
+    await sleep(350);
+    check(await led(page, 'filter_keytrack') === IDLE && await pos(page, 'filter_keytrack') > 3224, 'turning the knob through the value takes over and the light goes plain',
+      `${(await led(page, 'filter_keytrack')).toString(16)} at ${await pos(page, 'filter_keytrack')}`);
+
+    await page.evaluate(() => window.__synth.midi([0xb0, 89, 127]));   // voice mode to UNI
+    await sleep(300);
+    check(await pos(page, 'voice_mode') === 0 && await led(page, 'voice_mode') !== IDLE, 'CC 89 leaves the Mode selector on POLY, with its light on');
+    const stop = async (id, name) => {
+      const box = await page.locator(`[data-id="${id}"] text.stop`, { hasText: new RegExp(`^${name}$`) }).boundingBox();
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await sleep(300);
+    };
+    await stop('voice_mode', 'MONO');
+    check(await pos(page, 'voice_mode') === 1 && await led(page, 'voice_mode') !== IDLE, 'one click: the selector is live but still off the value, light stays on');
+    await stop('voice_mode', 'UNI');
+    check(await led(page, 'voice_mode') === IDLE, 'on the value\'s stop the light goes plain');
+    await stop('voice_mode', 'POLY');
+  }
+
+  section('patches: saved from the Patch page, loaded without moving a control, lights guide the panel back');
+  {
+    const lit = (id) => page.locator(`[data-id="${id}"]`).evaluate((e) => e.classList.contains('lit'));
+    await sleep(1700);
+    await press(page, 'btn_patch');
+    await sleep(200);
+    check(await lit('btn_patch'), 'Patch button lights');
+    await page.screenshot({ path: path.join(shotDir, 'page_patch.png') });
+    await push(page, 'enc4');                           // Manual: every control live where it stands
+    const labelled = layout.controls.filter((d) => ['knob', 'fader', 'selector', 'toggle'].includes(d.type)).map((d) => d.id);
+    const offs = [];
+    for (const id of labelled) if (await led(page, id) !== IDLE) offs.push(id);
+    check(labelled.length === 39 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
+
+    const saves = await page.evaluate(() => window.__synth.patchSaves);
+    await drag(page, 'enc1', -24);                      // two clicks: slot 3
+    await push(page, 'enc2');                           // save here
+    await page.waitForFunction((n) => window.__synth.patchSaves > n, saves, { timeout: 3000 }).catch(() => {});
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('synth.patches.v1') || '[]'));
+    check(stored.length === 16 && typeof stored[2] === 'string' && stored.filter(Boolean).length === 1, 'the patch is stored in slot 3 of 16', JSON.stringify(stored.map((x) => !!x)));
+
+    const cutSaved = await pos(page, 'filter_cutoff');
+    await drag(page, 'filter_cutoff', 60);              // turn Cutoff well down
+    await sleep(300);
+    const cutMoved = await pos(page, 'filter_cutoff');
+    check(cutMoved < cutSaved - 800, 'set-up: Cutoff turned down', `${cutSaved} -> ${cutMoved}`);
+    await push(page, 'enc1');                           // load slot 3
+    await sleep(300);
+    check(await pos(page, 'filter_cutoff') === cutMoved, 'loading does not move the knob');
+    const v = await led(page, 'filter_cutoff');
+    check(v !== IDLE && ((v >> 16) & 255) > (v & 255), 'Cutoff\'s label lights orange: turn up to reach the patch', v.toString(16));
+    await page.screenshot({ path: path.join(shotDir, 'page_patch_guiding.png') });
+    await drag(page, 'filter_cutoff', -10);             // a little way, not there yet
+    await sleep(300);
+    check(await led(page, 'filter_cutoff') !== IDLE, 'part of the way back, the light is still on');
+    check(await lcdCount(page, WHITE, 100, 130) > 80, 'and the display shows the pick-up picture', String(await lcdCount(page, WHITE, 100, 130)));
+    await drag(page, 'filter_cutoff', -80);             // through the stored value
+    await sleep(300);
+    check(await led(page, 'filter_cutoff') === IDLE && await pos(page, 'filter_cutoff') >= cutSaved, 'through the patch\'s value the knob takes over and the light goes plain',
+      `${(await led(page, 'filter_cutoff')).toString(16)} at ${await pos(page, 'filter_cutoff')} (patch ${cutSaved})`);
+    await sleep(1700);
+    await press(page, 'btn_patch');                     // the Name page
+    await press(page, 'btn_patch');                     // home
+    await sleep(200);
+    check(!(await lit('btn_patch')), 'two more presses return home');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');
@@ -496,6 +584,13 @@ try {
     check(await again.page.evaluate(() => localStorage.getItem('synth.state.v1')) === blob, 'saved state is unchanged by the reload');
     check(again.errors.length === 0, 'no page errors', again.errors.join(' | '));
     await again.page.screenshot({ path: path.join(shotDir, 'page.png') });
+    // the stored patch is still in its slot, and still the one loaded
+    await press(again.page, 'btn_patch');
+    await sleep(300);
+    check(await lcdCount(again.page, AMBER, 78, 104) > 300, 'after a reload the Patch page still shows the stored patch as loaded', String(await lcdCount(again.page, AMBER, 78, 104)));
+    await press(again.page, 'btn_patch');
+    await press(again.page, 'btn_patch');
+    await sleep(200);
 
     // ---------------------------------------------------------------- AC2
     section('AC2  1:1 view uses the calibrated scale');

@@ -30,8 +30,12 @@ const Page kPages[MB_COUNT][kMaxPages] = {
     /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
     /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
-    /* PATCH  */ {{nullptr, {}}, {nullptr, {}}},
+    // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
+    /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}}},
 };
+
+constexpr uint16_t kArmMs = 3000, kNoteMs = 2000;
+const char* const kGuideLabels[GUIDE_COUNT] = {"OFF", "TINT", "ON"};
 
 int pageCount(int mode) {
   int n = 0;
@@ -600,7 +604,90 @@ void Ui::init() {
   page_ = 0;
   popupParam_ = -1;
   popupMs_ = 0;
+  popupPickup_ = false;
   for (int i = 0; i < 4; ++i) burst_[i] = 0;
+  browse_ = 0;
+  cursor_ = 0;
+  armMs_ = 0;
+  noteMs_ = 0;
+  note_ = "";
+  dirty_ = true;
+}
+
+void Ui::say(const char* text) {
+  note_ = text;
+  noteMs_ = kNoteMs;
+  dirty_ = true;
+}
+
+void Ui::pickup(int id) {
+  popupParam_ = (int16_t)id;
+  popupPickup_ = true;
+  popupMs_ = kPopupMs;
+  dirty_ = true;
+}
+
+void Ui::patchLoaded() {
+  browse_ = (int8_t)(gPatch.slot() >= 0 ? gPatch.slot() : 0);
+  armMs_ = 0;
+  popupParam_ = -1;
+  popupMs_ = 0;
+  say("LOADED");
+}
+
+// The Patch pages. Page 1: encoder 1 picks a slot and loads it when pushed,
+// encoder 2 saves, encoder 3 sets what the label lights do, encoder 4 drops
+// the patch and makes the panel live. Page 2 edits the name.
+void Ui::patchTurn(int enc, int delta) {
+  popupParam_ = -1;  // using the page brings it back in front of any control's picture
+  popupMs_ = 0;
+  if (page_ == 0) {
+    if (enc == 0) {
+      browse_ = (int8_t)clampi(browse_ + delta, 0, kPatchSlots - 1);
+      armMs_ = 0;
+      noteMs_ = 0;
+    } else if (enc == 2) {
+      gPatch.setGuide(gPatch.guide() + delta);
+    }
+  } else {
+    if (enc == 0) {
+      cursor_ = (uint8_t)clampi((int)cursor_ + delta, 0, kPatchNameLen - 1);
+    } else if (enc == 2) {
+      int count = 0;
+      while (kNameChars[count]) ++count;
+      int i = (nameCharIndex(gPatch.name()[cursor_]) + delta) % count;
+      gPatch.setNameChar(cursor_, kNameChars[i < 0 ? i + count : i]);
+    }
+  }
+  dirty_ = true;
+}
+
+void Ui::patchPush(int enc) {
+  popupParam_ = -1;
+  popupMs_ = 0;
+  if (page_ == 0) {
+    if (enc == 0) {
+      armMs_ = 0;
+      if (gPatch.load(browse_)) say("LOADED");
+      else say("NOTHING STORED HERE");
+    } else if (enc == 1) {
+      if (gPatch.slotUsed(browse_) && armMs_ == 0) {  // never overwrite on a single push
+        armMs_ = kArmMs;
+        say("PUSH AGAIN TO OVERWRITE");
+      } else {
+        armMs_ = 0;
+        gPatch.save(browse_);
+        say("SAVED");
+      }
+    } else if (enc == 2) {
+      gPatch.setGuide((gPatch.guide() + 1) % GUIDE_COUNT);
+    } else if (enc == 3) {
+      gPatch.manual();
+      say("PANEL IS LIVE");
+    }
+  } else if (enc == 0) {
+    cursor_ = (uint8_t)((cursor_ + 1) % kPatchNameLen);  // push steps along the name
+  }
   dirty_ = true;
 }
 
@@ -621,6 +708,7 @@ void Ui::paramChanged(int id) {
       return;
     }
   popupParam_ = (int16_t)id;
+  popupPickup_ = false;
   popupMs_ = kPopupMs;
   dirty_ = true;
 }
@@ -630,6 +718,11 @@ void Ui::modeButton(int which) {
   if (mode_ != which) {
     mode_ = (int8_t)which;
     page_ = 0;
+    if (which == MB_PATCH) {
+      browse_ = (int8_t)(gPatch.slot() >= 0 ? gPatch.slot() : 0);
+      armMs_ = 0;
+      noteMs_ = 0;
+    }
   } else if (page_ + 1 < pageCount(which)) {
     ++page_;  // the lit button steps to the mode's next page
   } else {
@@ -642,6 +735,10 @@ void Ui::modeButton(int which) {
 }
 
 void Ui::encoderTurn(int enc, int delta) {
+  if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
+    patchTurn(enc, delta);
+    return;
+  }
   int id = pageParam(enc);
   if (id < 0) return;
   // Long ranges would take many turns one click at a time: a fast spin
@@ -655,6 +752,10 @@ void Ui::encoderTurn(int enc, int delta) {
 }
 
 void Ui::encoderPush(int enc) {
+  if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
+    patchPush(enc);
+    return;
+  }
   int id = pageParam(enc);
   if (id < 0) return;
   if (gParams.set(id, kParams[id].def)) onParamChanged(id);  // push = back to default
@@ -662,6 +763,8 @@ void Ui::encoderPush(int enc) {
 
 bool Ui::tick(uint32_t dtMs) {
   for (int i = 0; i < 4; ++i) burst_[i] = 0;
+  armMs_ = armMs_ > dtMs ? (uint16_t)(armMs_ - dtMs) : 0;
+  noteMs_ = noteMs_ > dtMs ? (uint16_t)(noteMs_ - dtMs) : 0;
 
   bool popup = popupMs_ > 0;
   if (popup) {
@@ -686,13 +789,126 @@ bool Ui::tick(uint32_t dtMs) {
   return true;
 }
 
+// "07 BRASS" for a stored patch, "-- INIT" for a sound that has no slot yet.
+static void patchTitle(Str& s, int slot, const char* name) {
+  if (slot < 0) {
+    s.add("--");
+  } else {
+    if (slot + 1 < 10) s.add('0');
+    s.addInt(slot + 1);
+  }
+  s.add(' ');
+  int len = kPatchNameLen;
+  while (len > 0 && name[len - 1] == ' ') --len;
+  for (int i = 0; i < len; ++i) s.add(name[i]);
+}
+
 void Ui::drawHome() {
-  gfxTextCentre(160, 10, "001 INIT", kAmber, 2);
+  Str title;
+  patchTitle(title, gPatch.slot(), gPatch.name());
+  if (gPatch.edited()) title.add(" *");  // changed since it was loaded or saved
+  gfxTextCentre(160, 10, title.b, kAmber, 2);
   drawScope(8, 40, 304, 168);
   drawStatus();
 }
 
+// The four corner captions of a Patch page, one per encoder.
+static void drawCorners(const char* const label[4], const char* const value[4]) {
+  static const int kLabelY[2] = {30, 164};
+  for (int e = 0; e < 4; ++e) {
+    int y = kLabelY[e & 1];
+    if (e < 2) {
+      gfxText(8, y, label[e], kDimTeal, 2);
+      gfxText(8, y + 16, value[e], kWhite, 3);
+    } else {
+      gfxTextRight(312, y, label[e], kDimTeal, 2);
+      gfxTextRight(312, y + 16, value[e], kWhite, 3);
+    }
+  }
+}
+
+void Ui::drawPatchPage() {
+  gfxTextCentre(160, 6, "PATCH 1/2", kAmber, 2);
+  Str slotNo;
+  if (browse_ + 1 < 10) slotNo.add('0');
+  slotNo.addInt(browse_ + 1);
+  int following = gPatch.followCount();
+  const char* const label[4] = {"SLOT/LOAD", "SAVE HERE", "GUIDE", "MANUAL"};
+  const char* const value[4] = {slotNo.b, armMs_ > 0 ? "SURE?" : "PUSH", kGuideLabels[gPatch.guide()], following > 0 ? "PUSH" : "--"};
+  drawCorners(label, value);
+
+  bool used = gPatch.slotUsed(browse_);
+  bool current = used && browse_ == gPatch.slot();
+  Str big;
+  if (used) patchTitle(big, browse_, gPatch.slotName(browse_));
+  else {
+    big.add(slotNo.b);
+    big.add(" EMPTY");
+  }
+  gfxTextCentre(160, 80, big.b, current ? kAmber : (used ? kWhite : kGrey), 3);
+
+  const char* line = noteMs_ > 0 ? note_ : !used ? "PUSH SAVE TO STORE HERE" : !current ? "PUSH SLOT TO LOAD" : gPatch.edited() ? "LOADED, CHANGED SINCE" : "LOADED";
+  gfxTextCentre(160, 112, line, noteMs_ > 0 ? kAmber : kGrey, 2);
+  Str f;
+  if (following > 0) {
+    f.addInt(following);
+    f.add(following == 1 ? " CONTROL FOLLOWS PATCH" : " CONTROLS FOLLOW PATCH");
+  } else {
+    f.add("EVERY CONTROL IS LIVE");
+  }
+  gfxTextCentre(160, 134, f.b, following > 0 ? kTeal : kDimTeal, 2);
+  drawStatus();
+}
+
+void Ui::drawNamePage() {
+  gfxTextCentre(160, 6, "NAME 2/2", kAmber, 2);
+  Str pos;
+  pos.addInt(cursor_ + 1);
+  char c = gPatch.name()[cursor_];
+  char letter[2] = {c == ' ' ? '_' : c, 0};
+  const char* const label[4] = {"CURSOR", "--", "LETTER", "--"};
+  const char* const value[4] = {pos.b, "", letter, ""};
+  drawCorners(label, value);
+
+  const int scale = 4, pitch = 6 * scale, x0 = 160 - kPatchNameLen * pitch / 2, y = 88;
+  for (int i = 0; i < kPatchNameLen; ++i) {
+    char one[2] = {gPatch.name()[i], 0};
+    gfxText(x0 + i * pitch, y, one, i == cursor_ ? kAmber : kWhite, scale);
+    gfxFill(x0 + i * pitch, y + 8 * scale + 2, 5 * scale, i == cursor_ ? 3 : 1, i == cursor_ ? kAmber : kDarkGrey);
+  }
+  gfxTextCentre(160, 140, "SAVE ON PAGE 1 TO KEEP IT", kGrey, 2);
+  drawStatus();
+}
+
+// A control that is following the patch was moved but has not taken over:
+// a track with the patch's value and the control's position on it, and
+// which way to go.
+void Ui::drawPickup(int id) {
+  int index = -1;
+  for (int i = 0; i < kPanelCount; ++i)
+    if (kPanelParams[i] == id) index = i;
+  if (index < 0) return;
+  const int x0 = 20, w = 280, y = 104;
+  int xPatch = x0 + (int)(gParams.norm(id) * (float)(w - 1));
+  int xPanel = x0 + gPatch.position(index) * (w - 1) / kPotMax;
+  bool up = xPatch > xPanel;
+  gfxTextCentre(160, 56, "FOLLOWING THE PATCH", kGrey, 2);
+  gfxFrame(x0 - 2, y, w + 4, 20, kDarkGrey);
+  gfxFill(up ? xPanel : xPatch, y + 7, (up ? xPatch - xPanel : xPanel - xPatch) + 1, 6, kDimTeal);  // the distance still to go
+  gfxFill(xPatch - 2, y - 8, 5, 36, kAmber);
+  gfxFill(xPanel - 3, y + 2, 7, 16, kWhite);
+  gfxTextCentre(clampi(xPatch, 38, 282), y - 28, "PATCH", kAmber, 2);
+  gfxTextCentre(clampi(xPanel, 38, 282), y + 34, "PANEL", kWhite, 2);
+  gfxTextCentre(160, 166, up ? "HIGHER >>" : "<< LOWER", up ? kAmber : kTeal, 3);
+  gfxTextCentre(160, 198, "TO TAKE OVER", kGrey, 2);
+}
+
 void Ui::drawModePage() {
+  if (mode_ == MB_PATCH) {
+    if (page_ == 0) drawPatchPage();
+    else drawNamePage();
+    return;
+  }
   int pages = pageCount(mode_);
   if (pages == 0) {
     gfxTextCentre(160, 6, kModeNames[mode_], kAmber, 2);
@@ -742,6 +958,10 @@ void Ui::drawParamPopup(int id) {
   formatParam(id, v);
   const char* name = paramName(id);
   drawHeader(kSectionNames[d.section], name[0] ? name : d.name, v.b);
+  if (popupPickup_) {
+    drawPickup(id);
+    return;
+  }
 
   bool engineSwitch = id == P_OSC1_ENGINE || id == P_OSC2_ENGINE;
   switch (engineSwitch ? (int)SEC_COUNT : (int)d.section) {

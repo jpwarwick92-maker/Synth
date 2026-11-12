@@ -7,6 +7,7 @@
 import { buildPanel, makeControl, setKnobMode } from './panel.js';
 
 const LS_STATE = 'synth.state.v1';     // the firmware's saved state, as it would sit in flash
+const LS_PATCHES = 'synth.patches.v1'; // the patch slots, likewise
 const LS_PX_PER_MM = 'synth.pxPerMm';  // screen calibration for the 1:1 view
 const LS_VIEW = 'synth.view';
 const LS_KNOBS = 'synth.knobs';        // 'turn' or 'updown'
@@ -63,9 +64,20 @@ function onFirmwareMessage(e) {
     }
     window.__synth.ready = true;
   }
+  if (m.led) {
+    for (let i = 0; i < m.led.length; i++) {
+      const c = controls.get(fwControls[i].name);
+      if (c) c.led(m.led[i]);
+    }
+  }
   if (m.state) {
     try { localStorage.setItem(LS_STATE, btoa(String.fromCharCode(...m.state))); } catch (_) { /* storage may be off */ }
     window.__synth.saves++;
+  }
+  if (m.patches) {
+    const slots = m.patches.map((bytes) => (bytes ? btoa(String.fromCharCode(...bytes)) : null));
+    try { localStorage.setItem(LS_PATCHES, JSON.stringify(slots)); } catch (_) { /* storage may be off */ }
+    window.__synth.patchSaves++;
   }
 }
 
@@ -339,6 +351,15 @@ function savedState() {
   }
 }
 
+function savedPatches() {
+  try {
+    const slots = JSON.parse(localStorage.getItem(LS_PATCHES) || '[]');
+    return slots.map((s) => (s ? Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)) : null));
+  } catch (_) {
+    return [];
+  }
+}
+
 function showAudioDelay() {
   if (!ctx) return;
   const ms = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
@@ -359,7 +380,7 @@ async function start() {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
-      processorOptions: { wasm, state: savedState() },
+      processorOptions: { wasm, state: savedState(), patches: savedPatches() },
     });
     node.port.onmessage = onFirmwareMessage;
     node.onprocessorerror = () => { err.textContent = 'The audio engine stopped with an error.'; $('start').hidden = false; };
@@ -380,9 +401,11 @@ window.__synth = {
   ready: false,
   frames: 0,
   saves: 0,
+  patchSaves: 0,
   problems,
   midi: sendMidi,
   position: (id) => controls.get(id)?.value,
+  led: (id) => controls.get(id)?.ledRgb ?? 0,   // the label light's colour as the firmware last set it
   controlIds: () => [...controls.keys()],
   firmwareControls: () => fwControls,
   // Display checks read the firmware's frame itself, not the scaled copy on screen.

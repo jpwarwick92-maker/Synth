@@ -74,9 +74,26 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, size_t) noexcept { std::free(p); }
 
 // ---- storage stand-in ----
-static uint8_t gStore[256];
+static uint8_t gStore[1024];
 static uint32_t gStoreLen = 0;
 static int gSaveCount = 0;
+// patch slots, as a target's flash or card would hold them
+static uint8_t gBank[fw::kPatchSlots][fw::kPatchSize];
+static uint32_t gBankLen[fw::kPatchSlots];
+static int gPatchSaves = 0;
+
+extern "C" uint32_t fw_hal_patch_load(uint32_t slot, uint8_t* dst, uint32_t max) {
+  if (slot >= (uint32_t)fw::kPatchSlots) return 0;
+  uint32_t n = gBankLen[slot] < max ? gBankLen[slot] : max;
+  std::memcpy(dst, gBank[slot], n);
+  return n;
+}
+extern "C" void fw_hal_patch_save(uint32_t slot, const uint8_t* src, uint32_t len) {
+  if (slot >= (uint32_t)fw::kPatchSlots || len > fw::kPatchSize) return;
+  std::memcpy(gBank[slot], src, len);
+  gBankLen[slot] = len;
+  ++gPatchSaves;
+}
 
 extern "C" uint32_t fw_hal_storage_load(uint8_t* dst, uint32_t max) {
   uint32_t n = gStoreLen < max ? gStoreLen : max;
@@ -93,7 +110,10 @@ extern "C" void fw_hal_storage_save(const uint8_t* src, uint32_t len) {
 static double gSr = 48000.0;
 
 static void boot(double sr, bool keepStorage = false) {
-  if (!keepStorage) gStoreLen = 0;
+  if (!keepStorage) {
+    gStoreLen = 0;
+    std::memset(gBankLen, 0, sizeof gBankLen);
+  }
   gSr = sr;
   fw::init((float)sr);
 }
@@ -442,6 +462,10 @@ static void testNoAllocation() {
     for (int c = 0; c < fw::kFirstEncoder; ++c) fw::controlSet(c, (round * 97 + c * 311) % 4096);
     fw::controlSet(fw::kFirstButton + round % fw::kNumButtons, 1);
     fw::encoderTurn(fw::kFirstEncoder + round % 4, round % 3 - 1);
+    fw::controlSet(fw::kFirstEncoder + round % 4, 1);  // encoder pushes: on the Patch page these load and save
+    fw::gPatch.save(round % fw::kPatchSlots);
+    fw::midiByte(0xC0);                                // program change: loads a patch
+    fw::midiByte((uint8_t)((round + 3) % fw::kPatchSlots));
     fw::midiByte(0xE0);
     fw::midiByte(0);
     fw::midiByte((uint8_t)(round * 3 % 128));
@@ -645,21 +669,30 @@ static void testEveryControl() {
 }
 
 static void testMidi() {
-  section("AC9  a controller number moves its control exactly as dragging does");
+  section("AC9  a controller number sets its parameter; the control stays put and follows until it is touched");
   boot(48000);
   for (int c = 0; c < fw::kFirstEncoder; ++c) {
     fw::ControlInfo info = fw::controlInfo(c);
     int id = fw::controlParam(c);
     int cc = fw::kParams[id].cc;
+    int was = fw::controlGet(c);
     midi({0xB0, cc, 0});
     midi({0xB0, cc, 100});
-    int viaMidi = fw::controlGet(c);
     int expect = info.kind == fw::CK_SELECTOR ? 100 * info.steps / 128 : (100 * 4095 + 63) / 127;
-    CHECK(viaMidi == expect, "%s via CC %d: got %d, expected %d", info.name, cc, viaMidi, expect);
+    CHECK(fw::gParams.val[id] == expect, "%s via CC %d: got %d, expected %d", info.name, cc, (int)fw::gParams.val[id], expect);
     CHECK(fw::gUi.popupParam() == id, "%s via CC did not bring up its visual", info.name);
-    fw::controlSet(c, 0);
+    if (id == fw::P_VOLUME) {  // master volume has no pick-up
+      CHECK(fw::controlGet(c) == expect, "volume should simply take the value");
+      continue;
+    }
+    CHECK(fw::controlGet(c) == was, "%s: a real control cannot move by itself (was %d, now %d)", info.name, was, fw::controlGet(c));
+    CHECK(fw::gPatch.following(c) == (was != expect), "%s should be following the incoming value", info.name);
+    // dragged to the same place, the control takes over with the same value
     fw::controlSet(c, expect);
-    CHECK(fw::controlGet(c) == viaMidi, "%s: dragging to the same place gives a different value", info.name);
+    CHECK(fw::gParams.val[id] == expect && !fw::gPatch.following(c), "%s: dragging to the value should take over there",
+          info.name);
+    fw::controlSet(c, info.kind == fw::CK_SELECTOR ? 0 : 500);
+    CHECK(fw::gParams.val[id] == (info.kind == fw::CK_SELECTOR ? 0 : 500), "%s: once live the control sets the value", info.name);
   }
   // no two parameters share a number, and none collides with the reserved ones
   for (int a = 0; a < fw::P_COUNT; ++a) {
@@ -681,7 +714,7 @@ static void testMidi() {
   renderNew(1.0);
   CHECK(fw::gSynth.activeVoices() == 0, "velocity-0 note-offs: %d voices left", fw::gSynth.activeVoices());
   midi({0xF0, 0x7D, 0x3C, 0x7F, 0x3C, 0x7F, 0xF7});  // sysex contents must not play as running-status notes
-  midi({0xC0, 5});                             // program change: ignored
+  midi({0xC0, 5});                             // program change to an empty slot: nothing happens
   renderNew(0.1);
   CHECK(fw::gSynth.activeVoices() == 0, "sysex or program change started a voice");
 }
@@ -818,18 +851,19 @@ static void testSoftPages() {
   CHECK(fw::gParams.step(fw::P_DLY_MIX) > 8 + 20, "a fast spin should move in bigger steps (got %d)", fw::gParams.step(fw::P_DLY_MIX));
   press("btn_fx1");
 
-  section("soft pages: Patch is still a placeholder");
+  section("soft pages: turning the encoders on the Patch pages changes no sound parameter");
   press("btn_patch");
   fw::tick(33);
-  saveFrame("mode_placeholder");
-  CHECK(countColour(fw::kGrey, 90, 130) > 300, "no 'not built yet' message");
   uint16_t before[fw::P_COUNT];
   for (int i = 0; i < fw::P_COUNT; ++i) before[i] = fw::gParams.val[i];
   for (int e = 0; e < 4; ++e) fw::encoderTurn(ctl(kEncoders[e]), 2);
+  press("btn_patch");
+  for (int e = 0; e < 4; ++e) fw::encoderTurn(ctl(kEncoders[e]), 2);
   int changed = 0;
   for (int i = 0; i < fw::P_COUNT; ++i) changed += before[i] != fw::gParams.val[i];
-  CHECK(changed == 0, "encoders should do nothing on a placeholder page");
+  CHECK(changed == 0, "browsing slots or editing the name changed %d parameters", changed);
   press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "the Patch button should return home after its second page");
 
   section("oscillator engine buttons step through VA, FM, wavetable and pluck");
   boot(48000);
@@ -2184,6 +2218,295 @@ static void testState() {
   CHECK(wrong == 0, "damaged save: %d parameters are not at their defaults", wrong);
 }
 
+// ---------------------------------------------------------------- patches
+
+static int ledR(int c) { return (int)((fw::ledColour(c) >> 16) & 255); }
+static int ledB(int c) { return (int)(fw::ledColour(c) & 255); }
+static int ledMax(int c) {
+  uint32_t v = fw::ledColour(c);
+  return std::max({(int)((v >> 16) & 255), (int)((v >> 8) & 255), (int)(v & 255)});
+}
+
+// Stores the sound as it stands in slot `slot` (0-based) through the Patch page.
+static void savePatchTo(int slot) {
+  if (fw::gUi.mode() != fw::MB_PATCH || fw::gUi.page() != 0) {
+    while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
+    press("btn_patch");
+  }
+  fw::encoderTurn(ctl("enc1"), -fw::kPatchSlots);
+  fw::encoderTurn(ctl("enc1"), slot);
+  press("enc2");
+  if (fw::gPatch.slot() != slot) press("enc2");  // a used slot asks twice
+}
+
+static void testPatches() {
+  section("patches: saving stores every value; loading brings them back while the controls stay put");
+  boot(48000);
+  gPatchSaves = 0;
+  int cut = ctl("filter_cutoff"), res = ctl("filter_resonance"), wave = ctl("osc1_wave"), dest = ctl("lfo_destination");
+  fw::tick(33);
+  std::vector<uint8_t> homeInit = grabFrame();
+  setPot("filter_cutoff", 0.30);
+  setPot("filter_resonance", 0.70);
+  setSel("osc1_wave", fw::WAVE_SIN);
+  setSel("lfo_destination", fw::LFO_AMP);
+  setStep(fw::P_DLY_MIX, 40);
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_FM);
+  uint16_t stored[fw::P_COUNT];
+  for (int i = 0; i < fw::P_COUNT; ++i) stored[i] = fw::gParams.val[i];
+  CHECK(fw::gPatch.slot() < 0 && fw::gPatch.edited(), "before any save: no slot, and the sound counts as changed");
+
+  press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::controlGet(ctl("btn_patch")) == 1, "Patch button should open the Patch page and light");
+  fw::encoderTurn(ctl("enc1"), 4);  // slot 5
+  fw::tick(33);
+  saveFrame("mode_patch_empty");
+  press("enc2");
+  CHECK(gPatchSaves == 1 && fw::gPatch.slotUsed(4), "an empty slot saves on one push (%d saves)", gPatchSaves);
+  CHECK(fw::gPatch.slot() == 4 && !fw::gPatch.edited(), "after a save the sound is that slot's, unchanged");
+  CHECK(gBankLen[4] == fw::kPatchSize, "stored patch is %u bytes, expected %u", gBankLen[4], fw::kPatchSize);
+
+  // change the sound: three controls and a soft value
+  setPot("filter_cutoff", 0.80);
+  setPot("filter_resonance", 0.10);
+  setSel("osc1_wave", fw::WAVE_SAW);
+  setStep(fw::P_DLY_MIX, 5);
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_VA);
+  setPot("volume", 0.33);
+  CHECK(fw::gPatch.edited(), "changing a control should mark the patch as changed");
+  int physCut = fw::controlGet(cut), physRes = fw::controlGet(res);
+
+  press("enc1");  // load the slot showing
+  int wrong = 0;
+  for (int i = 0; i < fw::P_COUNT; ++i)
+    if (i != fw::P_VOLUME && i != fw::P_HOLD) wrong += fw::gParams.val[i] != stored[i];
+  CHECK(wrong == 0, "%d parameters differ from the saved patch after loading", wrong);
+  CHECK(fw::gParams.val[fw::P_VOLUME] == std::lround(0.33 * 4095), "master volume is not part of a patch");
+  CHECK(fw::controlGet(cut) == physCut && fw::controlGet(res) == physRes && fw::controlGet(wave) == fw::WAVE_SAW,
+        "loading must not move the physical controls");
+  CHECK(fw::gPatch.following(cut) && fw::gPatch.following(res) && fw::gPatch.following(wave), "the three moved controls should be following the patch");
+  CHECK(!fw::gPatch.following(dest) && !fw::gPatch.offPatch(dest), "a control already at the patch's value stays live");
+  CHECK(fw::gPatch.followCount() == 3 && fw::gPatch.offCount() == 3, "expected 3 controls following, got %d (%d off)",
+        fw::gPatch.followCount(), fw::gPatch.offCount());
+  CHECK(!fw::gPatch.edited(), "a freshly loaded patch is unchanged");
+  fw::tick(33);
+  saveFrame("mode_patch_loaded");
+  CHECK(countColour(fw::kTeal, 130, 150) > 200, "the Patch page should say how many controls follow the patch");
+
+  section("patches: the label lights show which controls are off the patch, and which way to go");
+  CHECK(fw::ledColour(dest) == fw::kLedIdle, "a control at the patch's value has a plain label light");
+  CHECK(fw::ledColour(ctl("enc1")) == 0 && fw::ledColour(ctl("btn_hold")) == 0, "encoders and buttons have no label light");
+  CHECK(fw::gPatch.direction(cut) == -1 && fw::gPatch.direction(res) == 1 && fw::gPatch.direction(wave) == 1, "directions: %d %d %d",
+        fw::gPatch.direction(cut), fw::gPatch.direction(res), fw::gPatch.direction(wave));
+  int upFlips = 0, downFlips = 0, upHi = 0, upLo = 255, lastUp = -1, lastDown = -1;
+  bool upOrange = true, downBlue = true;
+  for (int t = 0; t < 90; ++t) {  // three seconds
+    fw::tick(33);
+    upOrange = upOrange && ledR(res) > ledB(res);
+    downBlue = downBlue && ledB(cut) > ledR(cut);
+    int u = ledMax(res), d = ledMax(cut);
+    upHi = std::max(upHi, u);
+    upLo = std::min(upLo, u);
+    if (lastUp >= 0 && u != lastUp) ++upFlips;
+    if (lastDown >= 0 && d != lastDown) ++downFlips;
+    lastUp = u;
+    lastDown = d;
+  }
+  CHECK(upOrange && downBlue, "'move up' should be orange and 'move down' blue");
+  CHECK(upFlips >= 2 * downFlips && downFlips >= 4, "'move up' should blink faster than 'move down' (%d against %d changes)", upFlips, downFlips);
+  CHECK(upLo > 20 && upHi > 3 * upLo, "the light should dim between blinks without going out (%d..%d)", upLo, upHi);
+
+  section("patches: a following pot takes over only on passing through the stored value");
+  fw::tick(2000);
+  fw::controlSet(cut, physCut - 300);  // towards the patch, but not there
+  CHECK(fw::gParams.val[fw::P_CUTOFF] == stored[fw::P_CUTOFF] && fw::gPatch.following(cut), "moving without reaching the value must not change the sound");
+  CHECK(fw::gUi.popupParam() == fw::P_CUTOFF, "touching a following control should bring up its pick-up picture");
+  fw::tick(33);
+  saveFrame("popup_pickup");
+  std::vector<uint8_t> pick = grabFrame();
+  CHECK(countColour(fw::kWhite, 100, 130) > 80 && countColour(fw::kAmber, 90, 135) > 150, "pick-up picture should mark the panel and the patch positions");
+  fw::controlSet(cut, 4095);  // away from the patch
+  CHECK(fw::gParams.val[fw::P_CUTOFF] == stored[fw::P_CUTOFF], "moving away must not change the sound either");
+  fw::controlSet(cut, stored[fw::P_CUTOFF] - 150);  // through the stored value
+  CHECK(!fw::gPatch.following(cut) && fw::gParams.val[fw::P_CUTOFF] == stored[fw::P_CUTOFF] - 150, "passing through the stored value should hand over to the control");
+  CHECK(fw::ledColour(cut) == fw::kLedIdle, "a control that has taken over has a plain label light again");
+  fw::tick(33);
+  CHECK(grabFrame() != pick, "once live, the control's own picture should replace the pick-up picture");
+  fw::controlSet(cut, 2222);
+  CHECK(fw::gParams.val[fw::P_CUTOFF] == 2222, "a live control sets the value directly");
+
+  section("patches: landing within the tolerance also takes over; the light dims on the way");
+  int far = ledMax(res);
+  for (int t = 0; t < 30 && ledMax(res) < far; ++t) fw::tick(33);
+  int brightFar = 0, brightNear = 0;
+  for (int t = 0; t < 30; ++t) {
+    fw::tick(33);
+    brightFar = std::max(brightFar, ledMax(res));
+  }
+  fw::controlSet(res, stored[fw::P_RESONANCE] - 400);
+  CHECK(fw::gPatch.following(res), "400 short of the value is still following");
+  for (int t = 0; t < 30; ++t) {
+    fw::tick(33);
+    brightNear = std::max(brightNear, ledMax(res));
+  }
+  CHECK(brightNear < brightFar - 30, "the light should be dimmer close to the value (%d far, %d near)", brightFar, brightNear);
+  fw::controlSet(res, stored[fw::P_RESONANCE] - 90);  // inside 2.5% of the travel, without crossing
+  CHECK(!fw::gPatch.following(res) && fw::gParams.val[fw::P_RESONANCE] == stored[fw::P_RESONANCE] - 90, "within the tolerance the control should take over");
+  // pitch is tighter: 1%
+  int det = ctl("osc2_detune");
+  setCC(fw::P_OSC2_DETUNE, 100);
+  int detTarget = fw::gParams.val[fw::P_OSC2_DETUNE];
+  fw::controlSet(det, detTarget - 80);
+  CHECK(fw::gPatch.following(det), "80 short is inside the usual tolerance but not the tighter one for pitch");
+  fw::controlSet(det, detTarget - 30);
+  CHECK(!fw::gPatch.following(det), "30 short is inside the pitch tolerance");
+
+  section("patches: a selector goes live on any change; its light stays on until it is on the patch's stop");
+  setSel("osc1_wave", fw::WAVE_SQR);
+  CHECK(fw::gParams.step(fw::P_OSC1_WAVE) == fw::WAVE_SQR && !fw::gPatch.following(wave), "one click and the selector is live");
+  CHECK(fw::gPatch.offPatch(wave) && fw::ledColour(wave) != fw::kLedIdle && ledR(wave) >= ledB(wave), "its light should still point up towards the patch's stop");
+  setSel("osc1_wave", fw::WAVE_SIN);
+  CHECK(!fw::gPatch.offPatch(wave) && fw::ledColour(wave) == fw::kLedIdle, "on the patch's stop the light goes plain");
+  CHECK(fw::gPatch.followCount() == 0 && fw::gPatch.offCount() == 0, "every light out: the panel matches the patch");
+
+  section("patches: guide setting, manual, overwrite, and the name");
+  setPot("filter_cutoff", 0.9);
+  press("enc1");  // reload: cutoff follows again
+  CHECK(fw::gPatch.following(cut), "reloading should set the changed control following again");
+  fw::encoderTurn(ctl("enc3"), -1);
+  CHECK(fw::gPatch.guide() == fw::GUIDE_TINT && fw::ledColour(cut) == fw::kLedTint, "TINT: a steady tint on following controls");
+  fw::encoderTurn(ctl("enc3"), -1);
+  CHECK(fw::gPatch.guide() == fw::GUIDE_OFF && fw::ledColour(cut) == fw::kLedIdle, "OFF: every label plain");
+  fw::encoderTurn(ctl("enc3"), 5);
+  CHECK(fw::gPatch.guide() == fw::GUIDE_ON, "guide should stop at ON");
+  press("enc4");  // manual
+  CHECK(fw::gPatch.followCount() == 0 && fw::gParams.val[fw::P_CUTOFF] == fw::controlGet(cut), "Manual should make every control live where it stands");
+  CHECK(fw::gPatch.edited(), "going manual changes the sound, so the patch counts as changed");
+
+  int saves = gPatchSaves;
+  press("enc2");
+  CHECK(gPatchSaves == saves, "a used slot must not be overwritten on one push");
+  fw::tick(3200);
+  press("enc2");
+  CHECK(gPatchSaves == saves, "the second push only counts within three seconds");
+  press("enc2");
+  CHECK(gPatchSaves == saves + 1 && !fw::gPatch.edited(), "push twice to overwrite");
+  int slot5Cutoff = fw::gParams.val[fw::P_CUTOFF];  // slot 5 now holds the sound as it is after going manual
+
+  press("btn_patch");  // page 2: the name
+  CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::gUi.page() == 1, "second press should show the Name page");
+  CHECK(!std::strcmp(fw::gPatch.name(), "INIT    "), "a new sound is called INIT (got '%s')", fw::gPatch.name());
+  static const char kWant[] = "BASS 2";
+  for (int i = 0; i < fw::kPatchNameLen; ++i) {
+    char want = i < 6 ? kWant[i] : ' ';
+    fw::encoderTurn(ctl("enc3"), fw::nameCharIndex(want) - fw::nameCharIndex(fw::gPatch.name()[i]));
+    fw::encoderTurn(ctl("enc1"), 1);
+  }
+  CHECK(!std::strcmp(fw::gPatch.name(), "BASS 2  "), "name after editing: '%s'", fw::gPatch.name());
+  fw::tick(33);
+  saveFrame("mode_patch_name");
+  press("btn_patch");  // home
+  fw::tick(2100);
+  std::vector<uint8_t> homeEdited = grabFrame();
+  savePatchTo(6);
+  CHECK(fw::gPatch.slot() == 6 && !std::strcmp(fw::gPatch.slotName(6), "BASS 2  "), "saved under its name in slot 7");
+  while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
+  fw::tick(2100);
+  saveFrame("home_patch");
+  CHECK(countColour(fw::kAmber, 0, 30) > 150, "home should show the slot number and name");
+  CHECK(grabFrame() != homeInit && grabFrame() != homeEdited, "the title should change with the patch and lose its changed mark on saving");
+
+  section("patches: MIDI program change loads a slot");
+  setPot("filter_cutoff", 0.05);
+  midi({0xC0, 4});
+  CHECK(fw::gPatch.slot() == 4 && fw::gParams.val[fw::P_CUTOFF] == slot5Cutoff, "program change 4 should load slot 5");
+  midi({0xC0, 12});
+  CHECK(fw::gPatch.slot() == 4, "a program change to an empty slot does nothing");
+
+  section("patches: the loaded patch, the following controls and the stored slots survive a restart");
+  setPot("mix_sub", 0.9);
+  midi({0xC0, 6});
+  int sub = ctl("mix_sub");
+  CHECK(fw::gPatch.following(sub), "set-up: Sub should be following");
+  uint16_t want[fw::P_COUNT];
+  for (int i = 0; i < fw::P_COUNT; ++i) want[i] = fw::gParams.val[i];
+  int followed = fw::gPatch.followCount();
+  fw::encoderTurn(ctl("enc3"), 0);
+  fw::tick(1100);
+  CHECK(gStoreLen == fw::kStateSize, "saved state is %u bytes, expected %u", gStoreLen, fw::kStateSize);
+  boot(48000, true);
+  wrong = 0;
+  for (int i = 0; i < fw::P_COUNT; ++i) wrong += fw::gParams.val[i] != want[i];
+  CHECK(wrong == 0, "%d parameters came back different", wrong);
+  CHECK(fw::gPatch.slot() == 6 && !std::strcmp(fw::gPatch.name(), "BASS 2  "), "the loaded patch should still be slot 7, BASS 2");
+  CHECK(fw::gPatch.followCount() == followed && fw::gPatch.following(sub) && fw::controlGet(sub) == std::lround(0.9 * 4095),
+        "the controls that were following should still be, at the same physical positions");
+  CHECK(fw::gPatch.slotUsed(4) && fw::gPatch.slotUsed(6) && !fw::gPatch.slotUsed(0), "stored slots should be found again at start-up");
+
+  section("patches: a damaged slot reads as empty; a patch from an older build still loads");
+  gBank[4][20] ^= 0x40;
+  boot(48000, true);
+  CHECK(!fw::gPatch.slotUsed(4) && !fw::patchLoad(4), "a damaged patch must not load");
+  {
+    const int oldCount = fw::P_COUNT - 4;
+    uint8_t blob[fw::kPatchSize] = {'P', 'A', 'T', 1, (uint8_t)oldCount, 'O', 'L', 'D', ' ', ' ', ' ', ' ', ' '};
+    uint16_t sum = 0;
+    for (int i = 0; i < fw::kPatchNameLen; ++i) sum = (uint16_t)(sum * 31u + blob[5 + i] + 1u);
+    for (int i = 0; i < oldCount; ++i) {
+      const fw::ParamDef& d = fw::kParams[i];
+      uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(700 + i * 9);
+      blob[13 + i * 2] = (uint8_t)(v & 0xFF);
+      blob[14 + i * 2] = (uint8_t)(v >> 8);
+      sum = (uint16_t)(sum * 31u + v + 1u);
+    }
+    blob[13 + oldCount * 2] = (uint8_t)(sum & 0xFF);
+    blob[14 + oldCount * 2] = (uint8_t)(sum >> 8);
+    std::memcpy(gBank[9], blob, 15 + oldCount * 2);
+    gBankLen[9] = 15 + oldCount * 2;
+    boot(48000, true);
+    setPot("voice_drift", 0.8);  // one of the four newest parameters
+    CHECK(fw::patchLoad(9), "an older, shorter patch should load");
+    CHECK(fw::gParams.val[fw::P_CUTOFF] == 700 + fw::P_CUTOFF * 9, "its values should be applied");
+    wrong = 0;
+    for (int i = oldCount; i < fw::P_COUNT; ++i) wrong += fw::gParams.val[i] != fw::kParams[i].def;
+    CHECK(wrong == 0, "%d of the parameters it lacks are not at their defaults", wrong);
+  }
+
+  section("patches: a loaded patch sounds as it did when it was saved");
+  auto theSound = [] {
+    setPot("filter_cutoff", 0.35);
+    setPot("filter_resonance", 0.6);
+    setSel("osc1_wave", fw::WAVE_SQR);
+    setPot("mix_sub", 0.5);
+    setStep(fw::P_CHORUS, 60);
+  };
+  auto anotherSound = [] {
+    setPot("filter_cutoff", 0.9);
+    setPot("filter_resonance", 0.1);
+    setSel("osc1_wave", fw::WAVE_TRI);
+    setPot("mix_sub", 0.0);
+  };
+  boot(48000);
+  theSound();
+  savePatchTo(2);
+  // each take starts from a fresh start-up, so the three are comparable sample for sample
+  boot(48000, true);
+  theSound();
+  renderNew(0.05);
+  std::vector<float> asSaved = phrase();
+  boot(48000, true);
+  anotherSound();
+  renderNew(0.05);
+  std::vector<float> changed = phrase();
+  boot(48000, true);
+  anotherSound();
+  CHECK(fw::patchLoad(2), "set-up: slot 3 should load");
+  renderNew(0.05);
+  std::vector<float> recalled = phrase();
+  CHECK(rmsDiff(asSaved, changed) > 1e-3, "set-up: the changed sound should differ");
+  CHECK(rmsDiff(asSaved, recalled) < 1e-9, "recalled sound differs from the saved one by %.9f", rmsDiff(asSaved, recalled));
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -2213,7 +2536,10 @@ static void printControls() {
   std::printf("Generated from the firmware's parameter table by `make docs`. Do not edit by hand.\n\n");
   std::printf("The synth listens on every MIDI channel. Besides the numbers below it responds to\n");
   std::printf("notes with velocity, pitch bend, mod wheel (CC 1, adds LFO depth), sustain pedal (CC 64),\n");
-  std::printf("all sound off (CC 120) and all notes off (CC 123).\n\n");
+  std::printf("all sound off (CC 120) and all notes off (CC 123). A program change loads that patch slot\n");
+  std::printf("(0 to %d), if it holds a patch.\n\n", fw::kPatchSlots - 1);
+  std::printf("A controller message for a panel control sets the sound, not the control: the control\n");
+  std::printf("follows that value until it is moved through it (pots and faders) or changed (selectors).\n\n");
   std::printf("## Panel controls\n\n");
   std::printf("| Control id | Section | Name | Type | Stops | CC |\n|---|---|---|---|---|---|\n");
   int order[fw::P_COUNT], n = 0;
@@ -2279,6 +2605,7 @@ int main(int argc, char** argv) {
   testSupersawSyncXmod();
   testLadderFilter();
   testChordMemory();
+  testPatches();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

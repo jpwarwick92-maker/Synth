@@ -111,7 +111,7 @@ function makeKnob(g, def, sizes, c, send) {
   const r = (large ? sizes.knobLarge : sizes.knob) / 2;
   el('circle', { r, class: large ? 'cap large' : 'cap' }, g);
   const ptr = el('line', { x1: 0, y1: -r + 0.9, x2: 0, y2: -r + 0.9 + (large ? 6 : 4), class: large ? 'ptr large' : 'ptr' }, g);
-  if (def.label) el('text', { y: r + 4.4, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: r + 4.4, class: 'label' }, g, def.label);
   const hit = el('circle', { r: r + 2.5, class: 'hit' }, g);
 
   c.draw = () => ptr.setAttribute('transform', `rotate(${-135 + (270 * c.value) / POT_MAX})`);
@@ -144,7 +144,7 @@ function makeFader(g, def, sizes, c, send) {
   const cap = el('g', {}, g);
   el('rect', { x: -capW / 2, y: -capH / 2, width: capW, height: capH, rx: 0.9, class: 'fcap' }, cap);
   el('line', { x1: -capW / 2 + 1.2, y1: 0, x2: capW / 2 - 1.2, y2: 0, class: 'fline' }, cap);
-  if (def.label) el('text', { y: travel / 2 + capH / 2 + 5.6, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: travel / 2 + capH / 2 + 5.6, class: 'label' }, g, def.label);
   const hit = el('rect', { x: -6.5, y: -travel / 2 - 5, width: 13, height: travel + 10, class: 'hit' }, g);
 
   c.draw = () => cap.setAttribute('transform', `translate(0 ${travel / 2 - (travel * c.value) / POT_MAX})`);
@@ -190,7 +190,7 @@ function makeSelector(g, def, sizes, c, send) {
   }
   el('circle', { r, class: 'cap' }, g);
   const ptr = el('line', { x1: 0, y1: 0, x2: 0, y2: -r + 0.2, class: 'ptr' }, g);
-  if (def.label) el('text', { y: r + 4.8, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: r + 4.8, class: 'label' }, g, def.label);
   const hit = el('circle', { r: r + 2.2, class: 'hit' }, g);
 
   c.draw = () => {
@@ -295,7 +295,7 @@ function makeToggle(g, def, sizes, c, send) {
   const lever = el('circle', { r: w / 2 - 0.6, class: 'tlever' }, g);
   const on = el('text', { y: -h / 2 - 1.6, class: 'stop' , 'text-anchor': 'middle' }, g, def.stops[1]);
   const off = el('text', { y: h / 2 + 3.6, class: 'stop', 'text-anchor': 'middle' }, g, def.stops[0]);
-  if (def.label) el('text', { y: h / 2 + 8.6, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: h / 2 + 8.6, class: 'label' }, g, def.label);
   const hit = el('rect', { x: -w / 2 - 3, y: -h / 2 - 5, width: w + 6, height: h + 10, class: 'hit' }, g);
 
   c.draw = () => {
@@ -317,6 +317,14 @@ function makeToggle(g, def, sizes, c, send) {
   });
 }
 
+// How an LED behind a smoked, back-lit label looks: the firmware gives the
+// colour it drives the LED at; the eye sees dim light as brighter than its
+// number suggests, so the page lifts it before painting the lettering.
+function ledCss(rgb) {
+  const lift = (v) => Math.round(255 * Math.pow(v / 255, 0.45));
+  return `rgb(${lift((rgb >> 16) & 255)}, ${lift((rgb >> 8) & 255)}, ${lift(rgb & 255)})`;
+}
+
 const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton, toggle: makeToggle };
 
 // Creates one control inside `parent` (an <svg> or <g>). `send(id, kind, value)`
@@ -326,7 +334,14 @@ export function makeControl(parent, def, sizes, send) {
   const g = el('g', { transform: `translate(${def.x} ${def.y})`, class: `ctl ${def.type}`, 'data-id': def.id }, parent);
   const c = {
     id: def.id, type: def.type, def, el: g, value: 0, fine: 0, held: false, movedAt: -1e9,
+    labelEl: null, ledRgb: 0,
     draw() {},
+    // The light behind the control's label, as the firmware drives it.
+    led(rgb) {
+      if (rgb === this.ledRgb) return;
+      this.ledRgb = rgb;
+      if (this.labelEl) this.labelEl.style.fill = rgb ? ledCss(rgb) : '';
+    },
     touched() { this.movedAt = performance.now(); },
     // A position reported back by the firmware. A control under a finger
     // stays where the finger put it, and for a moment afterwards too: the

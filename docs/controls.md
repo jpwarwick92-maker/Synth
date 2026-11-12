@@ -4,7 +4,11 @@ Generated from the firmware's parameter table by `make docs`. Do not edit by han
 
 The synth listens on every MIDI channel. Besides the numbers below it responds to
 notes with velocity, pitch bend, mod wheel (CC 1, adds LFO depth), sustain pedal (CC 64),
-all sound off (CC 120) and all notes off (CC 123).
+all sound off (CC 120) and all notes off (CC 123). A program change loads that patch slot
+(0 to 15), if it holds a patch.
+
+A controller message for a panel control sets the sound, not the control: the control
+follows that value until it is moved through it (pots and faders) or changed (selectors).
 
 ## Panel controls
 
