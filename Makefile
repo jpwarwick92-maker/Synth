@@ -19,7 +19,7 @@ WASM_FLAGS := --target=wasm32 -std=c++17 -O2 -ffreestanding -nostdlib \
               -fno-exceptions -fno-rtti -fno-threadsafe-statics -fvisibility=hidden -Wall -Wextra
 WASM_LD    := -Wl,--no-entry -Wl,--strip-all -Wl,-z,stack-size=65536
 
-.PHONY: all test wasm site serve page-test docs
+.PHONY: all test sanitize wasm site serve page-test docs
 
 all: test site page-test
 
@@ -34,6 +34,18 @@ test: build/tests
 	build/tests build/out
 	@build/tests --controls | diff -u docs/controls.md - \
 	    || (echo "docs/controls.md is out of date: run 'make docs'"; exit 1)
+
+# The same tests built with the address and undefined-behaviour sanitizers:
+# a read or write outside a buffer stops the run, even where it would do no
+# visible harm on this machine.
+build/tests_san: $(FW_SRC) $(FW_HDR) $(wildcard tests/native/*.cpp) $(wildcard tests/native/*.h)
+	@mkdir -p build
+	$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-exceptions -fno-rtti \
+	    -Ifirmware $(FW_SRC) tests/native/*.cpp -o $@ \
+	    -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc
+
+sanitize: build/tests_san
+	build/tests_san
 
 docs: build/tests
 	build/tests --controls > docs/controls.md
@@ -60,4 +72,5 @@ serve: site
 	python3 -m http.server 8080 -d build/site
 
 page-test: site
+	node tests/page/soak.mjs build/site
 	node tests/page/run.mjs build/site

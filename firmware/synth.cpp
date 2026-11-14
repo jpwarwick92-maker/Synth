@@ -221,6 +221,7 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
       if (rp < 0.0f) rp += (float)kKsLen;
       int i0 = (int)rp;
       float f = rp - (float)i0;
+      i0 &= kKsLen - 1;  // rp can round up to exactly the length: that is slot 0, not the memory after the string
       int i1 = (i0 + 1) & (kKsLen - 1);
       float y = ((float)o.ks[i0] + (float)(o.ks[i1] - o.ks[i0]) * f) * (1.0f / 32767.0f);
       o.lp += r.ksDamp * (y - o.lp);

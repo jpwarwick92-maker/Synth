@@ -23,12 +23,27 @@ float gAllpass[2][kAllpassLen];
 const float kReverbSec[4] = {0.02971f, 0.03711f, 0.04113f, 0.04377f};
 const float kAllpassSec[2] = {0.00531f, 0.00189f};
 
+// Reads a delay line at a fractional position, 0 <= pos <= len. The top end
+// is included on purpose: a position a hair below zero, wrapped by adding
+// len, rounds up to exactly len in a float, and must read slot 0, not the
+// memory after the buffer.
 inline float readFrac(const float* buf, int len, float pos) {
   int i0 = (int)pos;
   float f = pos - (float)i0;
+  if (i0 >= len) i0 -= len;
+  if (i0 < 0) i0 = 0;
   int i1 = i0 + 1;
   if (i1 >= len) i1 -= len;
   return buf[i0] + (buf[i1] - buf[i0]) * f;
+}
+
+// Nothing a voice does should reach the effects as a wild value, but the
+// reverb and chorus lines are plain floats with long memories: one bad
+// sample would ring in them for seconds, or for ever if it is not a number.
+// So what goes in is held to a sane range first.
+inline float sane(float x) {
+  if (!(x == x)) return 0.0f;  // not a number
+  return clampf(x, -4.0f, 4.0f);
 }
 
 }  // namespace
@@ -55,9 +70,11 @@ void Effects::init(float sampleRate) {
 
 void Effects::process(const float* inL, const float* inR, float* outL, float* outR, int n, const FxSettings& s) {
   for (int i = 0; i < n; ++i) {
-    outL[i] = inL[i];
-    outR[i] = inR[i];
+    outL[i] = sane(inL[i]);
+    outR[i] = sane(inR[i]);
   }
+  inL = outL;  // from here on, only the checked copy is read
+  inR = outR;
 
   // ---- chorus: two slowly swept taps, one per side ----
   bool chorus = s.chorus > 0.001f;
@@ -78,8 +95,9 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       float pL = (float)chPos_ - dL, pR = (float)chPos_ - dR;
       if (pL < 0.0f) pL += (float)kChorusLen;
       if (pR < 0.0f) pR += (float)kChorusLen;
-      outL[i] = inL[i] + wet * (readFrac(gChorus, kChorusLen, pL) - mono);
-      outR[i] = inR[i] + wet * (readFrac(gChorus, kChorusLen, pR) - mono);
+      float dryL = inL[i], dryR = inR[i];
+      outL[i] = dryL + wet * (readFrac(gChorus, kChorusLen, pL) - mono);
+      outR[i] = dryR + wet * (readFrac(gChorus, kChorusLen, pR) - mono);
       if (++chPos_ >= kChorusLen) chPos_ = 0;
       chPhase_ += inc;
       if (chPhase_ >= 1.0f) chPhase_ -= 1.0f;
@@ -104,6 +122,7 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       if (pos < 0.0f) pos += (float)kDelayLen;
       int i0 = (int)pos;
       float f = pos - (float)i0;
+      if (i0 >= kDelayLen) i0 -= kDelayLen;  // pos can round up to exactly the length (see readFrac)
       int i1 = i0 + 1 < kDelayLen ? i0 + 1 : 0;
       float echo = ((float)gDelay[i0] + (float)(gDelay[i1] - gDelay[i0]) * f) * (1.0f / 32767.0f);
       dlLp_ += tone * (echo - dlLp_);

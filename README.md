@@ -45,7 +45,9 @@ Needs `make`, `g++`, `clang++` with the WebAssembly linker (`lld`), Node 22 and 
 make test        # engine and display tests
 make site        # build the page into build/site
 make serve       # serve it on http://localhost:8080
-make page-test   # page tests (needs Playwright: cd tests/page && npm install && npx playwright install chromium)
+make sanitize    # the same tests with the compiler's memory checker on (slower)
+make page-test   # a long run of the browser build, then the page tests
+                 # (needs Playwright: cd tests/page && npm install && npx playwright install chromium)
 make docs        # regenerate docs/controls.md
 ```
 

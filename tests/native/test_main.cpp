@@ -2507,6 +2507,61 @@ static void testPatches() {
   CHECK(rmsDiff(asSaved, recalled) < 1e-9, "recalled sound differs from the saved one by %.9f", rmsDiff(asSaved, recalled));
 }
 
+// Hands-on finding, 2026-11-14: after a few minutes with the chorus on, the
+// sound suddenly collapsed into a roar. A delay-line read position, wrapped
+// by adding the buffer length, can round up to exactly that length and read
+// the memory after the buffer; in the browser build that memory held wild
+// values, which then rang in the reverb. It happened about once in three
+// minutes, so no short test saw it. This one plays for minutes with every
+// delay line in use. Built normally it checks the level never runs away;
+// built with the sanitizers (make sanitize) it also catches the stray read
+// itself, whatever the memory next door happens to hold.
+static void testLongRun() {
+  for (double sr : {44100.0, 48000.0}) {
+    char title[96];
+    std::snprintf(title, sizeof title, "long run: eight minutes at %.0f Hz with every delay line busy stays in bounds", sr);
+    section(title);
+    boot(sr);
+    setStep(fw::P_CHORUS, 100);
+    setStep(fw::P_DLY_MIX, 60);
+    setStep(fw::P_DLY_FDBK, 60);
+    setStep(fw::P_RVB_MIX, 60);
+    setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+    setPot("mix_osc2", 0.7);
+    for (int k : {48, 55, 60, 63}) midi({0x90, k, 100});
+    float l[fw::kMaxBlock], r[fw::kMaxBlock];
+    const long perSecond = std::lround(sr / fw::kMaxBlock);
+    double normal = 0, worst = 0;
+    int worstAt = 0;
+    bool finite = true;
+    for (int sec = 0; sec < 480; ++sec) {
+      if (sec % 3 == 0) {  // a fresh pluck, and a nudge to the delay time so its read position keeps moving
+        midi({0x80, 72, 0});
+        midi({0x90, 72, 90});
+        setStep(fw::P_DLY_TIME, 30 + (sec * 7) % 60);
+      }
+      double acc = 0;
+      for (long b = 0; b < perSecond; ++b) {
+        fw::process(l, r, fw::kMaxBlock);
+        for (int i = 0; i < fw::kMaxBlock; ++i) {
+          finite = finite && std::isfinite(l[i]) && std::isfinite(r[i]);
+          acc += (double)l[i] * l[i] + (double)r[i] * r[i];
+        }
+        if (b % 12 == 0) fw::tick(32);
+      }
+      double rms = std::sqrt(acc / (double)(2 * perSecond * fw::kMaxBlock));
+      if (sec >= 3 && sec < 13) normal = std::max(normal, rms);
+      else if (sec >= 13 && rms > worst) {
+        worst = rms;
+        worstAt = sec;
+      }
+    }
+    CHECK(finite, "the output stopped being a number");
+    CHECK(normal > 0.01, "set-up: there should be sound (level %.4f)", normal);
+    CHECK(worst < 2.0 * normal, "the level ran away: %.4f at %d s, against %.4f in the first seconds", worst, worstAt, normal);
+  }
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -2613,6 +2668,7 @@ int main(int argc, char** argv) {
   testMod();
   testEngines();
   testEverySoftParameter();
+  testLongRun();
   benchmark();
 
   std::printf("\n%d checks, %d failed\n", gChecks, gFails);
