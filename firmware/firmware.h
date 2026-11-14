@@ -47,7 +47,7 @@ void encoderTurn(int index, int delta);
 // reported, a button's light (0/1), or the encoder's running click count.
 int controlGet(int index);
 // The colour of the light behind a control's label, 0xRRGGBB (0 = it has none).
-// Read after each tick: the lights blink while they guide a control to a patch.
+// Read after each tick: the colour follows the control as it nears a loaded patch.
 uint32_t ledColour(int index);
 
 // Call about 30 times a second with the elapsed time. Returns true when the

@@ -40,6 +40,11 @@ jobs:
       - name: Engine tests
         run: make test
 
+      # The same tests with the compiler's memory checker switched on.
+      - name: Engine tests under the sanitizers
+        timeout-minutes: 15
+        run: make sanitize
+
       - name: Build the page
         run: make site BUILD_LABEL=${GITHUB_SHA::7}
 
@@ -56,6 +61,11 @@ jobs:
           npx playwright install chromium
           node -e "import('playwright').then(p => p.chromium.launch()).then(b => b.close())" \
             || sudo env "PATH=$PATH" DEBIAN_FRONTEND=noninteractive npx playwright install-deps chromium
+
+      # The built WebAssembly module itself, played for many simulated minutes.
+      - name: Long run of the browser build
+        timeout-minutes: 10
+        run: node tests/page/soak.mjs build/site
 
       - name: Page tests
         run: node tests/page/run.mjs build/site build/out

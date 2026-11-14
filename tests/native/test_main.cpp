@@ -723,15 +723,15 @@ static void testUi() {
   section("AC5  home screen: patch name, live scope, status strip");
   boot(48000);
   fw::tick(33);
-  CHECK(countColour(fw::kAmber, 0, 30) > 100, "no patch name in the title row");
-  long quietScope = countColour(fw::kTeal, 40, 208);
+  CHECK(countColour(fw::kAccent, 0, 30) > 100, "no patch name in the title row");
+  long quietScope = countColour(fw::kLine, 40, 208);
   for (int i = 0; i < 3; ++i) midi({0x90, 50 + i * 7, 110});
   renderNew(0.3);
   fw::tick(33);
   saveFrame("home");
-  CHECK(countColour(fw::kTeal, 40, 208) > quietScope + 200, "scope shows no waveform while notes sound");
-  CHECK(countColour(fw::kTeal, 222, 236) == 3 * 64, "status strip should show 3 voices lit");
-  CHECK(countColour(fw::kAmber, 222, 236) >= 60, "MIDI activity light is not lit");
+  CHECK(countColour(fw::kLine, 40, 208) > quietScope + 200, "scope shows no waveform while notes sound");
+  CHECK(countColour(fw::kLine, 222, 236) == 3 * 64, "status strip should show 3 voices lit");
+  CHECK(countColour(fw::kAccent, 222, 236) >= 60, "MIDI activity light is not lit");
   midi({0xB0, 120, 0});
 
   section("AC6  moving a control shows its visual, home returns after 1.5 s");
@@ -749,7 +749,7 @@ static void testUi() {
     CHECK(fw::tick(33), "%s: display did not redraw", info.name);
     CHECK(fw::gUi.popupParam() == fw::controlParam(c), "%s: visual not shown", info.name);
     CHECK(grabFrame() != home, "%s: display still shows the home screen", info.name);
-    CHECK(countColour(fw::kAmber, 0, 44) > 60 && countColour(fw::kWhite, 0, 44) > 60, "%s: no name or value in the header",
+    CHECK(countColour(fw::kAccent, 0, 44) > 60 && countColour(fw::kInk, 0, 44) > 60, "%s: no name or value in the header",
           info.name);
     for (const char* shot : kShots)
       if (!std::strcmp(shot, info.name)) saveFrame((std::string("popup_") + info.name).c_str());
@@ -758,7 +758,7 @@ static void testUi() {
   CHECK(fw::gUi.popupParam() >= 0, "visual vanished before 1.5 s");
   fw::tick(200);
   CHECK(fw::gUi.popupParam() < 0, "visual still up after 1.6 s");
-  CHECK(countColour(fw::kAmber, 0, 30) > 100, "home screen did not come back");
+  CHECK(countColour(fw::kAccent, 0, 30) > 100, "home screen did not come back");
 
   section("AC7  Engine page, placeholders and the oscillator engine buttons");
   boot(48000);
@@ -820,7 +820,7 @@ static void testSoftPages() {
     press(c.button);
     fw::tick(33);
     CHECK(fw::controlGet(ctl(c.button)) == 1, "%s: light is off", c.button);
-    CHECK(countColour(fw::kWhite, 44, 70) > 100 && countColour(fw::kWhite, 178, 204) > 100, "%s: values missing", c.button);
+    CHECK(countColour(fw::kInk, 44, 70) > 100 && countColour(fw::kInk, 178, 204) > 100, "%s: values missing", c.button);
     for (int e = 0; e < 4; ++e) {
       int id = c.params[e];
       int v0 = fw::gParams.step(id);
@@ -863,7 +863,9 @@ static void testSoftPages() {
   for (int i = 0; i < fw::P_COUNT; ++i) changed += before[i] != fw::gParams.val[i];
   CHECK(changed == 0, "browsing slots or editing the name changed %d parameters", changed);
   press("btn_patch");
-  CHECK(fw::gUi.mode() == fw::MB_NONE, "the Patch button should return home after its second page");
+  CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::gUi.page() == 2, "third press should show the Setup page");
+  press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "the Patch button should return home after its third page");
 
   section("oscillator engine buttons step through VA, FM, wavetable and pluck");
   boot(48000);
@@ -919,12 +921,12 @@ static void testSoftPages() {
   section("Hold button latches, lights, and shows on the display");
   boot(48000);
   fw::tick(33);
-  long amberBefore = countColour(fw::kAmber, 222, 236);
+  long amberBefore = countColour(fw::kAccent, 222, 236);
   press("btn_hold");
   CHECK(fw::gParams.step(fw::P_HOLD) == 1 && fw::controlGet(ctl("btn_hold")) == 1, "Hold should be on and lit");
   fw::tick(1600);
   fw::tick(33);
-  CHECK(countColour(fw::kAmber, 222, 236) > amberBefore + 60, "status strip should show HOLD");
+  CHECK(countColour(fw::kAccent, 222, 236) > amberBefore + 60, "status strip should show HOLD");
   saveFrame("home_hold");
   press("btn_hold");
   CHECK(fw::gParams.step(fw::P_HOLD) == 0 && fw::controlGet(ctl("btn_hold")) == 0, "Hold should be off again");
@@ -1560,10 +1562,10 @@ static void testFilterControls() {
   setPot("filter_env_amount", 0.6);
   setPot("filter_env_amount", 0.9);
   fw::tick(33);
-  CHECK(countColour(fw::kAmber, 50, 216) > 300, "Env amount up: no curve for the envelope's peak");
+  CHECK(countColour(fw::kAccent, 50, 216) > 300, "Env amount up: no curve for the envelope's peak");
   setPot("filter_env_amount", 0.5);
   fw::tick(33);
-  CHECK(countColour(fw::kAmber, 50, 216) == 0, "Env amount at centre: there should be no sweep drawn");
+  CHECK(countColour(fw::kAccent, 50, 216) == 0, "Env amount at centre: there should be no sweep drawn");
   // with the cutoff wide open there is nowhere to sweep to, and the display says so
   setPot("filter_cutoff", 1.0);
   setPot("filter_env_amount", 0.9);
@@ -1574,10 +1576,10 @@ static void testFilterControls() {
   // Keytrack: the low and high keys' curves separate from the middle one
   setPot("filter_keytrack", 0.0);
   fw::tick(33);
-  long together = countColour(fw::kDimTeal, 74, 216);
+  long together = countColour(fw::kLineDim, 74, 216);
   setPot("filter_keytrack", 1.0);
   fw::tick(33);
-  CHECK(together == 0 && countColour(fw::kDimTeal, 74, 216) > 300, "Keytrack: dim curves %ld at none, %ld at full", together, countColour(fw::kDimTeal, 74, 216));
+  CHECK(together == 0 && countColour(fw::kLineDim, 74, 216) > 300, "Keytrack: dim curves %ld at none, %ld at full", together, countColour(fw::kLineDim, 74, 216));
   // Drive: the output wave pulls away from the input wave
   setPot("filter_drive", 0.3);
   setPot("filter_drive", 0.0);
@@ -1978,7 +1980,7 @@ static void testChordMemory() {
   fw::tick(1600);  // let the last control's visual clear
   fw::tick(33);
   saveFrame("home_chord");
-  CHECK(countColour(fw::kAmber, 222, 236) > 100, "the display should show that chord memory is on");
+  CHECK(countColour(fw::kAccent, 222, 236) > 100, "the display should show that chord memory is on");
 
   // two keys whose chords share notes: letting one go must not cut the other's notes
   midi({0x90, 66, 100});  // F sharp major: F#, A#, C#; shares F# with the D chord
@@ -2113,22 +2115,22 @@ static void testTextSize() {
   section("display text is never smaller than 2.1 mm (scale 2)");
   boot(48000);
   fw::gfxClear(fw::kBlack);
-  fw::gfxText(10, 10, "H", fw::kWhite, 1);
-  long asked1 = countColour(fw::kWhite);
+  fw::gfxText(10, 10, "H", fw::kInk, 1);
+  long asked1 = countColour(fw::kInk);
   fw::gfxClear(fw::kBlack);
-  fw::gfxText(10, 10, "H", fw::kWhite, 2);
-  long asked2 = countColour(fw::kWhite);
+  fw::gfxText(10, 10, "H", fw::kInk, 2);
+  long asked2 = countColour(fw::kInk);
   CHECK(asked1 == asked2 && asked2 == 17 * 4, "scale 1 drew %ld pixels, scale 2 drew %ld (an H is 17 dots)", asked1, asked2);
   CHECK(fw::gfxTextWidth("AB", 1) == fw::gfxTextWidth("AB", 2), "text width must follow the same rule");
 
   // plot lines are two pixels thick in both directions, so a vertical edge
   // is as visible as a horizontal one
   fw::gfxClear(fw::kBlack);
-  fw::gfxPlotLine(50, 20, 50, 60, fw::kTeal);
-  long vertical = countColour(fw::kTeal);
+  fw::gfxPlotLine(50, 20, 50, 60, fw::kLine);
+  long vertical = countColour(fw::kLine);
   fw::gfxClear(fw::kBlack);
-  fw::gfxPlotLine(20, 50, 60, 50, fw::kTeal);
-  long horizontal = countColour(fw::kTeal);
+  fw::gfxPlotLine(20, 50, 60, 50, fw::kLine);
+  long horizontal = countColour(fw::kLine);
   CHECK(vertical == horizontal && vertical == 2 * 42, "vertical %ld px, horizontal %ld px", vertical, horizontal);
 }
 
@@ -2141,36 +2143,36 @@ static void testPackedFrame() {
   fw::gfxClear(fw::kGrid);
   CHECK(countColour(fw::kGrid) == 320L * 240, "clear did not fill every pixel");
   // single pixels on even and odd columns must not disturb their neighbours
-  fw::gfxPixel(10, 5, fw::kAmber);
-  fw::gfxPixel(13, 5, fw::kTeal);
-  CHECK(fw::gfxGet(10, 5) == fw::kAmber && fw::gfxGet(11, 5) == fw::kGrid && fw::gfxGet(9, 5) == fw::kGrid, "even column");
-  CHECK(fw::gfxGet(13, 5) == fw::kTeal && fw::gfxGet(12, 5) == fw::kGrid && fw::gfxGet(14, 5) == fw::kGrid, "odd column");
+  fw::gfxPixel(10, 5, fw::kAccent);
+  fw::gfxPixel(13, 5, fw::kLine);
+  CHECK(fw::gfxGet(10, 5) == fw::kAccent && fw::gfxGet(11, 5) == fw::kGrid && fw::gfxGet(9, 5) == fw::kGrid, "even column");
+  CHECK(fw::gfxGet(13, 5) == fw::kLine && fw::gfxGet(12, 5) == fw::kGrid && fw::gfxGet(14, 5) == fw::kGrid, "odd column");
   // fills with every mix of odd and even edges cover exactly their rectangle
   int wrong = 0;
   for (int x0 = 20; x0 < 24; ++x0)
     for (int w = 1; w <= 6; ++w) {
       fw::gfxClear(fw::kBlack);
-      fw::gfxFill(x0, 30, w, 3, fw::kWhite);
+      fw::gfxFill(x0, 30, w, 3, fw::kInk);
       for (int y = 28; y < 36; ++y)
         for (int x = 14; x < 36; ++x) {
           bool inside = x >= x0 && x < x0 + w && y >= 30 && y < 33;
-          wrong += (fw::gfxGet(x, y) == fw::kWhite) != inside;
+          wrong += (fw::gfxGet(x, y) == fw::kInk) != inside;
         }
     }
   CHECK(wrong == 0, "%d pixels wrong across the odd/even fill cases", wrong);
   // drawing off every edge must not wrap round or write outside the buffer
   fw::gfxClear(fw::kBlack);
-  fw::gfxFill(-5, -5, 10, 10, fw::kTeal);
-  fw::gfxFill(315, 235, 10, 10, fw::kTeal);
-  fw::gfxPixel(320, 0, fw::kAmber);
-  fw::gfxPixel(-1, 0, fw::kAmber);
-  CHECK(countColour(fw::kTeal) == 50 && countColour(fw::kAmber) == 0, "clipping at the edges: %ld teal, %ld amber", countColour(fw::kTeal), countColour(fw::kAmber));
+  fw::gfxFill(-5, -5, 10, 10, fw::kLine);
+  fw::gfxFill(315, 235, 10, 10, fw::kLine);
+  fw::gfxPixel(320, 0, fw::kAccent);
+  fw::gfxPixel(-1, 0, fw::kAccent);
+  CHECK(countColour(fw::kLine) == 50 && countColour(fw::kAccent) == 0, "clipping at the edges: %ld teal, %ld amber", countColour(fw::kLine), countColour(fw::kAccent));
   // a row expands to the display's own colours
   uint16_t row[fw::kDisplayW];
   fw::gfxClear(fw::kBlack);
-  fw::gfxPixel(7, 100, fw::kAmber);
+  fw::gfxPixel(7, 100, fw::kAccent);
   fw::frameRow565(100, row);
-  CHECK(row[7] == fw::kPalette565[fw::kAmber] && row[6] == fw::kPalette565[fw::kBlack] && row[8] == 0, "row expansion");
+  CHECK(row[7] == fw::gfxPalette565()[fw::kAccent] && row[6] == fw::gfxPalette565()[fw::kBlack] && row[8] == 0, "row expansion");
 
   section("oscillator tables: stored as 16-bit, none clipped");
   int peakSaw = 0, peakTri = 0, peakWt = 0;
@@ -2221,11 +2223,8 @@ static void testState() {
 // ---------------------------------------------------------------- patches
 
 static int ledR(int c) { return (int)((fw::ledColour(c) >> 16) & 255); }
+static int ledG(int c) { return (int)((fw::ledColour(c) >> 8) & 255); }
 static int ledB(int c) { return (int)(fw::ledColour(c) & 255); }
-static int ledMax(int c) {
-  uint32_t v = fw::ledColour(c);
-  return std::max({(int)((v >> 16) & 255), (int)((v >> 8) & 255), (int)(v & 255)});
-}
 
 // Stores the sound as it stands in slot `slot` (0-based) through the Patch page.
 static void savePatchTo(int slot) {
@@ -2291,30 +2290,23 @@ static void testPatches() {
   CHECK(!fw::gPatch.edited(), "a freshly loaded patch is unchanged");
   fw::tick(33);
   saveFrame("mode_patch_loaded");
-  CHECK(countColour(fw::kTeal, 130, 150) > 200, "the Patch page should say how many controls follow the patch");
+  CHECK(countColour(fw::kLine, 130, 150) > 200, "the Patch page should say how many controls follow the patch");
 
   section("patches: the label lights show which controls are off the patch, and which way to go");
   CHECK(fw::ledColour(dest) == fw::kLedIdle, "a control at the patch's value has a plain label light");
   CHECK(fw::ledColour(ctl("enc1")) == 0 && fw::ledColour(ctl("btn_hold")) == 0, "encoders and buttons have no label light");
   CHECK(fw::gPatch.direction(cut) == -1 && fw::gPatch.direction(res) == 1 && fw::gPatch.direction(wave) == 1, "directions: %d %d %d",
         fw::gPatch.direction(cut), fw::gPatch.direction(res), fw::gPatch.direction(wave));
-  int upFlips = 0, downFlips = 0, upHi = 0, upLo = 255, lastUp = -1, lastDown = -1;
-  bool upOrange = true, downBlue = true;
-  for (int t = 0; t < 90; ++t) {  // three seconds
+  // Resonance is far below the patch and Cutoff far above it.
+  uint32_t upFar = fw::ledColour(res), downFar = fw::ledColour(cut);
+  CHECK(upFar == fw::kLedUpFar, "a long way below the patch the light should be deep red (got %06x)", upFar);
+  CHECK(downFar == fw::kLedDownFar, "a long way above the patch the light should be deep cold blue (got %06x)", downFar);
+  bool steady = true;
+  for (int t = 0; t < 90; ++t) {  // three seconds: the lights must not flash
     fw::tick(33);
-    upOrange = upOrange && ledR(res) > ledB(res);
-    downBlue = downBlue && ledB(cut) > ledR(cut);
-    int u = ledMax(res), d = ledMax(cut);
-    upHi = std::max(upHi, u);
-    upLo = std::min(upLo, u);
-    if (lastUp >= 0 && u != lastUp) ++upFlips;
-    if (lastDown >= 0 && d != lastDown) ++downFlips;
-    lastUp = u;
-    lastDown = d;
+    steady = steady && fw::ledColour(res) == upFar && fw::ledColour(cut) == downFar;
   }
-  CHECK(upOrange && downBlue, "'move up' should be orange and 'move down' blue");
-  CHECK(upFlips >= 2 * downFlips && downFlips >= 4, "'move up' should blink faster than 'move down' (%d against %d changes)", upFlips, downFlips);
-  CHECK(upLo > 20 && upHi > 3 * upLo, "the light should dim between blinks without going out (%d..%d)", upLo, upHi);
+  CHECK(steady, "the guide lights should hold steady, not blink");
 
   section("patches: a following pot takes over only on passing through the stored value");
   fw::tick(2000);
@@ -2324,7 +2316,7 @@ static void testPatches() {
   fw::tick(33);
   saveFrame("popup_pickup");
   std::vector<uint8_t> pick = grabFrame();
-  CHECK(countColour(fw::kWhite, 100, 130) > 80 && countColour(fw::kAmber, 90, 135) > 150, "pick-up picture should mark the panel and the patch positions");
+  CHECK(countColour(fw::kInk, 100, 130) > 80 && countColour(fw::kAccent, 90, 135) > 150, "pick-up picture should mark the panel and the patch positions");
   fw::controlSet(cut, 4095);  // away from the patch
   CHECK(fw::gParams.val[fw::P_CUTOFF] == stored[fw::P_CUTOFF], "moving away must not change the sound either");
   fw::controlSet(cut, stored[fw::P_CUTOFF] - 150);  // through the stored value
@@ -2335,21 +2327,30 @@ static void testPatches() {
   fw::controlSet(cut, 2222);
   CHECK(fw::gParams.val[fw::P_CUTOFF] == 2222, "a live control sets the value directly");
 
-  section("patches: landing within the tolerance also takes over; the light dims on the way");
-  int far = ledMax(res);
-  for (int t = 0; t < 30 && ledMax(res) < far; ++t) fw::tick(33);
-  int brightFar = 0, brightNear = 0;
-  for (int t = 0; t < 30; ++t) {
-    fw::tick(33);
-    brightFar = std::max(brightFar, ledMax(res));
-  }
+  section("patches: landing within the tolerance also takes over; the light warms from red to amber on the way");
+  int greenFar = ledG(res);
+  fw::controlSet(res, stored[fw::P_RESONANCE] - 1000);
+  int greenMid = ledG(res);
   fw::controlSet(res, stored[fw::P_RESONANCE] - 400);
   CHECK(fw::gPatch.following(res), "400 short of the value is still following");
-  for (int t = 0; t < 30; ++t) {
-    fw::tick(33);
-    brightNear = std::max(brightNear, ledMax(res));
+  int greenNear = ledG(res);
+  CHECK(greenFar < greenMid && greenMid < greenNear && ledR(res) > 200 && ledB(res) < 20,
+        "coming up, the light should run from red towards amber (green %d, %d, %d)", greenFar, greenMid, greenNear);
+  CHECK(fw::gPatch.distance(res) > 0 && fw::gPatch.distance(res) < 80, "400 short should count as near (%d)", fw::gPatch.distance(res));
+  {  // and coming down, from deep blue to a pale cold blue
+    setPot("mix_noise", 0.95);
+    setCC(fw::P_MIX_NOISE, 10);  // the value is now far below the fader
+    int noise = ctl("mix_noise");
+    int want = fw::gParams.val[fw::P_MIX_NOISE];
+    uint32_t deep = fw::ledColour(noise);
+    fw::controlSet(noise, want + 300);
+    uint32_t pale = fw::ledColour(noise);
+    CHECK(deep == fw::kLedDownFar, "far above: deep blue (got %06x)", deep);
+    CHECK((int)(pale & 255) > 200 && (int)((pale >> 16) & 255) > (int)((deep >> 16) & 255) + 60 && (int)(pale & 255) > (int)((pale >> 16) & 255),
+          "nearly down to the value the blue should pale but stay blue (got %06x)", pale);
+    fw::controlSet(noise, want);
+    CHECK(fw::ledColour(noise) == fw::kLedIdle, "at the value the light goes plain");
   }
-  CHECK(brightNear < brightFar - 30, "the light should be dimmer close to the value (%d far, %d near)", brightFar, brightNear);
   fw::controlSet(res, stored[fw::P_RESONANCE] - 90);  // inside 2.5% of the travel, without crossing
   CHECK(!fw::gPatch.following(res) && fw::gParams.val[fw::P_RESONANCE] == stored[fw::P_RESONANCE] - 90, "within the tolerance the control should take over");
   // pitch is tighter: 1%
@@ -2364,7 +2365,7 @@ static void testPatches() {
   section("patches: a selector goes live on any change; its light stays on until it is on the patch's stop");
   setSel("osc1_wave", fw::WAVE_SQR);
   CHECK(fw::gParams.step(fw::P_OSC1_WAVE) == fw::WAVE_SQR && !fw::gPatch.following(wave), "one click and the selector is live");
-  CHECK(fw::gPatch.offPatch(wave) && fw::ledColour(wave) != fw::kLedIdle && ledR(wave) >= ledB(wave), "its light should still point up towards the patch's stop");
+  CHECK(fw::gPatch.offPatch(wave) && fw::ledColour(wave) != fw::kLedIdle && ledR(wave) > ledB(wave), "its light should still point up towards the patch's stop");
   setSel("osc1_wave", fw::WAVE_SIN);
   CHECK(!fw::gPatch.offPatch(wave) && fw::ledColour(wave) == fw::kLedIdle, "on the patch's stop the light goes plain");
   CHECK(fw::gPatch.followCount() == 0 && fw::gPatch.offCount() == 0, "every light out: the panel matches the patch");
@@ -2405,7 +2406,7 @@ static void testPatches() {
   CHECK(!std::strcmp(fw::gPatch.name(), "BASS 2  "), "name after editing: '%s'", fw::gPatch.name());
   fw::tick(33);
   saveFrame("mode_patch_name");
-  press("btn_patch");  // home
+  while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");  // past the Setup page, home
   fw::tick(2100);
   std::vector<uint8_t> homeEdited = grabFrame();
   savePatchTo(6);
@@ -2413,7 +2414,7 @@ static void testPatches() {
   while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
   fw::tick(2100);
   saveFrame("home_patch");
-  CHECK(countColour(fw::kAmber, 0, 30) > 150, "home should show the slot number and name");
+  CHECK(countColour(fw::kAccent, 0, 30) > 150, "home should show the slot number and name");
   CHECK(grabFrame() != homeInit && grabFrame() != homeEdited, "the title should change with the patch and lose its changed mark on saving");
 
   section("patches: MIDI program change loads a slot");
@@ -2505,6 +2506,230 @@ static void testPatches() {
   std::vector<float> recalled = phrase();
   CHECK(rmsDiff(asSaved, changed) > 1e-3, "set-up: the changed sound should differ");
   CHECK(rmsDiff(asSaved, recalled) < 1e-9, "recalled sound differs from the saved one by %.9f", rmsDiff(asSaved, recalled));
+}
+
+// Hands-on finding, 2026-11-14: after a few minutes with the chorus on, the
+// sound suddenly collapsed into a roar. A delay-line read position, wrapped
+// by adding the buffer length, can round up to exactly that length and read
+// the memory after the buffer; in the browser build that memory held wild
+// values, which then rang in the reverb. It happened about once in three
+// minutes, so no short test saw it. This one plays for minutes with every
+// delay line in use. Built normally it checks the level never runs away;
+// built with the sanitizers (make sanitize) it also catches the stray read
+// itself, whatever the memory next door happens to hold.
+static void testLongRun() {
+  for (double sr : {44100.0, 48000.0}) {
+    char title[96];
+    std::snprintf(title, sizeof title, "long run: eight minutes at %.0f Hz with every delay line busy stays in bounds", sr);
+    section(title);
+    boot(sr);
+    setStep(fw::P_CHORUS, 100);
+    setStep(fw::P_DLY_MIX, 60);
+    setStep(fw::P_DLY_FDBK, 60);
+    setStep(fw::P_RVB_MIX, 60);
+    setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+    setPot("mix_osc2", 0.7);
+    for (int k : {48, 55, 60, 63}) midi({0x90, k, 100});
+    float l[fw::kMaxBlock], r[fw::kMaxBlock];
+    const long perSecond = std::lround(sr / fw::kMaxBlock);
+    double normal = 0, worst = 0;
+    int worstAt = 0;
+    bool finite = true;
+    for (int sec = 0; sec < 480; ++sec) {
+      if (sec % 3 == 0) {  // a fresh pluck, and a nudge to the delay time so its read position keeps moving
+        midi({0x80, 72, 0});
+        midi({0x90, 72, 90});
+        setStep(fw::P_DLY_TIME, 30 + (sec * 7) % 60);
+      }
+      double acc = 0;
+      for (long b = 0; b < perSecond; ++b) {
+        fw::process(l, r, fw::kMaxBlock);
+        for (int i = 0; i < fw::kMaxBlock; ++i) {
+          finite = finite && std::isfinite(l[i]) && std::isfinite(r[i]);
+          acc += (double)l[i] * l[i] + (double)r[i] * r[i];
+        }
+        if (b % 12 == 0) fw::tick(32);
+      }
+      double rms = std::sqrt(acc / (double)(2 * perSecond * fw::kMaxBlock));
+      if (sec >= 3 && sec < 13) normal = std::max(normal, rms);
+      else if (sec >= 13 && rms > worst) {
+        worst = rms;
+        worstAt = sec;
+      }
+    }
+    CHECK(finite, "the output stopped being a number");
+    CHECK(normal > 0.01, "set-up: there should be sound (level %.4f)", normal);
+    CHECK(worst < 2.0 * normal, "the level ran away: %.4f at %d s, against %.4f in the first seconds", worst, worstAt, normal);
+  }
+}
+
+// Hands-on finding, 2026-11-14: some controls showed the same picture
+// whatever they were set to (Macro on a saw, Octave, Detune, Glide...).
+// The rule since then: every control's picture follows the control, or
+// says in words why it has nothing to show.
+static std::vector<uint8_t> pictureRows(int y0, int y1) {
+  std::vector<uint8_t> v;
+  for (int y = y0; y < y1; ++y)
+    for (int x = 0; x < fw::kDisplayW; ++x) v.push_back(fw::gfxGet(x, y));
+  return v;
+}
+
+static void testPictures() {
+  section("display: every panel control's picture changes with the control");
+  int blind = 0;
+  for (int c = 0; c < fw::kFirstEncoder; ++c) {
+    boot(48000);
+    fw::ControlInfo info = fw::controlInfo(c);
+    int id = fw::controlParam(c);
+    if (id == fw::P_OSC1_MACRO) setSel("osc1_wave", fw::WAVE_SQR);  // pulse width needs the square
+    fw::tick(2000);
+    int cur = fw::controlGet(c);
+    int a = info.kind == fw::CK_SELECTOR ? (cur + 1) % info.steps : (cur < 2048 ? 3000 : 1000);
+    int b = info.kind == fw::CK_SELECTOR ? (info.steps > 2 ? (cur + 2) % info.steps : cur) : (cur < 2048 ? 3900 : 150);
+    fw::controlSet(c, a);
+    fw::tick(33);
+    std::vector<uint8_t> first = pictureRows(48, 218);  // everything under the header, which always shows the value
+    fw::controlSet(c, b);
+    fw::tick(33);
+    if (pictureRows(48, 218) == first) {
+      ++blind;
+      CHECK(false, "%s: the picture is the same at %d and %d", info.name, a, b);
+    }
+  }
+  CHECK(blind == 0, "%d panel controls have a picture that does not follow them", blind);
+
+  section("display: a control with nothing to do says so");
+  boot(48000);
+  setPot("osc1_macro", 0.2);
+  fw::tick(33);
+  std::vector<uint8_t> low = pictureRows(48, 218);
+  CHECK(countColour(fw::kGrey, 54, 74) > 150, "Macro on a saw should say it has no effect");
+  setPot("osc1_macro", 0.8);
+  fw::tick(33);
+  CHECK(pictureRows(48, 218) == low, "and the saw's picture should not pretend to change");
+  saveFrame("popup_macro_idle");
+  setSel("osc1_wave", fw::WAVE_SQR);
+  setPot("osc1_macro", 0.5);
+  fw::tick(33);
+  CHECK(countColour(fw::kGrey, 54, 74) == 0, "on a square there is no such note");
+  static const char* const kShots[] = {"osc2_detune", "osc_xmod", "osc_sync", "voice_glide", "voice_mode", "voice_drift", "aenv_velocity",
+                                       "lfo_rate", "arp_mode", "mix_sub", "osc1_octave", "volume"};
+  for (const char* name : kShots) {
+    int c = ctl(name);
+    fw::ControlInfo info = fw::controlInfo(c);
+    fw::controlSet(c, info.kind == fw::CK_SELECTOR ? 1 : 2900);
+    fw::tick(33);
+    saveFrame((std::string("picture_") + name).c_str());
+  }
+
+  section("display: every value on an encoder page has a picture that follows it");
+  static const char* const kButtons[] = {"btn_fx1", "btn_fx2", "btn_mod", "btn_engine"};
+  static const char* const kEnc[4] = {"enc1", "enc2", "enc3", "enc4"};
+  int shown = 0;
+  blind = 0;
+  for (const char* button : kButtons) {
+    for (int page = 0; page < 2; ++page) {
+      boot(48000);
+      setStep(fw::P_OSC1_ENGINE, fw::ENG_FM);  // so Color means something
+      setStep(fw::P_OSC2_ENGINE, fw::ENG_FM);
+      setPot("osc1_macro", 0.6);               // and feedback has some FM to work on
+      setStep(fw::P_OSC2_MACRO, 60);
+      setStep(fw::P_DLY_MIX, 50);              // repeats and a tail to draw
+      setStep(fw::P_RVB_MIX, 50);
+      fw::tick(2000);
+      press(button);
+      if (page == 1) press(button);
+      if (fw::gUi.mode() == fw::MB_NONE) continue;  // this mode has no second page
+      for (int e = 0; e < 4; ++e) {
+        fw::tick(2000);
+        std::vector<uint8_t> scope = pictureRows(76, 154);
+        uint16_t was[fw::P_COUNT];
+        for (int i = 0; i < fw::P_COUNT; ++i) was[i] = fw::gParams.val[i];
+        fw::encoderTurn(ctl(kEnc[e]), 1);
+        int id = -1;
+        for (int i = 0; i < fw::P_COUNT; ++i)
+          if (was[i] != fw::gParams.val[i]) id = i;
+        if (id < 0) {  // already at the top of its range, or an empty corner
+          fw::encoderTurn(ctl(kEnc[e]), -1);
+          for (int i = 0; i < fw::P_COUNT; ++i)
+            if (was[i] != fw::gParams.val[i]) id = i;
+          if (id < 0) continue;
+        }
+        ++shown;
+        fw::tick(33);
+        std::vector<uint8_t> first = pictureRows(76, 154);
+        bool small = fw::kParams[id].steps <= 3;
+        fw::tick(40);
+        fw::encoderTurn(ctl(kEnc[e]), small ? (fw::gParams.step(id) > 0 ? -1 : 1) : 6);
+        fw::tick(33);
+        std::vector<uint8_t> second = pictureRows(76, 154);
+        if (first == scope || first == second) {
+          ++blind;
+          CHECK(false, "%s: %s", fw::kParams[id].key, first == scope ? "no picture, only the scope" : "the picture does not change with the value");
+        }
+        if (e == 0 || id == fw::P_RVB_SIZE || id == fw::P_FENV_PITCH) saveFrame((std::string("soft_") + fw::kParams[id].key).c_str());
+      }
+      fw::tick(1600);
+      CHECK(pictureRows(76, 154) != std::vector<uint8_t>(), "frame");
+    }
+  }
+  CHECK(shown == 19, "expected 19 values across the encoder pages, found %d", shown);
+  CHECK(blind == 0, "%d encoder-page values have no picture of their own", blind);
+  boot(48000);
+  press("btn_fx1");
+  fw::encoderTurn(ctl("enc1"), 2);
+  fw::tick(33);
+  std::vector<uint8_t> pic = pictureRows(76, 154);
+  fw::tick(1600);
+  fw::tick(33);
+  CHECK(pictureRows(76, 154) != pic, "the scope should come back about a second and a half after the encoder stops");
+
+  section("display: two palettes, chosen on the Setup page and kept over a restart");
+  boot(48000);
+  fw::tick(33);
+  uint16_t amberRow[fw::kDisplayW], whiteRow[fw::kDisplayW];
+  fw::frameRow565(12, amberRow);
+  std::vector<uint8_t> homeFrame = grabFrame();
+  CHECK(fw::gfxPalette() == fw::PALETTE_AMBER, "the display starts in amber");
+  for (int i = 1; i < fw::kColourCount; ++i) {  // amber means amber: every colour warm, none bluish
+    uint16_t p = fw::gfxPalette565()[i];
+    int r = (p >> 11) << 3, g = ((p >> 5) & 63) << 2, b = (p & 31) << 3;
+    CHECK(r >= g && g >= b, "amber palette colour %d is not warm (%d, %d, %d)", i, r, g, b);
+  }
+  press("btn_patch");
+  press("btn_patch");
+  press("btn_patch");
+  fw::tick(33);
+  saveFrame("mode_setup");
+  fw::encoderTurn(ctl("enc1"), 1);
+  CHECK(fw::gfxPalette() == fw::PALETTE_WHITE, "encoder 1 on the Setup page should switch to the white palette");
+  press("btn_patch");
+  fw::tick(2000);
+  fw::tick(33);
+  fw::frameRow565(12, whiteRow);
+  CHECK(grabFrame() == homeFrame, "the palette changes colours only, not what is drawn");
+  CHECK(std::memcmp(amberRow, whiteRow, sizeof amberRow) != 0, "the title row should come out in different colours");
+  saveFrame("home_white");
+  fw::tick(1200);
+  CHECK(gStoreLen == fw::kStateSize, "state should be saved with the palette (%u bytes)", gStoreLen);
+  boot(48000, true);
+  CHECK(fw::gfxPalette() == fw::PALETTE_WHITE, "the palette should survive a restart");
+  {  // state saved before the palette existed is one byte shorter and must still load
+    uint8_t old[1024];
+    uint32_t n = gStoreLen - 1;
+    std::memcpy(old, gStore, n - 2);
+    uint16_t sum = 0;
+    for (int i = 0; i < fw::P_COUNT; ++i) sum = (uint16_t)(sum * 31u + (old[6 + i * 2] | (old[7 + i * 2] << 8)) + 1u);
+    for (uint32_t i = 6 + fw::P_COUNT * 2; i < n - 2; ++i) sum = (uint16_t)(sum * 31u + old[i] + 1u);
+    old[n - 2] = (uint8_t)(sum & 0xFF);
+    old[n - 1] = (uint8_t)(sum >> 8);
+    setPot("filter_cutoff", 0.123);
+    std::memcpy(gStore, old, n);
+    gStoreLen = n;
+    boot(48000, true);
+    CHECK(fw::gfxPalette() == fw::PALETTE_AMBER, "older state has no palette: amber");
+    CHECK(fw::gParams.val[fw::P_CUTOFF] != std::lround(0.123 * 4095), "older state should still load its values");
+  }
 }
 
 static void benchmark() {
@@ -2606,6 +2831,7 @@ int main(int argc, char** argv) {
   testLadderFilter();
   testChordMemory();
   testPatches();
+  testPictures();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();
@@ -2613,6 +2839,7 @@ int main(int argc, char** argv) {
   testMod();
   testEngines();
   testEverySoftParameter();
+  testLongRun();
   benchmark();
 
   std::printf("\n%d checks, %d failed\n", gChecks, gFails);

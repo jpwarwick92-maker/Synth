@@ -10,16 +10,37 @@ constexpr uint16_t rgb565(int r, int g, int b) {
 }
 }  // namespace
 
-const uint16_t kPalette565[16] = {
-    rgb565(0, 0, 0),           // kBlack
-    rgb565(0xED, 0xED, 0xED),  // kWhite
-    rgb565(0xE8, 0xA3, 0x3D),  // kAmber
-    rgb565(0x7F, 0xE0, 0xC4),  // kTeal
-    rgb565(0x4F, 0x9E, 0x89),  // kDimTeal
-    rgb565(0x8E, 0x93, 0x9B),  // kGrey
-    rgb565(0x2F, 0x32, 0x37),  // kDarkGrey
-    rgb565(0x1C, 0x2A, 0x26),  // kGrid
+const uint16_t kPalettes565[PALETTE_COUNT][16] = {
+    {
+        // PALETTE_AMBER
+        rgb565(0, 0, 0),           // kBlack
+        rgb565(0xFF, 0xE9, 0xC4),  // kInk: cream
+        rgb565(0xFF, 0x6A, 0x1F),  // kAccent: hot orange
+        rgb565(0xFF, 0xB0, 0x00),  // kLine: amber
+        rgb565(0x96, 0x65, 0x0A),  // kLineDim
+        rgb565(0xA8, 0x87, 0x5E),  // kGrey: warm grey
+        rgb565(0x4B, 0x3A, 0x26),  // kDarkGrey
+        rgb565(0x2B, 0x20, 0x15),  // kGrid
+    },
+    {
+        // PALETTE_WHITE: told apart by brightness; the accent leans red, which amber acrylic lets through
+        rgb565(0, 0, 0),
+        rgb565(0xFF, 0xFF, 0xFF),
+        rgb565(0xFF, 0x60, 0x40),
+        rgb565(0xD8, 0xD4, 0xCC),
+        rgb565(0x78, 0x76, 0x72),
+        rgb565(0x98, 0x96, 0x90),
+        rgb565(0x3C, 0x3B, 0x39),
+        rgb565(0x22, 0x21, 0x20),
+    },
 };
+const char* const kPaletteNames[PALETTE_COUNT] = {"AMBER", "WHITE"};
+
+static uint8_t gPaletteIndex = PALETTE_AMBER;
+
+void gfxSetPalette(int palette) { gPaletteIndex = (uint8_t)(palette >= 0 && palette < PALETTE_COUNT ? palette : PALETTE_AMBER); }
+int gfxPalette() { return gPaletteIndex; }
+const uint16_t* gfxPalette565() { return kPalettes565[gPaletteIndex]; }
 
 uint8_t gFrame[kFrameBytes];
 
@@ -36,9 +57,10 @@ Colour gfxGet(int x, int y) {
 
 void gfxRow565(int y, uint16_t* dst) {
   const uint8_t* src = gFrame + y * (kDisplayW / 2);
+  const uint16_t* pal = kPalettes565[gPaletteIndex];
   for (int i = 0; i < kDisplayW / 2; ++i) {
-    dst[2 * i] = kPalette565[src[i] >> 4];
-    dst[2 * i + 1] = kPalette565[src[i] & 0x0F];
+    dst[2 * i] = pal[src[i] >> 4];
+    dst[2 * i + 1] = pal[src[i] & 0x0F];
   }
 }
 

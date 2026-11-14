@@ -90,6 +90,7 @@ bool stateRead(const uint8_t* src, uint32_t len) {
 void init(float sampleRate) {
   tablesInit();
   gParams.reset();
+  gfxSetPalette(PALETTE_AMBER);
   gPatch.init();
   gPatch.scanSlots();
   uint8_t blob[kStateSize];
@@ -182,7 +183,6 @@ int controlGet(int index) {
 
 bool tick(uint32_t dtMs) {
   gMidi.tick(dtMs);
-  gPatch.tick(dtMs);
   if (gSaveMs > 0) {
     if (gSaveMs > dtMs) {
       gSaveMs -= dtMs;

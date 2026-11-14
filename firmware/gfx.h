@@ -10,21 +10,31 @@ namespace fw {
 
 // The buffer holds 4 bits per pixel: a colour number, two pixels to a byte
 // (left pixel in the high half). That is 38 KB where 16 bits per pixel was
-// 154 KB. kPalette565 gives each colour in the display's own 16-bit format,
+// 154 KB. gfxPalette565 gives each colour in the display's own 16-bit format,
 // and gfxRow565 expands one row, which is all a display driver needs to
 // send the frame a line at a time.
 using Colour = uint8_t;
 constexpr Colour kBlack = 0;
-constexpr Colour kWhite = 1;
-constexpr Colour kAmber = 2;
-constexpr Colour kTeal = 3;
-constexpr Colour kDimTeal = 4;
-constexpr Colour kGrey = 5;
-constexpr Colour kDarkGrey = 6;
-constexpr Colour kGrid = 7;
+constexpr Colour kInk = 1;       // values and markers: the brightest
+constexpr Colour kAccent = 2;    // names, titles and whatever is picked out
+constexpr Colour kLine = 3;      // curves
+constexpr Colour kLineDim = 4;   // a second, quieter curve
+constexpr Colour kGrey = 5;      // secondary lettering
+constexpr Colour kDarkGrey = 6;  // frames, things that are off
+constexpr Colour kGrid = 7;      // axes
 constexpr int kColourCount = 8;  // room for 16
 
-extern const uint16_t kPalette565[16];
+// Two sets of colours for the same picture.
+//  PALETTE_AMBER: ambers and orange on black, for a bare display.
+//  PALETTE_WHITE: warm whites in steps of brightness, for a display behind
+//  amber acrylic, which turns white into amber by itself and would swallow
+//  the difference between two ambers.
+enum Palette : uint8_t { PALETTE_AMBER, PALETTE_WHITE, PALETTE_COUNT };
+extern const char* const kPaletteNames[PALETTE_COUNT];
+void gfxSetPalette(int palette);
+int gfxPalette();
+// The colour table in use, in the display's own 16-bit format.
+const uint16_t* gfxPalette565();
 
 constexpr int kFrameBytes = kDisplayW * kDisplayH / 2;
 extern uint8_t gFrame[kFrameBytes];
