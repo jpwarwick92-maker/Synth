@@ -104,7 +104,9 @@ scope and a visual for each control as it moves.
 
 The layout keeps knob, selector and encoder centres at least 22 mm apart and fader
 centres at least 17 mm apart, and the page tests fail if any label overlaps another
-label, a control, or its section's outline. The panel is 485 x 152 mm.
+label, a control, or its section's outline. The sections sit on a grid: two rows of
+equal height on five shared columns, with the same gap between every pair of
+neighbours. The panel is 490 x 152 mm.
 
 **The display.** Every control has a picture that follows it: turn a control and its
 picture changes, or says in words why there is nothing to show (Macro on a saw wave,

@@ -188,6 +188,23 @@ try {
           if (Math.abs(f.x - r.x) < 18 && Math.abs(f.y - r.y) < f.travel / 2 + 12) tight.push(`${f.id}/${r.id} too close`);
       check(tight.length === 0, `knob, selector, encoder and switch centres at least ${minKnob} mm apart; faders at least ${minFader} mm`, tight.join(', '));
 
+      // The sections sit on a grid: rows of equal height, the same columns in every row, one gap throughout.
+      const rows = new Map();
+      for (const sec of layout.sections) {
+        if (!rows.has(sec.y)) rows.set(sec.y, []);
+        rows.get(sec.y).push(sec);
+      }
+      const edges = [...rows.values()].map((r) => r.sort((p, q) => p.x - q.x).flatMap((sec) => [sec.x, sec.x + sec.w]).join(' '));
+      check(rows.size === 2 && new Set(edges).size === 1, 'every upright edge of a section in one row lines up with one in the other', edges.join(' | '));
+      check(new Set(layout.sections.map((sec) => sec.h)).size === 1, 'the sections are all the same height');
+      const gaps = new Set();
+      for (const r of rows.values()) for (let k = 1; k < r.length; k++) gaps.add(r[k].x - (r[k - 1].x + r[k - 1].w));
+      const ys = [...rows.keys()].sort((p, q) => p - q);
+      gaps.add(ys[1] - (ys[0] + layout.sections[0].h));
+      check(gaps.size === 1, 'the gap between neighbouring sections is the same everywhere, across and down', [...gaps].join(', '));
+      const first = [...rows.values()][0];
+      check(first[0].x === layout.panel.width - (first[first.length - 1].x + first[first.length - 1].w), 'the margin is the same at both ends of the panel');
+
       // every control, with its lettering, sits inside one section and inside the panel
       const outside = layout.controls.filter((c) => !layout.sections.some((s) => c.x > s.x + 3 && c.x < s.x + s.w - 3 && c.y > s.y + 8 && c.y < s.y + s.h - 3)).map((c) => c.id);
       check(outside.length === 0, 'every control is inside a section', outside.join(', '));
