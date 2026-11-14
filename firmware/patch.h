@@ -10,7 +10,8 @@
 //    through the stored value, or lands within a small tolerance of it, so
 //    the sound never jumps. A selector or switch goes live on any change.
 //  - Each control has a light behind its label. After a load the lights
-//    show which controls are off the patch and which way to move them.
+//    show which controls are off the patch, which way to move them (red and
+//    amber: up; blue: down) and how far (deep colour: a long way).
 //
 // The firmware keeps the last physical position of every control, which is
 // also what a control "shows" (controlGet). A MIDI controller message for a
@@ -31,18 +32,26 @@ constexpr uint32_t kPatchSize = 5 + kPatchNameLen + P_COUNT * 2 + 2;
 enum GuideMode : uint8_t {
   GUIDE_OFF,   // nothing: every label is plain
   GUIDE_TINT,  // a steady tint on any control still following the patch
-  GUIDE_ON,    // colour and blink show which way to move each control
+  GUIDE_ON,    // colour shows which way to move each control, and how far
   GUIDE_COUNT,
 };
 
 // Label light colours, 0xRRGGBB at the brightness the LED is driven.
-constexpr uint32_t kLedIdle = 0x96876A;  // dim warm white
-constexpr uint32_t kLedTint = 0x285A50;  // following the patch (GUIDE_TINT)
-constexpr uint32_t kLedUp = 0xFF5A00;    // move up / clockwise: orange, quick blink
-constexpr uint32_t kLedDown = 0x006EFF;  // move down / anticlockwise: blue, slow blink
+// The guide lights are steady. A control that has to come up glows deep red
+// when it is a long way below the patch and warms to amber as it closes
+// in; one that has to come down is deep cold blue far off and pales as it
+// nears. At the patch's value the label goes back to plain.
+constexpr uint32_t kLedIdle = 0x96876A;      // dim warm white
+constexpr uint32_t kLedTint = 0x8C5A14;      // following the patch (GUIDE_TINT): dim amber
+constexpr uint32_t kLedUpFar = 0xE00000;     // move up a long way: deep red
+constexpr uint32_t kLedUpNear = 0xFF9A00;    // nearly there from below: amber
+constexpr uint32_t kLedDownFar = 0x0020FF;   // move down a long way: deep cold blue
+constexpr uint32_t kLedDownNear = 0x8CC4FF;  // nearly there from above: pale cold blue
+constexpr int kLedFarGap = 1638;             // 40% of a pot's travel, or more, counts as a long way
 
 // The part of the saved state this module owns.
-constexpr uint32_t kPanelStateSize = 1 + kPanelCount * 5 + 3 + kPatchNameLen;
+// (The last byte, the display palette, was added later: state without it still loads.)
+constexpr uint32_t kPanelStateSize = 1 + kPanelCount * 5 + 3 + kPatchNameLen + 1;
 
 class PatchPanel {
  public:
@@ -66,6 +75,8 @@ class PatchPanel {
   int offCount() const;
   // The colour of the light behind a control's label, now.
   uint32_t led(int index) const;
+  // How far the control is from the patch, 0 (there) to 255 (a long way).
+  int distance(int index) const;
 
   // A panel parameter was set from somewhere other than its control (MIDI).
   void remoteSet(int id);
@@ -84,8 +95,6 @@ class PatchPanel {
   void setNameChar(int pos, char c);
   int guide() const { return guide_; }
   void setGuide(int g);
-
-  void tick(uint32_t dtMs);
 
   // ---- saved state ----
   uint32_t stateWrite(uint8_t* dst) const;
@@ -107,7 +116,6 @@ class PatchPanel {
   int8_t slot_;
   bool edited_;
   uint8_t guide_;
-  uint32_t blinkMs_;
 };
 
 extern PatchPanel gPatch;

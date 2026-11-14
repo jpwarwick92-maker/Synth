@@ -2,6 +2,7 @@
 
 #include "firmware.h"
 #include "fw_math.h"
+#include "gfx.h"
 #include "ui.h"
 
 namespace fw {
@@ -21,7 +22,6 @@ namespace {
 constexpr uint8_t kPatchVersion = 1;
 constexpr int kTolerance = 102;      // 2.5% of a pot's travel counts as "at the patch"
 constexpr int kToleranceFine = 41;   // 1% for pitch
-constexpr uint32_t kBlinkUpMs = 150, kBlinkDownMs = 450;  // half periods
 
 int absi(int x) { return x < 0 ? -x : x; }
 
@@ -75,11 +75,14 @@ bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
   return true;
 }
 
-uint32_t scaleRgb(uint32_t rgb, int level255) {
-  uint32_t r = ((rgb >> 16) & 255u) * (uint32_t)level255 / 255u;
-  uint32_t g = ((rgb >> 8) & 255u) * (uint32_t)level255 / 255u;
-  uint32_t b = (rgb & 255u) * (uint32_t)level255 / 255u;
-  return (r << 16) | (g << 8) | b;
+// A colour `t`/255 of the way from a to b.
+uint32_t mixRgb(uint32_t a, uint32_t b, int t) {
+  uint32_t out = 0;
+  for (int shift = 16; shift >= 0; shift -= 8) {
+    int ca = (int)((a >> shift) & 255u), cb = (int)((b >> shift) & 255u);
+    out |= (uint32_t)(ca + (cb - ca) * t / 255) << shift;
+  }
+  return out;
 }
 
 }  // namespace
@@ -90,7 +93,6 @@ void PatchPanel::init() {
   slot_ = -1;
   edited_ = false;
   guide_ = GUIDE_ON;
-  blinkMs_ = 0;
   for (int s = 0; s < kPatchSlots; ++s) {
     used_[s] = false;
     setName(slotName_[s], "");
@@ -198,24 +200,23 @@ int PatchPanel::offCount() const {
   return n;
 }
 
+int PatchPanel::distance(int index) const {
+  int id = kPanelParams[index];
+  const ParamDef& d = kParams[id];
+  int want = following(index) ? (int)gParams.val[id] : (int)target_[index];
+  int gap = absi(want - (int)phys_[index]);
+  if (d.kind == PK_STEP) return d.steps > 1 ? gap * 255 / (d.steps - 1) : 0;  // a switch: its whole range is "a long way"
+  return gap >= kLedFarGap ? 255 : gap * 255 / kLedFarGap;
+}
+
 uint32_t PatchPanel::led(int index) const {
   if (index < 0 || index >= kPanelCount) return 0;
   if (guide_ == GUIDE_OFF) return kLedIdle;
   if (guide_ == GUIDE_TINT) return following(index) ? kLedTint : kLedIdle;
   int dir = direction(index);
   if (!offPatch(index) || dir == 0) return kLedIdle;
-
-  // Brighter the further there is to go; a pot's light dims as it closes in.
-  int level = 255;
-  int id = kPanelParams[index];
-  if (kParams[id].kind != PK_STEP) {
-    int gap = absi((int)gParams.val[id] - (int)phys_[index]);
-    level = 115 + (gap > 1228 ? 140 : gap * 140 / 1228);
-  }
-  // Direction is in the colour and in the blink rate, so colour is never the only cue.
-  uint32_t half = dir > 0 ? kBlinkUpMs : kBlinkDownMs;
-  bool lit = ((blinkMs_ / half) & 1u) == 0;
-  return scaleRgb(dir > 0 ? kLedUp : kLedDown, lit ? level : level / 4);
+  int far = distance(index);
+  return dir > 0 ? mixRgb(kLedUpNear, kLedUpFar, far) : mixRgb(kLedDownNear, kLedDownFar, far);
 }
 
 bool PatchPanel::load(int slot) {
@@ -298,8 +299,6 @@ void PatchPanel::setGuide(int g) {
   stateTouched();
 }
 
-void PatchPanel::tick(uint32_t dtMs) { blinkMs_ = (blinkMs_ + dtMs) % 3600000u; }
-
 uint32_t PatchPanel::stateWrite(uint8_t* dst) const {
   uint8_t* p = dst;
   *p++ = (uint8_t)kPanelCount;
@@ -314,13 +313,15 @@ uint32_t PatchPanel::stateWrite(uint8_t* dst) const {
   *p++ = guide_;
   *p++ = edited_ ? 1 : 0;
   for (int i = 0; i < kPatchNameLen; ++i) *p++ = (uint8_t)name_[i];
+  *p++ = (uint8_t)gfxPalette();
   return (uint32_t)(p - dst);
 }
 
 bool PatchPanel::stateValid(const uint8_t* src, uint32_t len) {
   if (len < 1) return false;
   uint32_t n = src[0];
-  return n >= 1 && n <= (uint32_t)kPanelCount && len == 1u + n * 5u + 3u + kPatchNameLen;
+  uint32_t base = 1u + n * 5u + 3u + kPatchNameLen;
+  return n >= 1 && n <= (uint32_t)kPanelCount && (len == base || len == base + 1u);  // the palette byte came later
 }
 
 void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
@@ -345,6 +346,7 @@ void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
   for (int i = 0; i < kPatchNameLen; ++i) raw[i] = (char)p[3 + i];
   raw[kPatchNameLen] = 0;
   setName(name_, raw);
+  if (len == 1u + (uint32_t)n * 5u + 3u + kPatchNameLen + 1u) gfxSetPalette(p[3 + kPatchNameLen]);
 }
 
 }  // namespace fw

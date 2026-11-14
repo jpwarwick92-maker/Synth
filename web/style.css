@@ -1,13 +1,16 @@
+/* A retro hi-fi look: warm blacks, cream lettering, amber lights. */
 :root {
-  --bg: #17181a;
-  --plate: #26282b;
-  --line: #3b3f46;
-  --ink: #c9ccd1;
-  --dim: #8e939b;
-  --accent: #e8a33d;
-  --soft: #7fe0c4;
-  --cap: #141518;
-  --capline: #4a4e55;
+  --bg: #14110e;
+  --plate: #231e19;
+  --line: #4a3d30;
+  --ink: #ead9bd;
+  --dim: #9c8a72;
+  --accent: #ffb000;
+  --soft: #ff8a1f;
+  --on-soft: #2a1500;   /* lettering on a lit button */
+  --cap: #15120f;
+  --capline: #5a4a3a;
+  --metal: #e9dcc4;
 }
 
 * { box-sizing: border-box; }
@@ -36,7 +39,7 @@ button {
   touch-action: manipulation;
 }
 button:hover { border-color: var(--dim); }
-button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft); color: #0b2a22; }
+button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft); color: var(--on-soft); }
 
 /* ---- top bar ---- */
 #bar {
@@ -61,7 +64,7 @@ button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft)
 #lcd { position: absolute; background: #000; pointer-events: none; }
 #zoom {
   position: fixed; right: 14px; bottom: 150px; z-index: 5;
-  padding: 8px; background: #0a0b0d; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px; background: #0b0907; border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
 }
 #zoom[hidden] { display: none; }
@@ -72,35 +75,35 @@ button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft)
 .stitle { fill: var(--accent); font-size: 3.1px; font-weight: 600; letter-spacing: .4px; }
 .stitle.soft { fill: var(--soft); }
 .ptext { fill: var(--dim); letter-spacing: .15px; }
-.ptext.title { fill: #ededed; font-weight: 600; letter-spacing: 1px; }
-.bezel { fill: #0a0b0d; stroke: #2f3237; stroke-width: .3; }
+.ptext.title { fill: #f3e6cf; font-weight: 600; letter-spacing: 1px; }
+.bezel { fill: #0b0907; stroke: #3a2f25; stroke-width: .3; }
 
 .ctl { touch-action: none; }
 .hit { fill: transparent; stroke: none; cursor: grab; touch-action: none; }
 .cap { fill: var(--cap); stroke: var(--capline); stroke-width: .6; }
 .cap.large { fill: #1b1714; stroke: #e8833a; }
-.ptr { stroke: #ededed; stroke-width: .9; stroke-linecap: round; }
+.ptr { stroke: #f1e4cc; stroke-width: .9; stroke-linecap: round; }
 .ptr.large { stroke: #e8833a; stroke-width: 1; }
 .label { fill: var(--ink); font-size: 3px; text-anchor: middle; }
 .caption { fill: var(--dim); font-size: 2.8px; text-anchor: start; }
 #panel text, #rear text { pointer-events: none; }   /* lettering never gets in the way of a control */
-.tick { stroke: #6b7078; stroke-width: .45; stroke-linecap: round; }
+.tick { stroke: #7a6a58; stroke-width: .45; stroke-linecap: round; }
 .tick.on { stroke: var(--accent); }
-.stop { fill: #a3a8b0; font-size: 2.6px; font-weight: 600; letter-spacing: .1px; }
-.stop.on { fill: #fff; }
-.slot { fill: #0c0d0f; }
-.tslot { fill: #0c0d0f; stroke: var(--capline); stroke-width: .5; }
-.tlever { fill: #e4e4e1; }
+.stop { fill: #b3a48c; font-size: 2.6px; font-weight: 600; letter-spacing: .1px; }
+.stop.on { fill: #fff1d6; }
+.slot { fill: #0d0b09; }
+.tslot { fill: #0d0b09; stroke: var(--capline); stroke-width: .5; }
+.tlever { fill: var(--metal); }
 .toggle.lit .tslot { stroke: var(--accent); }
-.fcap { fill: #e4e4e1; }
-.fline { stroke: #26282b; stroke-width: .6; }
+.fcap { fill: var(--metal); }
+.fline { stroke: #2a231c; stroke-width: .6; }
 .enc { fill: var(--cap); stroke: var(--soft); stroke-width: .6; stroke-dasharray: .6 1.1; }
-.encoder.pushed .enc { fill: #24423a; }
+.encoder.pushed .enc { fill: #4a2e10; }
 .btn { fill: var(--cap); stroke: var(--capline); stroke-width: .5; cursor: pointer; touch-action: none; }
 .btnlabel { fill: var(--ink); font-size: 2.5px; font-weight: 600; letter-spacing: .1px; text-anchor: middle; pointer-events: none; }
 .button.lit .btn { fill: var(--soft); stroke: var(--soft); }
-.button.lit .btnlabel { fill: #0b2a22; }
-.button.down .btn { stroke: #ededed; }
+.button.lit .btnlabel { fill: var(--on-soft); }
+.button.down .btn { stroke: #f1e4cc; }
 .ctl.unknown .cap, .ctl.unknown .btn, .ctl.unknown .fcap, .ctl.unknown .enc { stroke: #e5484d; fill: #3a1518; }
 
 /* ---- test aids ---- */
@@ -116,8 +119,8 @@ button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft)
 .aidnote { color: var(--dim); font-size: 12px; max-width: 12em; }
 #rear { width: 84px; height: 73px; font-family: system-ui, sans-serif; }
 .wheelbox { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); }
-.wheel { position: relative; width: 34px; height: 84px; background: #0c0d0f; border: 1px solid var(--capline); border-radius: 6px; touch-action: none; cursor: ns-resize; }
-.wheel .thumb { position: absolute; left: 3px; right: 3px; height: 12px; margin-top: -6px; background: #e4e4e1; border-radius: 3px; pointer-events: none; }
+.wheel { position: relative; width: 34px; height: 84px; background: #0d0b09; border: 1px solid var(--capline); border-radius: 6px; touch-action: none; cursor: ns-resize; }
+.wheel .thumb { position: absolute; left: 3px; right: 3px; height: 12px; margin-top: -6px; background: var(--metal); border-radius: 3px; pointer-events: none; }
 .hint { color: var(--dim); font-size: 12px; margin: 0; flex: 1 1 260px; }
 
 /* ---- start overlay and calibration ---- */

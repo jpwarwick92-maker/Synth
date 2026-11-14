@@ -31,8 +31,8 @@ Rules for code in `firmware/`:
 - audio in blocks of at most 128 samples, at any sample rate;
 - only `<stdint.h>` and `<stddef.h>`; maths comes from `fw_math.h`;
 - the display is drawn with pixels, lines, fills and a bitmap font only, in a fixed
-  set of colours (the frame is 4 bits per pixel), and no text smaller than 2 mm tall
-  on the real display (font scale 2);
+  set of colours named by what they are for (the frame is 4 bits per pixel), and no
+  text smaller than 2 mm tall on the real display (font scale 2);
 - large tables and delay lines are 16-bit where that is inaudible, to fit the
   Teensy's 1 MB of RAM. They stay in RAM: reading them from flash in the audio loop
   is too slow.
@@ -106,6 +106,18 @@ The layout keeps knob, selector and encoder centres at least 22 mm apart and fad
 centres at least 17 mm apart, and the page tests fail if any label overlaps another
 label, a control, or its section's outline. The panel is 485 x 152 mm.
 
+**The display.** Every control has a picture that follows it: turn a control and its
+picture changes, or says in words why there is nothing to show (Macro on a saw wave,
+a delay with its mix at zero). The tests enforce this for every panel control and
+every value on the encoder pages. On an encoder page the picture takes the place of
+the scope for a moment after an encoder is turned.
+
+The display has two sets of colours, chosen on the Setup page. **Amber** is ambers and
+orange on black, for a bare display. **White** is warm whites told apart by brightness,
+for a display behind amber acrylic, which turns white into amber by itself. The page's
+**Amber acrylic** button lays that sheet over the on-screen display so the white set can
+be judged as it will look.
+
 **Oscillator engines.** Each oscillator has an Engine button that steps through four
 engines. The Wave selector and the timbre controls mean something different under each:
 
@@ -132,6 +144,7 @@ encoder restores its default.
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
+| Patch | 3: Setup | display colours (amber, or white for behind amber acrylic) |
 
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
@@ -146,11 +159,13 @@ loading a patch cannot move it. Instead:
   Touching one that has not got there shows a picture of where the panel and the patch
   are and which way to go. A selector or switch takes over on any change.
 - **Guide lights.** After a load, the label of each control that is off the patch
-  lights: orange with a quick blink means move it up or clockwise, blue with a slow
-  blink means down or anticlockwise, and a pot's light dims as it closes in. When no
-  label is lit, the panel matches the patch. A selector's light stays on until it is on
-  the patch's stop, even though it is already live. Encoder 3 switches the lights
-  between On, Tint (a steady tint on anything still following) and Off.
+  glows, steadily. A control that has to come up is deep red when it is a long way
+  below the patch and warms to amber as it closes in; one that has to come down is deep
+  cold blue far off and pales as it nears. At the patch's value the label goes back to
+  plain warm white, so when no label is coloured the panel matches the patch. A
+  selector's light stays on until it is on the patch's stop, even though it is already
+  live. Encoder 3 switches the lights between On, Tint (a dim amber on anything still
+  following) and Off.
 - **Manual** (push encoder 4) drops the patch: every control goes live where it stands.
 - The home screen shows the slot and name, with `*` once the sound has changed.
 - A MIDI controller message for a panel parameter is treated like a one-control load:

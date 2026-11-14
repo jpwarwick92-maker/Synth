@@ -320,9 +320,13 @@ function makeToggle(g, def, sizes, c, send) {
 // How an LED behind a smoked, back-lit label looks: the firmware gives the
 // colour it drives the LED at; the eye sees dim light as brighter than its
 // number suggests, so the page lifts it before painting the lettering.
+// The lift is applied to the brightness only, so a deep red stays a deep
+// red and a deep blue a deep blue.
 function ledCss(rgb) {
-  const lift = (v) => Math.round(255 * Math.pow(v / 255, 0.45));
-  return `rgb(${lift((rgb >> 16) & 255)}, ${lift((rgb >> 8) & 255)}, ${lift(rgb & 255)})`;
+  const r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255;
+  const peak = Math.max(r, g, b, 1);
+  const k = (255 * Math.pow(peak / 255, 0.45)) / peak;
+  return `rgb(${Math.round(r * k)}, ${Math.round(g * k)}, ${Math.round(b * k)})`;
 }
 
 const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton, toggle: makeToggle };

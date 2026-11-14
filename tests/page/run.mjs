@@ -139,7 +139,8 @@ const findClashes = (page) => page.evaluate(() => {
   return out;
 });
 
-const AMBER = [0xe8, 0xa3, 0x3d], TEAL = [0x7f, 0xe0, 0xc4], WHITE = [0xed, 0xed, 0xed];
+// The display's colours (the amber palette): the accent for names and titles, the line colour for curves, the ink for values.
+const ACCENT = [0xff, 0x6a, 0x1f], LINE = [0xff, 0xb0, 0x00], INK = [0xff, 0xe9, 0xc4];
 
 try {
   await mkdir(shotDir, { recursive: true });
@@ -238,7 +239,7 @@ try {
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
     check(f1 - f0 >= 8, 'display updates about 30 times a second', `${f1 - f0} frames in 0.5 s`);
-    check(await lcdCount(page, AMBER, 0, 30) > 100, 'AC5 home screen shows the patch name');
+    check(await lcdCount(page, ACCENT, 0, 30) > 100, 'AC5 home screen shows the patch name');
     check(await page.locator('#start').isHidden(), 'start overlay closes');
     const delay = await page.locator('#audio-delay').textContent();
     check(/^\d+ ms$/.test(delay), 'AC15 the page shows its audio delay', delay);
@@ -273,11 +274,11 @@ try {
     await page.click('#zoom-toggle');
     const zoom = await page.evaluate(() => {
       const z = document.getElementById('lcd-zoom'), d = z.getContext('2d').getImageData(0, 0, 640, 60).data;
-      let amber = 0;
-      for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - 0xe8) < 12 && Math.abs(d[i + 1] - 0xa3) < 12) amber++;
-      return { shown: !document.getElementById('zoom').hidden, amber };
+      let title = 0;   // pixels in the title's colour, the display's accent
+      for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - 0xff) < 12 && Math.abs(d[i + 1] - 0x6a) < 12) title++;
+      return { shown: !document.getElementById('zoom').hidden, title };
     });
-    check(zoom.shown && zoom.amber > 400, 'Zoom display shows the frame at 2x with crisp pixels', JSON.stringify(zoom));
+    check(zoom.shown && zoom.title > 400, 'Zoom display shows the frame at 2x with crisp pixels', JSON.stringify(zoom));
     await page.screenshot({ path: path.join(shotDir, 'page_zoom.png') });
     await page.click('#zoom-toggle');
     check(await page.locator('#zoom').isHidden(), 'Zoom display toggles off');
@@ -342,7 +343,7 @@ try {
     await drag(page, 'filter_cutoff', -60, {
       hold: async () => {
         await sleep(150);
-        check(await lcdCount(page, WHITE, 0, 44) > 60, 'AC6 a moved control shows its name and value on the display');
+        check(await lcdCount(page, INK, 0, 44) > 60, 'AC6 a moved control shows its name and value on the display');
         await page.screenshot({ path: path.join(shotDir, 'page_popup.png') });
       },
     });
@@ -359,7 +360,7 @@ try {
     check(await pos(page, 'osc1_wave') === 3, 'selector: dragging steps through the stops', String(await pos(page, 'osc1_wave')));
 
     await sleep(1800);
-    check(await lcdCount(page, AMBER, 0, 30) > 100 && await lcdCount(page, WHITE, 0, 44) === 0, 'AC6 the home screen returns after the visual');
+    check(await lcdCount(page, ACCENT, 0, 30) > 100 && await lcdCount(page, INK, 0, 44) === 0, 'AC6 the home screen returns after the visual');
   }
 
   // ------------------------------------------------------------------ soft controls
@@ -368,7 +369,7 @@ try {
     await press(page, 'btn_engine');
     await sleep(150);
     check(await page.locator('[data-id="btn_engine"]').evaluate((e) => e.classList.contains('lit')), 'Engine button lights');
-    const shown = await lcdCount(page, WHITE, 40, 70);
+    const shown = await lcdCount(page, INK, 40, 70);
     check(shown > 100, 'Engine page shows encoder values');
     await page.screenshot({ path: path.join(shotDir, 'page_engine.png') });
     const snap = () => page.evaluate(() => window.__synth.lcdHash());
@@ -388,7 +389,7 @@ try {
     await sleep(150);
     check(await page.locator('[data-id="btn_fx1"]').evaluate((e) => e.classList.contains('lit')), 'FX 1 lights');
     check(!(await page.locator('[data-id="btn_engine"]').evaluate((e) => e.classList.contains('lit'))), 'Engine light goes out');
-    check(await lcdCount(page, WHITE, 44, 70) > 100, 'FX 1 is a live page with values on the encoders');
+    check(await lcdCount(page, INK, 44, 70) > 100, 'FX 1 is a live page with values on the encoders');
     await page.screenshot({ path: path.join(shotDir, 'page_fx1.png') });
     await press(page, 'btn_fx1');
     await sleep(150);
@@ -398,7 +399,7 @@ try {
     await press(page, 'btn_osc1_engine');
     await sleep(150);
     check(await lit('btn_osc1_engine'), 'an oscillator engine button lights when its engine is no longer VA');
-    check(await lcdCount(page, WHITE, 0, 44) > 60, 'and the display names the engine');
+    check(await lcdCount(page, INK, 0, 44) > 60, 'and the display names the engine');
     for (let i = 0; i < 3; i++) { await press(page, 'btn_osc1_engine'); await sleep(60); }
     await sleep(150);
     check(!(await lit('btn_osc1_engine')), 'three more presses come back round to VA');
@@ -412,7 +413,7 @@ try {
     await sleep(1700);
     await page.evaluate(() => window.__synth.midi([0x90, 50, 100]));                                 // one key
     await sleep(300);
-    check(await lcdCount(page, TEAL, 222, 236) === 3 * 64, 'with Chord on, one key sounds three voices', String(await lcdCount(page, TEAL, 222, 236)));
+    check(await lcdCount(page, LINE, 222, 236) === 3 * 64, 'with Chord on, one key sounds three voices', String(await lcdCount(page, LINE, 222, 236)));
     await page.evaluate(() => window.__synth.midi([0x80, 50, 0]));
     await press(page, 'btn_chord');
     await sleep(1700);
@@ -423,10 +424,10 @@ try {
     check(await lit('btn_hold'), 'Hold lights when pressed');
     await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x80, 60, 0]));   // a key pressed and let go
     await sleep(1700);
-    check(await lcdCount(page, TEAL, 222, 236) === 64, 'with Hold on, a note keeps sounding after its key is released', String(await lcdCount(page, TEAL, 222, 236)));
+    check(await lcdCount(page, LINE, 222, 236) === 64, 'with Hold on, a note keeps sounding after its key is released', String(await lcdCount(page, LINE, 222, 236)));
     await press(page, 'btn_hold');
     await sleep(900);
-    check(!(await lit('btn_hold')) && await lcdCount(page, TEAL, 222, 236) === 0, 'Hold off lets it go');
+    check(!(await lit('btn_hold')) && await lcdCount(page, LINE, 222, 236) === 0, 'Hold off lets it go');
     await sleep(900);
   }
 
@@ -452,15 +453,15 @@ try {
     check(await page.evaluate(() => window.__synth.lcdHash()) !== shown, 'CC 86 brings up the Keytrack picture');
     check(await pos(page, 'filter_keytrack') === before, 'the knob itself has not moved', `${before} -> ${await pos(page, 'filter_keytrack')}`);
     const seen = new Set();
-    let orange = true;
+    let warm = true;
     for (let i = 0; i < 12; i++) {
       const v = await led(page, 'filter_keytrack');
       seen.add(v);
-      orange = orange && ((v >> 16) & 255) > (v & 255);
+      warm = warm && ((v >> 16) & 255) > 200 && (v & 255) < 30;
       await sleep(70);
     }
-    check(!seen.has(IDLE) && orange, 'its label light turns orange: move up to reach the value', [...seen].map((v) => v.toString(16)).join(' '));
-    check(seen.size >= 2, 'and blinks', String(seen.size));
+    check(!seen.has(IDLE) && warm, 'its label light turns red to amber: move up to reach the value', [...seen].map((v) => v.toString(16)).join(' '));
+    check(seen.size === 1, 'and holds steady: no blinking', String(seen.size));
     const lit = await labelFill(page, 'filter_keytrack');
     check(lit[0] > 2 * lit[2], 'the label is painted in the light\'s colour', lit.join(','));
     await drag(page, 'filter_keytrack', -80);            // up through the value sent (knobs are in drag mode here)
@@ -513,32 +514,45 @@ try {
     await sleep(300);
     check(await pos(page, 'filter_cutoff') === cutMoved, 'loading does not move the knob');
     const v = await led(page, 'filter_cutoff');
-    check(v !== IDLE && ((v >> 16) & 255) > (v & 255), 'Cutoff\'s label lights orange: turn up to reach the patch', v.toString(16));
+    check(v !== IDLE && ((v >> 16) & 255) > 200 && (v & 255) < 30, 'Cutoff\'s label lights red to amber: turn up to reach the patch', v.toString(16));
     await page.screenshot({ path: path.join(shotDir, 'page_patch_guiding.png') });
     await drag(page, 'filter_cutoff', -10);             // a little way, not there yet
     await sleep(300);
-    check(await led(page, 'filter_cutoff') !== IDLE, 'part of the way back, the light is still on');
-    check(await lcdCount(page, WHITE, 100, 130) > 80, 'and the display shows the pick-up picture', String(await lcdCount(page, WHITE, 100, 130)));
+    const nearer = await led(page, 'filter_cutoff');
+    check(nearer !== IDLE && ((nearer >> 8) & 255) > ((v >> 8) & 255), 'part of the way back, the light is still on and has warmed towards amber', `${v.toString(16)} -> ${nearer.toString(16)}`);
+    check(await lcdCount(page, INK, 100, 130) > 80, 'and the display shows the pick-up picture', String(await lcdCount(page, INK, 100, 130)));
     await drag(page, 'filter_cutoff', -80);             // through the stored value
     await sleep(300);
     check(await led(page, 'filter_cutoff') === IDLE && await pos(page, 'filter_cutoff') >= cutSaved, 'through the patch\'s value the knob takes over and the light goes plain',
       `${(await led(page, 'filter_cutoff')).toString(16)} at ${await pos(page, 'filter_cutoff')} (patch ${cutSaved})`);
     await sleep(1700);
     await press(page, 'btn_patch');                     // the Name page
+    await press(page, 'btn_patch');                     // the Setup page
+    await sleep(200);
+    await page.screenshot({ path: path.join(shotDir, 'page_setup.png') });
+    // the amber acrylic is the panel's, not the firmware's: it tints what is shown, not the firmware's frame
+    const shown = () => page.evaluate(() => { const c = document.getElementById('lcd'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let blue = 0; for (let i = 2; i < d.length; i += 4) blue += d[i]; return blue; });
+    const frame = await page.evaluate(() => window.__synth.lcdHash());
+    const blueBare = await shown();
+    await page.click('#acrylic-toggle');
+    await sleep(200);
+    check(await shown() < blueBare * 0.5, 'Amber acrylic takes most of the blue out of the display as shown', `${blueBare} -> ${await shown()}`);
+    check(await page.evaluate(() => window.__synth.lcdHash()) === frame, 'and leaves the firmware\'s own frame alone');
+    await page.click('#acrylic-toggle');
     await press(page, 'btn_patch');                     // home
     await sleep(200);
-    check(!(await lit('btn_patch')), 'two more presses return home');
+    check(!(await lit('btn_patch')), 'three more presses return home');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');
   {
     await sleep(1700);
-    const quiet = await lcdCount(page, TEAL, 40, 208);
+    const quiet = await lcdCount(page, LINE, 40, 208);
     await page.click('#test-note');
     await sleep(500);
-    const loud = await lcdCount(page, TEAL, 40, 208);
+    const loud = await lcdCount(page, LINE, 40, 208);
     check(loud > quiet + 150, 'Test note: the scope shows a waveform', `${quiet} -> ${loud}`);
-    check(await lcdCount(page, TEAL, 222, 236) === 4 * 64, 'Test note: four voices light in the status strip', String(await lcdCount(page, TEAL, 222, 236)));
+    check(await lcdCount(page, LINE, 222, 236) === 4 * 64, 'Test note: four voices light in the status strip', String(await lcdCount(page, LINE, 222, 236)));
     await page.screenshot({ path: path.join(shotDir, 'page_playing.png') });
     const box = await page.locator('#mod').boundingBox();
     await page.mouse.move(box.x + box.width / 2, box.y + box.height - 4);
@@ -556,7 +570,7 @@ try {
     check(bendValue === 0.5, 'bend wheel springs back to centre', String(bendValue));
     await page.click('#panic');
     await sleep(300);
-    check(await lcdCount(page, TEAL, 222, 236) === 0, 'AC10 Panic silences every voice', String(await lcdCount(page, TEAL, 222, 236)));
+    check(await lcdCount(page, LINE, 222, 236) === 0, 'AC10 Panic silences every voice', String(await lcdCount(page, LINE, 222, 236)));
     check(await page.locator('#test-note').getAttribute('aria-pressed') === 'false', 'Panic clears Test note');
   }
 
@@ -587,7 +601,8 @@ try {
     // the stored patch is still in its slot, and still the one loaded
     await press(again.page, 'btn_patch');
     await sleep(300);
-    check(await lcdCount(again.page, AMBER, 78, 104) > 300, 'after a reload the Patch page still shows the stored patch as loaded', String(await lcdCount(again.page, AMBER, 78, 104)));
+    check(await lcdCount(again.page, ACCENT, 78, 104) > 300, 'after a reload the Patch page still shows the stored patch as loaded', String(await lcdCount(again.page, ACCENT, 78, 104)));
+    await press(again.page, 'btn_patch');
     await press(again.page, 'btn_patch');
     await press(again.page, 'btn_patch');
     await sleep(200);

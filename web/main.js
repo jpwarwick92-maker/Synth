@@ -12,6 +12,7 @@ const LS_PX_PER_MM = 'synth.pxPerMm';  // screen calibration for the 1:1 view
 const LS_VIEW = 'synth.view';
 const LS_KNOBS = 'synth.knobs';        // 'turn' or 'updown'
 const LS_ZOOM = 'synth.zoom';
+const LS_ACRYLIC = 'synth.acrylic';    // '1' = show the display as through amber acrylic
 
 const $ = (id) => document.getElementById(id);
 
@@ -103,7 +104,25 @@ function paintDisplay() {
   lcdCtx.imageSmoothingEnabled = scale < 2;
   lcdCtx.imageSmoothingQuality = 'high';
   lcdCtx.drawImage(lcdSrc, 0, 0, lcd.width, lcd.height);
-  if (!$('zoom').hidden) zoomCtx.drawImage(lcdSrc, 0, 0, zoomCtx.canvas.width, zoomCtx.canvas.height);
+  tint(lcdCtx);
+  if (!$('zoom').hidden) {
+    zoomCtx.drawImage(lcdSrc, 0, 0, zoomCtx.canvas.width, zoomCtx.canvas.height);
+    tint(zoomCtx);
+  }
+}
+
+// The amber acrylic that will sit over the real display, as a sheet of
+// colour laid over the picture: it lets red through, most of the green and
+// little of the blue. This is the panel's doing, not the firmware's, so the
+// firmware's own frame (which the tests read) is untouched.
+const ACRYLIC = 'rgb(255, 176, 56)';
+function tint(c) {
+  if (localStorage.getItem(LS_ACRYLIC) !== '1') return;
+  c.save();
+  c.globalCompositeOperation = 'multiply';
+  c.fillStyle = ACRYLIC;
+  c.fillRect(0, 0, c.canvas.width, c.canvas.height);
+  c.restore();
 }
 
 // Keeps the visible display's pixel grid equal to the screen's.
@@ -209,7 +228,16 @@ function applyZoom() {
   if (on && lcdCtx) paintDisplay();
 }
 
+function applyAcrylic() {
+  $('acrylic-toggle').setAttribute('aria-pressed', String(localStorage.getItem(LS_ACRYLIC) === '1'));
+  if (lcdCtx) paintDisplay();
+}
+
 function setupView() {
+  $('acrylic-toggle').addEventListener('click', () => {
+    localStorage.setItem(LS_ACRYLIC, localStorage.getItem(LS_ACRYLIC) === '1' ? '0' : '1');
+    applyAcrylic();
+  });
   $('knob-mode').addEventListener('click', () => {
     localStorage.setItem(LS_KNOBS, localStorage.getItem(LS_KNOBS) === 'updown' ? 'turn' : 'updown');
     applyKnobMode();
@@ -430,6 +458,7 @@ window.__synth = {
   applyKnobMode();
   await loadPanel();
   applyZoom();
+  applyAcrylic();
   fetch('build.json').then((r) => r.json()).then((b) => { $('build').textContent = `${b.build} (${b.date})`; })
     .catch(() => { $('build').textContent = 'local'; });
   $('start-btn').addEventListener('click', start);

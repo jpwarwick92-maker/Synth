@@ -41,6 +41,7 @@ class Ui {
   void drawParamPopup(int id);
   void drawPatchPage();
   void drawNamePage();
+  void drawSetupPage();
   void drawPickup(int id);
   void patchTurn(int enc, int delta);
   void patchPush(int enc);
@@ -54,6 +55,8 @@ class Ui {
   uint8_t burst_[4];     // encoder clicks since the last tick, for speeding up fast turns
   bool dirty_;
   bool popupPickup_;     // the pop-up is the pick-up picture, not the control's own
+  int16_t softParam_;    // the encoder-page value last turned: its picture takes the scope's place for a moment
+  uint16_t softMs_;
   // the Patch pages
   int8_t browse_;        // the slot the Patch page is showing
   uint8_t cursor_;       // which letter of the name is being edited
