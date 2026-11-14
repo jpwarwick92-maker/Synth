@@ -7,6 +7,7 @@
 import { buildPanel, makeControl, setKnobMode } from './panel.js';
 
 const LS_STATE = 'synth.state.v1';     // the firmware's saved state, as it would sit in flash
+const LS_PATCHES = 'synth.patches.v1'; // the patch slots, likewise
 const LS_PX_PER_MM = 'synth.pxPerMm';  // screen calibration for the 1:1 view
 const LS_VIEW = 'synth.view';
 const LS_KNOBS = 'synth.knobs';        // 'turn' or 'updown'
@@ -63,9 +64,20 @@ function onFirmwareMessage(e) {
     }
     window.__synth.ready = true;
   }
+  if (m.led) {
+    for (let i = 0; i < m.led.length; i++) {
+      const c = controls.get(fwControls[i].name);
+      if (c) c.led(m.led[i]);
+    }
+  }
   if (m.state) {
     try { localStorage.setItem(LS_STATE, btoa(String.fromCharCode(...m.state))); } catch (_) { /* storage may be off */ }
     window.__synth.saves++;
+  }
+  if (m.patches) {
+    const slots = m.patches.map((bytes) => (bytes ? btoa(String.fromCharCode(...bytes)) : null));
+    try { localStorage.setItem(LS_PATCHES, JSON.stringify(slots)); } catch (_) { /* storage may be off */ }
+    window.__synth.patchSaves++;
   }
 }
 
@@ -119,8 +131,8 @@ function checkLayoutAgainstFirmware() {
   for (const c of fwControls) if (!inLayout.has(c.name)) problems.push(`firmware control "${c.name}" is not in the layout`);
   for (const d of layout.controls) {
     const i = fwIndex.get(d.id);
-    if (i !== undefined && d.type === 'selector' && d.stops.length !== fwControls[i].steps)
-      problems.push(`selector "${d.id}" has ${d.stops.length} stops in the layout, ${fwControls[i].steps} in the firmware`);
+    if (i !== undefined && (d.type === 'selector' || d.type === 'toggle') && d.stops.length !== fwControls[i].steps)
+      problems.push(`"${d.id}" has ${d.stops.length} stops in the layout, ${fwControls[i].steps} in the firmware`);
   }
   if (problems.length) console.warn('Layout problems:\n' + problems.join('\n'));
 }
@@ -128,7 +140,7 @@ function checkLayoutAgainstFirmware() {
 // ---------------------------------------------------------------- panel
 
 async function loadPanel() {
-  layout = await (await fetch('layouts/a2.json')).json();
+  layout = await (await fetch('layouts/a3.json')).json();
   controls = buildPanel($('panel'), layout, send);
 
   // the display sits where the layout file says, at its true size
@@ -186,7 +198,7 @@ function applyKnobMode() {
   setKnobMode(mode);
   $('knob-mode').textContent = mode === 'turn' ? 'Knobs: turn' : 'Knobs: drag up/down';
   $('hint').textContent = `${HINTS[mode]} Scrolling over any control also moves it (two fingers on a trackpad). Hold Shift for fine. `
-    + 'Selectors: or tap a stop\'s label. Encoders: double-tap to push. Faders follow the pointer.';
+    + 'Selectors: or tap a stop\'s label. Encoders: double-tap to push. Faders follow the pointer. Switches: tap to flip.';
   window.__synth.knobMode = mode;
 }
 
@@ -339,6 +351,15 @@ function savedState() {
   }
 }
 
+function savedPatches() {
+  try {
+    const slots = JSON.parse(localStorage.getItem(LS_PATCHES) || '[]');
+    return slots.map((s) => (s ? Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0)) : null));
+  } catch (_) {
+    return [];
+  }
+}
+
 function showAudioDelay() {
   if (!ctx) return;
   const ms = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
@@ -359,7 +380,7 @@ async function start() {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
-      processorOptions: { wasm, state: savedState() },
+      processorOptions: { wasm, state: savedState(), patches: savedPatches() },
     });
     node.port.onmessage = onFirmwareMessage;
     node.onprocessorerror = () => { err.textContent = 'The audio engine stopped with an error.'; $('start').hidden = false; };
@@ -380,9 +401,11 @@ window.__synth = {
   ready: false,
   frames: 0,
   saves: 0,
+  patchSaves: 0,
   problems,
   midi: sendMidi,
   position: (id) => controls.get(id)?.value,
+  led: (id) => controls.get(id)?.ledRgb ?? 0,   // the label light's colour as the firmware last set it
   controlIds: () => [...controls.keys()],
   firmwareControls: () => fwControls,
   // Display checks read the firmware's frame itself, not the scaled copy on screen.

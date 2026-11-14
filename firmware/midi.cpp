@@ -56,6 +56,7 @@ void MidiIn::message(uint8_t status, uint8_t d1, uint8_t d2) {
     case 0x80: gSynth.post(EV_NOTE_OFF, d1); break;
     case 0xE0: gSynth.post(EV_BEND, d1, d2); break;
     case 0xB0: controlChange(d1, d2); break;
+    case 0xC0: patchLoad(d1); break;  // program change: load that patch slot, if it holds one
     default: break;
   }
 }
@@ -70,7 +71,10 @@ void MidiIn::controlChange(uint8_t cc, uint8_t value) {
   }
   int id = paramForCC(cc);
   if (id < 0) return;
-  if (gParams.setFromCC(id, value)) onParamChanged(id);
+  if (gParams.setFromCC(id, value)) {
+    gPatch.remoteSet(id);  // the control itself has not moved: it follows this value until touched
+    onParamChanged(id);
+  }
 }
 
 }  // namespace fw

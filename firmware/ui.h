@@ -6,7 +6,7 @@
 
 namespace fw {
 
-enum ModeButton : int8_t { MB_NONE = -1, MB_FX1, MB_FX2, MB_MOD, MB_ARP, MB_ENGINE, MB_PATCH, MB_COUNT };
+enum ModeButton : int8_t { MB_NONE = -1, MB_FX1, MB_FX2, MB_MOD, MB_ENGINE, MB_PATCH, MB_COUNT };
 
 constexpr uint32_t kPopupMs = 1500;  // how long a control's visual stays up
 
@@ -16,8 +16,13 @@ class Ui {
 
   // A panel control or a MIDI controller moved this parameter: show its visual.
   void paramChanged(int id);
+  // A control that is still following the loaded patch was moved without
+  // taking over: show where it is, where the patch is, and which way to go.
+  void pickup(int id);
+  // A patch was loaded from outside the Patch page (a MIDI program change).
+  void patchLoaded();
 
-  // One of the six mode buttons was pressed. A mode can have several pages:
+  // One of the five mode buttons was pressed. A mode can have several pages:
   // pressing its lit button steps through them, then returns home.
   void modeButton(int which);
   void encoderTurn(int enc, int delta);
@@ -34,6 +39,12 @@ class Ui {
   void drawHome();
   void drawModePage();
   void drawParamPopup(int id);
+  void drawPatchPage();
+  void drawNamePage();
+  void drawPickup(int id);
+  void patchTurn(int enc, int delta);
+  void patchPush(int enc);
+  void say(const char* text);
   int pageParam(int enc) const;
 
   int8_t mode_;
@@ -42,6 +53,13 @@ class Ui {
   uint32_t popupMs_;
   uint8_t burst_[4];     // encoder clicks since the last tick, for speeding up fast turns
   bool dirty_;
+  bool popupPickup_;     // the pop-up is the pick-up picture, not the control's own
+  // the Patch pages
+  int8_t browse_;        // the slot the Patch page is showing
+  uint8_t cursor_;       // which letter of the name is being edited
+  uint16_t armMs_;       // overwriting a used slot needs a second push within this time
+  uint16_t noteMs_;      // how long the line of feedback ("SAVED") stays
+  const char* note_;
 };
 
 extern Ui gUi;

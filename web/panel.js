@@ -111,7 +111,7 @@ function makeKnob(g, def, sizes, c, send) {
   const r = (large ? sizes.knobLarge : sizes.knob) / 2;
   el('circle', { r, class: large ? 'cap large' : 'cap' }, g);
   const ptr = el('line', { x1: 0, y1: -r + 0.9, x2: 0, y2: -r + 0.9 + (large ? 6 : 4), class: large ? 'ptr large' : 'ptr' }, g);
-  if (def.label) el('text', { y: r + 4.4, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: r + 4.4, class: 'label' }, g, def.label);
   const hit = el('circle', { r: r + 2.5, class: 'hit' }, g);
 
   c.draw = () => ptr.setAttribute('transform', `rotate(${-135 + (270 * c.value) / POT_MAX})`);
@@ -144,7 +144,7 @@ function makeFader(g, def, sizes, c, send) {
   const cap = el('g', {}, g);
   el('rect', { x: -capW / 2, y: -capH / 2, width: capW, height: capH, rx: 0.9, class: 'fcap' }, cap);
   el('line', { x1: -capW / 2 + 1.2, y1: 0, x2: capW / 2 - 1.2, y2: 0, class: 'fline' }, cap);
-  if (def.label) el('text', { y: travel / 2 + capH / 2 + 5.6, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: travel / 2 + capH / 2 + 5.6, class: 'label' }, g, def.label);
   const hit = el('rect', { x: -6.5, y: -travel / 2 - 5, width: 13, height: travel + 10, class: 'hit' }, g);
 
   c.draw = () => cap.setAttribute('transform', `translate(0 ${travel / 2 - (travel * c.value) / POT_MAX})`);
@@ -170,7 +170,7 @@ function makeFader(g, def, sizes, c, send) {
 function makeSelector(g, def, sizes, c, send) {
   const stops = def.stops;
   const n = stops.length;
-  const spacing = n === 3 ? 45 : 40;
+  const spacing = n === 3 ? 45 : n >= 6 ? 34 : 40;   // six stops are packed a little closer, to keep them all above the knob
   const angle = (i) => (i - (n - 1) / 2) * spacing;
   const r = sizes.selector / 2;
   const ticks = [], labels = [];
@@ -179,17 +179,18 @@ function makeSelector(g, def, sizes, c, send) {
     const sx = Math.sin(a), cy = -Math.cos(a);
     ticks.push(el('line', { x1: sx * (r + 1.6), y1: cy * (r + 1.6), x2: sx * (r + 3.4), y2: cy * (r + 3.4), class: 'tick' }, g));
     const anchor = angle(i) < -10 ? 'end' : angle(i) > 10 ? 'start' : 'middle';
-    const t = el('text', { x: sx * (r + 5), y: cy * (r + 5) + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
+    const lr = r + (n >= 6 ? 8 : 5);   // six labels need a wider ring to keep clear of each other
+    const t = el('text', { x: sx * lr, y: cy * lr + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
     labels.push(t);
     // tapping a stop's label turns the switch straight to it
     const w = Math.max(5, stops[i].length * 1.9 + 2);
-    const hx = sx * (r + 5) - (anchor === 'end' ? w - 1 : anchor === 'start' ? 1 : w / 2);
-    const stopHit = el('rect', { x: hx, y: cy * (r + 5) - 3.2, width: w, height: 5, class: 'hit' }, g);
+    const hx = sx * lr - (anchor === 'end' ? w - 1 : anchor === 'start' ? 1 : w / 2);
+    const stopHit = el('rect', { x: hx, y: cy * lr - 3.2, width: w, height: 5, class: 'hit' }, g);
     stopHit.addEventListener('pointerdown', (e) => { e.preventDefault(); setStop(i); });
   }
   el('circle', { r, class: 'cap' }, g);
   const ptr = el('line', { x1: 0, y1: 0, x2: 0, y2: -r + 0.2, class: 'ptr' }, g);
-  if (def.label) el('text', { y: r + 4.8, class: 'label' }, g, def.label);
+  if (def.label) c.labelEl = el('text', { y: r + 4.8, class: 'label' }, g, def.label);
   const hit = el('circle', { r: r + 2.2, class: 'hit' }, g);
 
   c.draw = () => {
@@ -287,7 +288,44 @@ function makeButton(g, def, sizes, c, send) {
   });
 }
 
-const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton };
+// A two-position lever switch. To the firmware it is a selector with two stops.
+function makeToggle(g, def, sizes, c, send) {
+  const [w, h] = sizes.toggle || [6, 11];
+  el('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: w / 2, class: 'tslot' }, g);
+  const lever = el('circle', { r: w / 2 - 0.6, class: 'tlever' }, g);
+  const on = el('text', { y: -h / 2 - 1.6, class: 'stop' , 'text-anchor': 'middle' }, g, def.stops[1]);
+  const off = el('text', { y: h / 2 + 3.6, class: 'stop', 'text-anchor': 'middle' }, g, def.stops[0]);
+  if (def.label) c.labelEl = el('text', { y: h / 2 + 8.6, class: 'label' }, g, def.label);
+  const hit = el('rect', { x: -w / 2 - 3, y: -h / 2 - 5, width: w + 6, height: h + 10, class: 'hit' }, g);
+
+  c.draw = () => {
+    lever.setAttribute('cy', c.value ? -h / 2 + w / 2 : h / 2 - w / 2);   // up is on
+    on.classList.toggle('on', c.value > 0);
+    off.classList.toggle('on', c.value === 0);
+    g.classList.toggle('lit', c.value > 0);
+  };
+  const flip = (v) => {
+    if (v === c.value) return;
+    c.value = v;
+    c.touched();
+    c.draw();
+    send(def.id, 'set', v);
+  };
+  onDrag(hit, {
+    move: (e, st) => { if (st.moved) flip(e.clientY < st.y0 ? 1 : 0); },   // a flick up or down
+    up: (e, st) => { if (!st.moved) flip(c.value ? 0 : 1); },             // a tap flips it
+  });
+}
+
+// How an LED behind a smoked, back-lit label looks: the firmware gives the
+// colour it drives the LED at; the eye sees dim light as brighter than its
+// number suggests, so the page lifts it before painting the lettering.
+function ledCss(rgb) {
+  const lift = (v) => Math.round(255 * Math.pow(v / 255, 0.45));
+  return `rgb(${lift((rgb >> 16) & 255)}, ${lift((rgb >> 8) & 255)}, ${lift(rgb & 255)})`;
+}
+
+const MAKERS = { knob: makeKnob, fader: makeFader, selector: makeSelector, encoder: makeEncoder, button: makeButton, toggle: makeToggle };
 
 // Creates one control inside `parent` (an <svg> or <g>). `send(id, kind, value)`
 // reports hardware activity; the returned object's set() shows a position
@@ -296,7 +334,14 @@ export function makeControl(parent, def, sizes, send) {
   const g = el('g', { transform: `translate(${def.x} ${def.y})`, class: `ctl ${def.type}`, 'data-id': def.id }, parent);
   const c = {
     id: def.id, type: def.type, def, el: g, value: 0, fine: 0, held: false, movedAt: -1e9,
+    labelEl: null, ledRgb: 0,
     draw() {},
+    // The light behind the control's label, as the firmware drives it.
+    led(rgb) {
+      if (rgb === this.ledRgb) return;
+      this.ledRgb = rgb;
+      if (this.labelEl) this.labelEl.style.fill = rgb ? ledCss(rgb) : '';
+    },
     touched() { this.movedAt = performance.now(); },
     // A position reported back by the firmware. A control under a finger
     // stays where the finger put it, and for a moment afterwards too: the

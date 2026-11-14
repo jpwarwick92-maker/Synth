@@ -9,6 +9,7 @@
 
 #include "fw_config.h"
 #include "params.h"
+#include "patch.h"
 
 namespace fw {
 
@@ -21,8 +22,8 @@ struct ControlInfo {
 };
 
 constexpr int kNumEncoders = 4;
-constexpr int kNumButtons = 9;  // six mode buttons, two oscillator engine buttons, Hold
-constexpr int kFirstEncoder = P_PANEL_COUNT;
+constexpr int kNumButtons = 9;  // five mode buttons, two oscillator engine buttons, Hold, Chord
+constexpr int kFirstEncoder = kPanelCount;
 constexpr int kFirstButton = kFirstEncoder + kNumEncoders;
 constexpr int kNumControls = kFirstButton + kNumButtons;
 
@@ -36,13 +37,18 @@ void process(float* outL, float* outR, int n);
 void midiByte(uint8_t b);
 
 ControlInfo controlInfo(int index);
+// The parameter a pot, fader, selector or switch sets, or -1 for encoders and buttons.
+int controlParam(int index);
 // Pot: raw position. Selector: stop index. Button or encoder push: 1 = down, 0 = up.
 void controlSet(int index, int raw);
 // Encoder turned by `delta` clicks (positive = clockwise).
 void encoderTurn(int index, int delta);
-// What the control shows: pot position, selector stop, button light (0/1),
-// or the encoder's running click count.
+// What the control shows: the pot's or selector's physical position as last
+// reported, a button's light (0/1), or the encoder's running click count.
 int controlGet(int index);
+// The colour of the light behind a control's label, 0xRRGGBB (0 = it has none).
+// Read after each tick: the lights blink while they guide a control to a patch.
+uint32_t ledColour(int index);
 
 // Call about 30 times a second with the elapsed time. Returns true when the
 // display buffer has new content.
@@ -55,11 +61,17 @@ void frameRow565(int y, uint16_t* dst);
 
 // ---- used inside the core ----
 void onParamChanged(int id);
+// Something worth keeping changed: save the state once things have been still a moment.
+void stateTouched();
+// Loads a stored patch (also what a MIDI program change does). False if the slot is empty.
+bool patchLoad(int slot);
 
-// Saved state: a small versioned blob of every parameter. A blob from an
-// older build, with fewer parameters, still loads: the ones it lacks keep
-// their defaults.
-constexpr uint32_t kStateSize = 6 + P_COUNT * 2 + 2;
+// Saved state: a small versioned blob of every parameter, followed by the
+// panel's side of things (where each control physically is, which ones are
+// still following a loaded patch, the patch's name). A blob from an older
+// build, with fewer parameters, still loads: the ones it lacks keep their
+// defaults.
+constexpr uint32_t kStateSize = 6 + P_COUNT * 2 + kPanelStateSize + 2;
 uint32_t stateWrite(uint8_t* dst);
 bool stateRead(const uint8_t* src, uint32_t len);
 

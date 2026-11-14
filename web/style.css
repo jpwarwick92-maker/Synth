@@ -89,6 +89,9 @@ button[aria-pressed="true"] { background: var(--soft); border-color: var(--soft)
 .stop { fill: #a3a8b0; font-size: 2.6px; font-weight: 600; letter-spacing: .1px; }
 .stop.on { fill: #fff; }
 .slot { fill: #0c0d0f; }
+.tslot { fill: #0c0d0f; stroke: var(--capline); stroke-width: .5; }
+.tlever { fill: #e4e4e1; }
+.toggle.lit .tslot { stroke: var(--accent); }
 .fcap { fill: #e4e4e1; }
 .fline { stroke: #26282b; stroke-width: .6; }
 .enc { fill: var(--cap); stroke: var(--soft); stroke-width: .6; stroke-dasharray: .6 1.1; }

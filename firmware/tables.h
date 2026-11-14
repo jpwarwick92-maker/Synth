@@ -28,10 +28,10 @@ extern int16_t gSaw[kSawLevels][kTabLen + 1];
 extern int16_t gTri[kTriLevels][kTabLen + 1];
 
 // ---- wavetable engine ----
-// Four tables of four frames each; the oscillator morphs between frames.
+// Five tables of four frames each; the oscillator morphs between frames.
 // Every frame is stored at six levels of detail (32, 16, 8, 4, 2, 1
 // harmonics) for the same reason the saw is: nothing may fold back.
-constexpr int kWtTables = 4;
+constexpr int kWtTables = 5;
 constexpr int kWtFrames = 4;
 constexpr int kWtLevels = 6;
 constexpr int kWtLen = 512;  // power of two

@@ -4,16 +4,20 @@ Generated from the firmware's parameter table by `make docs`. Do not edit by han
 
 The synth listens on every MIDI channel. Besides the numbers below it responds to
 notes with velocity, pitch bend, mod wheel (CC 1, adds LFO depth), sustain pedal (CC 64),
-all sound off (CC 120) and all notes off (CC 123).
+all sound off (CC 120) and all notes off (CC 123). A program change loads that patch slot
+(0 to 15), if it holds a patch.
+
+A controller message for a panel control sets the sound, not the control: the control
+follows that value until it is moved through it (pots and faders) or changed (selectors).
 
 ## Panel controls
 
 | Control id | Section | Name | Type | Stops | CC |
 |---|---|---|---|---|---|
-| `osc1_wave` | OSC 1 | WAVE | selector | SAW, SQR, TRI, SIN | 20 |
+| `osc1_wave` | OSC 1 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER | 20 |
 | `osc1_octave` | OSC 1 | OCTAVE | selector | -2, -1, 0, +1, +2 | 21 |
 | `osc1_macro` | OSC 1 | PULSE WIDTH | pot |  | 22 |
-| `osc2_wave` | OSC 2 | WAVE | selector | SAW, SQR, TRI, SIN | 23 |
+| `osc2_wave` | OSC 2 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER | 23 |
 | `osc2_octave` | OSC 2 | OCTAVE | selector | -2, -1, 0, +1, +2 | 24 |
 | `osc2_detune` | OSC 2 | DETUNE | pot |  | 25 |
 | `mix_osc1` | MIXER | OSC 1 | pot |  | 26 |
@@ -42,6 +46,14 @@ all sound off (CC 120) and all notes off (CC 123).
 | `lfo_shape` | LFO | SHAPE | selector | SINE, TRI, SAW, SQUARE, RANDOM | 108 |
 | `lfo_destination` | LFO | DESTINATION | selector | PITCH, CUTOFF, AMP, PW | 109 |
 | `volume` | OUTPUT | VOLUME | pot |  | 7 |
+| `arp_mode` | ARP | MODE | selector | OFF, UP, DOWN, UP-DOWN, RANDOM, PLAYED | 58 |
+| `arp_octaves` | ARP | OCTAVES | selector | 1, 2, 3, 4 | 60 |
+| `arp_tempo` | ARP | TEMPO | pot |  | 59 |
+| `arp_gate` | ARP | GATE | pot |  | 61 |
+| `voice_drift` | VOICE | DRIFT | pot |  | 14 |
+| `voice_spread` | VOICE | SPREAD | pot |  | 15 |
+| `osc_xmod` | OSC 2 | X-MOD | pot |  | 16 |
+| `osc_sync` | OSC 2 | SYNC | selector | OFF, ON | 17 |
 
 ## Soft parameters (encoder pages and buttons)
 
@@ -53,7 +65,7 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `unison_detune` | ENGINE | UNI DETUNE | 0 to 50 | 110 |
 | `sub_octave` | ENGINE | SUB OCTAVE | -1 OCT, -2 OCT | 111 |
 | `bend_range` | ENGINE | BEND RANGE | 1 to 12 | 112 |
-| `filter_slope` | ENGINE | FILT SLOPE | 12 dB, 24 dB | 113 |
+| `filter_slope` | ENGINE | FILT SLOPE | 12 dB, 24 dB, LADDER | 113 |
 | `delay_time` | FX 1 | TIME | 0 to 100 | 46 |
 | `delay_tone` | FX 1 | TONE | 0 to 100 | 47 |
 | `delay_feedback` | FX 1 | FEEDBACK | 0 to 100 | 48 |
@@ -66,10 +78,6 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `vel_cutoff` | MOD | VEL>CUTOFF | 0 to 100 | 55 |
 | `fenv_pitch` | MOD | ENV>PITCH | 0 to 24 | 56 |
 | `lfo_sync` | MOD | LFO SYNC | FREE, KEY | 57 |
-| `arp_mode` | ARP | MODE | OFF, UP, DOWN, UP-DOWN, RANDOM, PLAYED | 58 |
-| `arp_tempo` | ARP | TEMPO | 40 to 240 | 59 |
-| `arp_octaves` | ARP | OCTAVES | 1 to 4 | 60 |
-| `arp_gate` | ARP | GATE | 0 to 19 | 61 |
 | `osc1_color` | OSC 1 | COLOR | 0 to 100 | 62 |
 | `osc2_macro` | OSC 2 | MACRO | 0 to 100 | 63 |
 | `osc2_color` | OSC 2 | COLOR | 0 to 100 | 114 |
@@ -88,9 +96,9 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `btn_fx1` | button |
 | `btn_fx2` | button |
 | `btn_mod` | button |
-| `btn_arp` | button |
 | `btn_engine` | button |
 | `btn_patch` | button |
 | `btn_osc1_engine` | button |
 | `btn_osc2_engine` | button |
 | `btn_hold` | button |
+| `btn_chord` | button |

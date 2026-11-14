@@ -87,11 +87,15 @@ float wtHarmonic(int table, int frame, int h) {
       float d = ((float)h - kPeak[frame]) / (0.35f * kPeak[frame] + 0.6f);
       return (1.0f + 5.0f * exp2f_(-1.4427f * d * d)) / (float)h;
     }
-    default: {  // organ stops: a few widely spaced harmonics, more with each frame
+    case 3: {  // organ stops: a few widely spaced harmonics, more with each frame
       static const uint8_t kStops[kWtFrames][6] = {{1, 0, 0, 0, 0, 0}, {1, 2, 4, 0, 0, 0}, {1, 2, 4, 8, 16, 0}, {1, 3, 5, 9, 17, 31}};
       for (int i = 0; i < 6; ++i)
         if (kStops[frame][i] == h) return 1.0f / sqrtf_((float)(i + 1));
       return 0.0f;
+    }
+    default: {  // a pulse wave narrowing from square to a thin spike
+      static const float kDuty[kWtFrames] = {0.5f, 0.33f, 0.18f, 0.07f};
+      return absf(sinf_(kPi * (float)h * kDuty[frame])) / (float)h;
     }
   }
 }

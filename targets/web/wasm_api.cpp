@@ -1,8 +1,8 @@
 // Browser target: exposes the firmware to the page as a WebAssembly module.
 //
 // The module imports nothing. The page reaches the firmware only through
-// the functions exported here, and through three shared buffers (audio out,
-// MIDI in, saved state) whose addresses it asks for.
+// the functions exported here, and through shared buffers (audio out,
+// MIDI in, saved state, patch slots) whose addresses it asks for.
 #include "../../firmware/firmware.h"
 
 #define FW_EXPORT(name) __attribute__((export_name(#name))) name
@@ -17,6 +17,10 @@ uint16_t gDisplay[fw::kDisplayW * fw::kDisplayH];
 uint8_t gStore[fw::kStateSize];
 uint32_t gStoreLen = 0;
 uint32_t gSaveCount = 0;
+// The patch slots, as a flash chip or memory card would hold them.
+uint8_t gBank[fw::kPatchSlots][fw::kPatchSize];
+uint32_t gBankLen[fw::kPatchSlots];
+uint32_t gPatchSaveCount = 0;
 }  // namespace
 
 extern "C" {
@@ -41,6 +45,31 @@ uint32_t FW_EXPORT(fw_storage_capacity)() { return sizeof gStore; }
 uint32_t FW_EXPORT(fw_storage_len)() { return gStoreLen; }
 void FW_EXPORT(fw_storage_set_len)(uint32_t n) { gStoreLen = n <= sizeof gStore ? n : 0; }
 uint32_t FW_EXPORT(fw_storage_save_count)() { return gSaveCount; }
+
+// ---- patch slots: filled by the page before fw_init, read back when the
+// patch save counter goes up ----
+uint32_t fw_hal_patch_load(uint32_t slot, uint8_t* dst, uint32_t max) {
+  if (slot >= (uint32_t)fw::kPatchSlots) return 0;
+  uint32_t n = gBankLen[slot] < max ? gBankLen[slot] : max;
+  for (uint32_t i = 0; i < n; ++i) dst[i] = gBank[slot][i];
+  return n;
+}
+
+void fw_hal_patch_save(uint32_t slot, const uint8_t* src, uint32_t len) {
+  if (slot >= (uint32_t)fw::kPatchSlots || len > fw::kPatchSize) return;
+  for (uint32_t i = 0; i < len; ++i) gBank[slot][i] = src[i];
+  gBankLen[slot] = len;
+  ++gPatchSaveCount;
+}
+
+int FW_EXPORT(fw_patch_slots)() { return fw::kPatchSlots; }
+uint32_t FW_EXPORT(fw_patch_capacity)() { return fw::kPatchSize; }
+uint8_t* FW_EXPORT(fw_patch_ptr)(uint32_t slot) { return gBank[slot < (uint32_t)fw::kPatchSlots ? slot : 0]; }
+uint32_t FW_EXPORT(fw_patch_len)(uint32_t slot) { return slot < (uint32_t)fw::kPatchSlots ? gBankLen[slot] : 0; }
+void FW_EXPORT(fw_patch_set_len)(uint32_t slot, uint32_t n) {
+  if (slot < (uint32_t)fw::kPatchSlots) gBankLen[slot] = n <= fw::kPatchSize ? n : 0;
+}
+uint32_t FW_EXPORT(fw_patch_save_count)() { return gPatchSaveCount; }
 
 // ---- lifecycle and audio ----
 void FW_EXPORT(fw_init)(float sampleRate) { fw::init(sampleRate); }
@@ -68,6 +97,8 @@ int FW_EXPORT(fw_control_steps)(int i) { return fw::controlInfo(i).steps; }
 void FW_EXPORT(fw_control_set)(int i, int raw) { fw::controlSet(i, raw); }
 void FW_EXPORT(fw_encoder_turn)(int i, int delta) { fw::encoderTurn(i, delta); }
 int FW_EXPORT(fw_control_get)(int i) { return fw::controlGet(i); }
+// The light behind a control's label, 0xRRGGBB, as an LED driver would be sent it.
+uint32_t FW_EXPORT(fw_led_rgb)(int i) { return fw::ledColour(i); }
 
 // ---- display ----
 int FW_EXPORT(fw_tick)(int dtMs) {

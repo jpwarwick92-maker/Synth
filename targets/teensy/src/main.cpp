@@ -58,19 +58,44 @@ static AudioConnection patch2(synthOut, 1, i2sOut, 1);
 static AudioConnection patch3(synthOut, 0, usbOut, 0);
 static AudioConnection patch4(synthOut, 1, usbOut, 1);
 
-// ---- storage: the saved state lives in the on-board EEPROM ----
-// Layout: one length byte, then the blob.
+// ---- storage: the on-board EEPROM (4284 bytes on a Teensy 4.1) ----
+// Saved state: two length bytes, then the blob, in the first 512 bytes.
+// Patches: sixteen slots of 160 bytes after that, each one length byte and
+// the patch. A memory card or the board's flash file store would hold far
+// more; that choice belongs to the hardware build.
+static const int kStateRegion = 512, kPatchRegion = 160;
+static_assert(fw::kStateSize + 2 <= kStateRegion, "saved state no longer fits its EEPROM region");
+static_assert(fw::kPatchSize + 1 <= kPatchRegion && fw::kPatchSize <= 255, "a patch no longer fits its EEPROM slot");
+static_assert(kStateRegion + fw::kPatchSlots * kPatchRegion <= 4284, "patch slots do not fit the EEPROM");
+
 extern "C" uint32_t fw_hal_storage_load(uint8_t* dst, uint32_t max) {
-  uint32_t n = EEPROM.read(0);
-  if (n == 0 || n > max) return 0;
-  for (uint32_t i = 0; i < n; ++i) dst[i] = EEPROM.read(1 + i);
+  uint32_t n = EEPROM.read(0) | ((uint32_t)EEPROM.read(1) << 8);
+  if (n == 0 || n > max || n + 2 > (uint32_t)kStateRegion) return 0;
+  for (uint32_t i = 0; i < n; ++i) dst[i] = EEPROM.read(2 + i);
   return n;
 }
 
 extern "C" void fw_hal_storage_save(const uint8_t* src, uint32_t len) {
-  if (len > 255) return;
-  EEPROM.update(0, (uint8_t)len);
-  for (uint32_t i = 0; i < len; ++i) EEPROM.update(1 + i, src[i]);
+  if (len + 2 > (uint32_t)kStateRegion) return;
+  EEPROM.update(0, (uint8_t)(len & 0xFF));
+  EEPROM.update(1, (uint8_t)(len >> 8));
+  for (uint32_t i = 0; i < len; ++i) EEPROM.update(2 + i, src[i]);
+}
+
+extern "C" uint32_t fw_hal_patch_load(uint32_t slot, uint8_t* dst, uint32_t max) {
+  if (slot >= (uint32_t)fw::kPatchSlots) return 0;
+  int base = kStateRegion + (int)slot * kPatchRegion;
+  uint32_t n = EEPROM.read(base);
+  if (n == 0 || n > max || n + 1 > (uint32_t)kPatchRegion) return 0;
+  for (uint32_t i = 0; i < n; ++i) dst[i] = EEPROM.read(base + 1 + i);
+  return n;
+}
+
+extern "C" void fw_hal_patch_save(uint32_t slot, const uint8_t* src, uint32_t len) {
+  if (slot >= (uint32_t)fw::kPatchSlots || len + 1 > (uint32_t)kPatchRegion) return;
+  int base = kStateRegion + (int)slot * kPatchRegion;
+  EEPROM.update(base, (uint8_t)len);
+  for (uint32_t i = 0; i < len; ++i) EEPROM.update(base + 1 + i, src[i]);
 }
 
 void setup() {
@@ -97,6 +122,8 @@ void loop() {
     uint32_t dt = sinceTick;
     sinceTick = 0;
     fw::tick(dt);
+    // The label lights: fw::ledColour(i) for each panel control goes to the
+    // LED chain here, once the lighting board exists.
   }
 
   // Processor load: the number the bench run is for.

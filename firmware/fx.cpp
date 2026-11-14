@@ -53,8 +53,11 @@ void Effects::init(float sampleRate) {
   }
 }
 
-void Effects::process(const float* in, float* outL, float* outR, int n, const FxSettings& s) {
-  for (int i = 0; i < n; ++i) outL[i] = outR[i] = in[i];
+void Effects::process(const float* inL, const float* inR, float* outL, float* outR, int n, const FxSettings& s) {
+  for (int i = 0; i < n; ++i) {
+    outL[i] = inL[i];
+    outR[i] = inR[i];
+  }
 
   // ---- chorus: two slowly swept taps, one per side ----
   bool chorus = s.chorus > 0.001f;
@@ -66,7 +69,8 @@ void Effects::process(const float* in, float* outL, float* outR, int n, const Fx
     float wet = 0.5f * s.chorus;
     float inc = 0.6f / sr_;
     for (int i = 0; i < n; ++i) {
-      gChorus[chPos_] = in[i];
+      float mono = 0.5f * (inL[i] + inR[i]);
+      gChorus[chPos_] = mono;
       float ph2 = chPhase_ + 0.25f;
       if (ph2 >= 1.0f) ph2 -= 1.0f;
       float dL = base + depth * tabRead(gSine, chPhase_);
@@ -74,8 +78,8 @@ void Effects::process(const float* in, float* outL, float* outR, int n, const Fx
       float pL = (float)chPos_ - dL, pR = (float)chPos_ - dR;
       if (pL < 0.0f) pL += (float)kChorusLen;
       if (pR < 0.0f) pR += (float)kChorusLen;
-      outL[i] = in[i] + wet * (readFrac(gChorus, kChorusLen, pL) - in[i]);
-      outR[i] = in[i] + wet * (readFrac(gChorus, kChorusLen, pR) - in[i]);
+      outL[i] = inL[i] + wet * (readFrac(gChorus, kChorusLen, pL) - mono);
+      outR[i] = inR[i] + wet * (readFrac(gChorus, kChorusLen, pR) - mono);
       if (++chPos_ >= kChorusLen) chPos_ = 0;
       chPhase_ += inc;
       if (chPhase_ >= 1.0f) chPhase_ -= 1.0f;

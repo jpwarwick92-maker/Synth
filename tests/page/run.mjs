@@ -13,6 +13,9 @@ const { chromium } = require('playwright');
 
 const siteDir = path.resolve(process.argv[2] || 'build/site');
 const shotDir = path.resolve(process.argv[3] || 'build/out');
+// The layout file the page draws: positions and sizes below are checked against it.
+const layout = JSON.parse(await readFile(path.join(siteDir, 'layouts/a3.json'), 'utf8'));
+const PANEL_MM = layout.panel.width;
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm' };
 
@@ -89,9 +92,12 @@ const lcdCount = (page, rgb, y0 = 0, y1 = 240) => page.evaluate(([c, a, b]) => w
 async function arc(page, id, fromDeg, toDeg, radius = 20) {
   const c = await centre(page, id);
   const at = (deg) => ({ x: c.x + radius * Math.sin((deg * Math.PI) / 180), y: c.y - radius * Math.cos((deg * Math.PI) / 180) });
+  // press on the control itself, slide out along the same bearing, then go round
+  const grab = { x: c.x + 10 * Math.sin((fromDeg * Math.PI) / 180), y: c.y - 10 * Math.cos((fromDeg * Math.PI) / 180) };
   const p0 = at(fromDeg);
-  await page.mouse.move(p0.x, p0.y);
+  await page.mouse.move(grab.x, grab.y);
   await page.mouse.down();
+  await page.mouse.move(p0.x, p0.y);
   const steps = Math.max(4, Math.round(Math.abs(toDeg - fromDeg) / 6));
   for (let i = 1; i <= steps; i++) {
     const p = at(fromDeg + ((toDeg - fromDeg) * i) / steps);
@@ -102,6 +108,37 @@ async function arc(page, id, fromDeg, toDeg, radius = 20) {
 const setKnobs = async (page, mode) => {
   if (await page.evaluate(() => window.__synth.knobMode) !== mode) await page.click('#knob-mode');
 };
+// Measured on the drawn panel: every piece of lettering and every control body, in millimetres.
+// Returns a description of each overlap, or of lettering that leaves its section or the panel.
+const findClashes = (page) => page.evaluate(() => {
+  const svg = document.getElementById('panel');
+  const mm = svg.viewBox.baseVal.width / svg.getBoundingClientRect().width;
+  const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left * mm, t: r.top * mm, r: r.right * mm, b: r.bottom * mm }; };
+  const owner = (e) => e.closest('.ctl')?.dataset.id || '';
+  const hits = (a, b, gap) => a.l < b.r - gap && b.l < a.r - gap && a.t < b.b - gap && b.t < a.b - gap;
+  const texts = [...svg.querySelectorAll('text')].map((e) => ({ what: `"${e.textContent}"`, id: owner(e), ...box(e) }));
+  const bodies = [...svg.querySelectorAll('.cap, .enc, .btn, .tslot, .fcap, .bezel')].map((e) => ({ what: owner(e) || 'display', id: owner(e), ...box(e) }));
+  const frame = box(svg.querySelector('.plate'));
+  const out = [];
+  for (let i = 0; i < texts.length; i++) {
+    const t = texts[i];
+    if (t.l < frame.l || t.r > frame.r || t.t < frame.t || t.b > frame.b) out.push(`${t.what} runs off the panel`);
+    for (let j = i + 1; j < texts.length; j++) if (hits(t, texts[j], 0.15)) out.push(`${t.what} on ${texts[j].what}`);
+    for (const b of bodies) if (b.id !== t.id && hits(t, b, 0.15)) out.push(`${t.what} on ${b.what}`);
+  }
+  for (let i = 0; i < bodies.length; i++)
+    for (let j = i + 1; j < bodies.length; j++)
+      if (bodies[i].id !== bodies[j].id && hits(bodies[i], bodies[j], 0)) out.push(`${bodies[i].what} on ${bodies[j].what}`);
+  // lettering must also stay inside the section outline it belongs to
+  const sections = [...svg.querySelectorAll('.section')].map(box);
+  for (const t of texts) {
+    if (!t.id) continue;
+    const s = sections.find((q) => (t.l + t.r) / 2 > q.l && (t.l + t.r) / 2 < q.r && (t.t + t.b) / 2 > q.t && (t.t + t.b) / 2 < q.b);
+    if (!s || t.l < s.l + 0.5 || t.r > s.r - 0.5 || t.t < s.t + 0.5 || t.b > s.b - 0.5) out.push(`${t.what} crosses its section's outline`);
+  }
+  return out;
+});
+
 const AMBER = [0xe8, 0xa3, 0x3d], TEAL = [0x7f, 0xe0, 0xc4], WHITE = [0xed, 0xed, 0xed];
 
 try {
@@ -113,8 +150,10 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 11, '11 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 8, '8 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.knob') === 16, '16 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 10, '10 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.toggle') === 1, '1 toggle switch', String(await count('#panel .ctl.toggle')));
+    check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
     check(await count('#panel .ctl.button') === 9, '9 buttons', String(await count('#panel .ctl.button')));
@@ -122,16 +161,60 @@ try {
 
     // the display sits where the layout says, at 4:3
     const lcd = await page.locator('#lcd').boundingBox(), panel = await page.locator('#panel').boundingBox();
-    const mm = panel.width / 464;
-    check(Math.abs((lcd.x - panel.x) / mm - 365) < 0.5 && Math.abs((lcd.y - panel.y) / mm - 106) < 0.5, 'display position', JSON.stringify(lcd));
+    const mm = panel.width / PANEL_MM;
+    check(Math.abs((lcd.x - panel.x) / mm - layout.display.x) < 0.5 && Math.abs((lcd.y - panel.y) / mm - layout.display.y) < 0.5, 'display position', JSON.stringify(lcd));
     check(Math.abs(lcd.width / mm - 48.96) < 0.3 && Math.abs(lcd.height / mm - 36.72) < 0.3, 'display size');
     check(errors.length === 0, 'no page errors before start', errors.join(' | '));
+
+    section('layout rules: spacing between controls, and no lettering on top of anything');
+    {
+      const round = layout.controls.filter((c) => ['knob', 'selector', 'encoder', 'toggle'].includes(c.type));
+      const faders = layout.controls.filter((c) => c.type === 'fader');
+      const tight = [];
+      const minKnob = layout.rules.knobSpacingMin, minFader = layout.rules.faderSpacingMin;
+      for (let i = 0; i < round.length; i++)
+        for (let j = i + 1; j < round.length; j++) {
+          const d = Math.hypot(round[i].x - round[j].x, round[i].y - round[j].y);
+          if (d < minKnob) tight.push(`${round[i].id}/${round[j].id} ${d.toFixed(1)} mm`);
+        }
+      for (let i = 0; i < faders.length; i++)
+        for (let j = i + 1; j < faders.length; j++) {
+          const d = Math.hypot(faders[i].x - faders[j].x, faders[i].y - faders[j].y);
+          if (d < minFader) tight.push(`${faders[i].id}/${faders[j].id} ${d.toFixed(1)} mm`);
+        }
+      for (const f of faders)
+        for (const r of round)
+          if (Math.abs(f.x - r.x) < 18 && Math.abs(f.y - r.y) < f.travel / 2 + 12) tight.push(`${f.id}/${r.id} too close`);
+      check(tight.length === 0, `knob, selector, encoder and switch centres at least ${minKnob} mm apart; faders at least ${minFader} mm`, tight.join(', '));
+
+      // every control, with its lettering, sits inside one section and inside the panel
+      const outside = layout.controls.filter((c) => !layout.sections.some((s) => c.x > s.x + 3 && c.x < s.x + s.w - 3 && c.y > s.y + 8 && c.y < s.y + s.h - 3)).map((c) => c.id);
+      check(outside.length === 0, 'every control is inside a section', outside.join(', '));
+
+      // measured on the drawn panel: boxes of all lettering and all control bodies
+      const clashes = await findClashes(page);
+      check(clashes.length === 0, 'no label overlaps another label, a control or a section outline', clashes.slice(0, 12).join('; '));
+    }
     await page.close();
+
+    // the overlap check must be able to fail: push one knob's label onto its neighbour
+    const broken = await open(context, {
+      start: false,
+      tweak: (p) => p.route('**/layouts/a3.json', async (route) => {
+        const res = await route.fetch();
+        const json = await res.json();
+        json.controls.find((c) => c.id === 'filter_env_amount').x -= 14;
+        await route.fulfill({ response: res, json });
+      }),
+    });
+    const found = await findClashes(broken.page);
+    check(found.length > 0, 'the overlap check notices a knob moved onto its neighbour', found.slice(0, 3).join('; '));
+    await broken.page.close();
 
     // change one position in the layout file only: the control moves
     const moved = await open(context, {
       start: false,
-      tweak: (p) => p.route('**/layouts/a2.json', async (route) => {
+      tweak: (p) => p.route('**/layouts/a3.json', async (route) => {
         const res = await route.fetch();
         const json = await res.json();
         json.controls.find((c) => c.id === 'osc1_macro').x = 70;
@@ -139,7 +222,8 @@ try {
       }),
     });
     const t = await moved.page.locator('[data-id="osc1_macro"]').getAttribute('transform');
-    check(t === 'translate(70 50)', 'editing the layout file moves the control', t);
+    const macroY = layout.controls.find((c) => c.id === 'osc1_macro').y;
+    check(t === `translate(70 ${macroY})`, 'editing the layout file moves the control', t);
     await moved.page.close();
   }
 
@@ -149,7 +233,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 45, '45 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 53, '53 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -223,6 +307,19 @@ try {
     await arc(page, 'enc2', -45, 45);                     // 90 degrees = 6 clicks
     const turned = ((await pos(page, 'enc2')) - e0 + 65536) % 65536;
     check(turned === 5 || turned === 6, 'encoder: one click per 15 degrees of turn', String(turned));
+
+    // the arpeggiator's own panel controls, and the Sync switch
+    await arc(page, 'arp_mode', -85, -51, 18);            // from OFF to UP
+    check(await pos(page, 'arp_mode') === 1, 'arp Mode selector: six stops, turned to UP', String(await pos(page, 'arp_mode')));
+    await arc(page, 'arp_mode', -51, -85, 18);
+    check(await pos(page, 'arp_mode') === 0, 'arp Mode back to OFF', String(await pos(page, 'arp_mode')));
+    const sw = await centre(page, 'osc_sync');
+    await page.mouse.click(sw.x, sw.y);
+    check(await pos(page, 'osc_sync') === 1, 'Sync switch: a tap flips it on', String(await pos(page, 'osc_sync')));
+    check(await page.locator('[data-id="osc_sync"]').evaluate((e) => e.classList.contains('lit')), 'Sync switch shows it is on');
+    await page.mouse.click(sw.x, sw.y);
+    check(await pos(page, 'osc_sync') === 0, 'Sync switch: a second tap flips it off', String(await pos(page, 'osc_sync')));
+    await sleep(1700);
 
     // scrolling over a control: a trackpad sends many small amounts
     const s0 = await pos(page, 'lfo_rate');
@@ -306,6 +403,21 @@ try {
     await sleep(150);
     check(!(await lit('btn_osc1_engine')), 'three more presses come back round to VA');
 
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100]));   // hold a chord...
+    await sleep(150);
+    await press(page, 'btn_chord');                                                                 // ...and have it remembered
+    await sleep(150);
+    check(await lit('btn_chord'), 'Chord lights once a held chord has been learned');
+    await page.evaluate(() => window.__synth.midi([0x80, 60, 0, 0x80, 64, 0, 0x80, 67, 0]));
+    await sleep(1700);
+    await page.evaluate(() => window.__synth.midi([0x90, 50, 100]));                                 // one key
+    await sleep(300);
+    check(await lcdCount(page, TEAL, 222, 236) === 3 * 64, 'with Chord on, one key sounds three voices', String(await lcdCount(page, TEAL, 222, 236)));
+    await page.evaluate(() => window.__synth.midi([0x80, 50, 0]));
+    await press(page, 'btn_chord');
+    await sleep(1700);
+    check(!(await lit('btn_chord')), 'Chord switches off again');
+
     await press(page, 'btn_hold');
     await sleep(150);
     check(await lit('btn_hold'), 'Hold lights when pressed');
@@ -319,15 +431,103 @@ try {
   }
 
   // ------------------------------------------------------------------ MIDI
-  section('AC9  a MIDI controller number moves the on-screen control');
+  section('AC9  a MIDI controller number changes the sound; the real control stays put and its label lights');
+  const IDLE = 0x96876a;                                // the firmware's plain label light
+  const led = (pg, id) => pg.evaluate((i) => window.__synth.led(i), id);
+  const labelFill = (pg, id) => pg.locator(`[data-id="${id}"] text.label`).evaluate((e) => getComputedStyle(e).fill.match(/\d+/g).map(Number));
+  const push = async (pg, id) => {                      // double tap = encoder push
+    const c = await centre(pg, id);
+    await pg.mouse.click(c.x, c.y);
+    await pg.mouse.click(c.x, c.y);
+    await sleep(250);
+  };
   {
-    await page.evaluate(() => window.__synth.midi([0xb0, 71, 100]));
-    await page.waitForFunction(() => window.__synth.position('filter_resonance') === 3224, null, { timeout: 3000 }).catch(() => {});
-    check(await pos(page, 'filter_resonance') === 3224, 'CC 71 at 100 puts Resonance at 3224', String(await pos(page, 'filter_resonance')));
-    await page.evaluate(() => window.__synth.midi([0xb0, 89, 127]));
-    await page.waitForFunction(() => window.__synth.position('voice_mode') === 2, null, { timeout: 3000 }).catch(() => {});
-    check(await pos(page, 'voice_mode') === 2, 'CC 89 at 127 turns Mode to UNI', String(await pos(page, 'voice_mode')));
-    await page.evaluate(() => window.__synth.midi([0xb0, 89, 0]));
+    const before = await pos(page, 'filter_keytrack');
+    check(await led(page, 'filter_keytrack') === IDLE, 'an untouched control has a plain label light', (await led(page, 'filter_keytrack')).toString(16));
+    const plain = await labelFill(page, 'filter_keytrack');
+    check(plain[0] > 150 && plain[0] > plain[2], 'and its label is painted warm white', plain.join(','));
+    const shown = await page.evaluate(() => window.__synth.lcdHash());
+    await page.evaluate(() => window.__synth.midi([0xb0, 86, 100]));
+    await sleep(300);
+    check(await page.evaluate(() => window.__synth.lcdHash()) !== shown, 'CC 86 brings up the Keytrack picture');
+    check(await pos(page, 'filter_keytrack') === before, 'the knob itself has not moved', `${before} -> ${await pos(page, 'filter_keytrack')}`);
+    const seen = new Set();
+    let orange = true;
+    for (let i = 0; i < 12; i++) {
+      const v = await led(page, 'filter_keytrack');
+      seen.add(v);
+      orange = orange && ((v >> 16) & 255) > (v & 255);
+      await sleep(70);
+    }
+    check(!seen.has(IDLE) && orange, 'its label light turns orange: move up to reach the value', [...seen].map((v) => v.toString(16)).join(' '));
+    check(seen.size >= 2, 'and blinks', String(seen.size));
+    const lit = await labelFill(page, 'filter_keytrack');
+    check(lit[0] > 2 * lit[2], 'the label is painted in the light\'s colour', lit.join(','));
+    await drag(page, 'filter_keytrack', -80);            // up through the value sent (knobs are in drag mode here)
+    await sleep(350);
+    check(await led(page, 'filter_keytrack') === IDLE && await pos(page, 'filter_keytrack') > 3224, 'turning the knob through the value takes over and the light goes plain',
+      `${(await led(page, 'filter_keytrack')).toString(16)} at ${await pos(page, 'filter_keytrack')}`);
+
+    await page.evaluate(() => window.__synth.midi([0xb0, 89, 127]));   // voice mode to UNI
+    await sleep(300);
+    check(await pos(page, 'voice_mode') === 0 && await led(page, 'voice_mode') !== IDLE, 'CC 89 leaves the Mode selector on POLY, with its light on');
+    const stop = async (id, name) => {
+      const box = await page.locator(`[data-id="${id}"] text.stop`, { hasText: new RegExp(`^${name}$`) }).boundingBox();
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await sleep(300);
+    };
+    await stop('voice_mode', 'MONO');
+    check(await pos(page, 'voice_mode') === 1 && await led(page, 'voice_mode') !== IDLE, 'one click: the selector is live but still off the value, light stays on');
+    await stop('voice_mode', 'UNI');
+    check(await led(page, 'voice_mode') === IDLE, 'on the value\'s stop the light goes plain');
+    await stop('voice_mode', 'POLY');
+  }
+
+  section('patches: saved from the Patch page, loaded without moving a control, lights guide the panel back');
+  {
+    const lit = (id) => page.locator(`[data-id="${id}"]`).evaluate((e) => e.classList.contains('lit'));
+    await sleep(1700);
+    await press(page, 'btn_patch');
+    await sleep(200);
+    check(await lit('btn_patch'), 'Patch button lights');
+    await page.screenshot({ path: path.join(shotDir, 'page_patch.png') });
+    await push(page, 'enc4');                           // Manual: every control live where it stands
+    const labelled = layout.controls.filter((d) => ['knob', 'fader', 'selector', 'toggle'].includes(d.type)).map((d) => d.id);
+    const offs = [];
+    for (const id of labelled) if (await led(page, id) !== IDLE) offs.push(id);
+    check(labelled.length === 39 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
+
+    const saves = await page.evaluate(() => window.__synth.patchSaves);
+    await drag(page, 'enc1', -24);                      // two clicks: slot 3
+    await push(page, 'enc2');                           // save here
+    await page.waitForFunction((n) => window.__synth.patchSaves > n, saves, { timeout: 3000 }).catch(() => {});
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('synth.patches.v1') || '[]'));
+    check(stored.length === 16 && typeof stored[2] === 'string' && stored.filter(Boolean).length === 1, 'the patch is stored in slot 3 of 16', JSON.stringify(stored.map((x) => !!x)));
+
+    const cutSaved = await pos(page, 'filter_cutoff');
+    await drag(page, 'filter_cutoff', 60);              // turn Cutoff well down
+    await sleep(300);
+    const cutMoved = await pos(page, 'filter_cutoff');
+    check(cutMoved < cutSaved - 800, 'set-up: Cutoff turned down', `${cutSaved} -> ${cutMoved}`);
+    await push(page, 'enc1');                           // load slot 3
+    await sleep(300);
+    check(await pos(page, 'filter_cutoff') === cutMoved, 'loading does not move the knob');
+    const v = await led(page, 'filter_cutoff');
+    check(v !== IDLE && ((v >> 16) & 255) > (v & 255), 'Cutoff\'s label lights orange: turn up to reach the patch', v.toString(16));
+    await page.screenshot({ path: path.join(shotDir, 'page_patch_guiding.png') });
+    await drag(page, 'filter_cutoff', -10);             // a little way, not there yet
+    await sleep(300);
+    check(await led(page, 'filter_cutoff') !== IDLE, 'part of the way back, the light is still on');
+    check(await lcdCount(page, WHITE, 100, 130) > 80, 'and the display shows the pick-up picture', String(await lcdCount(page, WHITE, 100, 130)));
+    await drag(page, 'filter_cutoff', -80);             // through the stored value
+    await sleep(300);
+    check(await led(page, 'filter_cutoff') === IDLE && await pos(page, 'filter_cutoff') >= cutSaved, 'through the patch\'s value the knob takes over and the light goes plain',
+      `${(await led(page, 'filter_cutoff')).toString(16)} at ${await pos(page, 'filter_cutoff')} (patch ${cutSaved})`);
+    await sleep(1700);
+    await press(page, 'btn_patch');                     // the Name page
+    await press(page, 'btn_patch');                     // home
+    await sleep(200);
+    check(!(await lit('btn_patch')), 'two more presses return home');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');
@@ -373,17 +573,24 @@ try {
     const want = {};
     for (const id of ids) want[id] = await pos(page, id);
     const blob = await page.evaluate(() => localStorage.getItem('synth.state.v1'));
-    check(ids.length === 32 && blob && blob.length > 50, 'state is stored for the next visit');
+    check(ids.length === 40 && blob && blob.length > 50, 'state is stored for the next visit');
     await page.close();
 
     const again = await open(context);
     let wrong = [];
     for (const id of ids) if (await pos(again.page, id) !== want[id]) wrong.push(id);
-    check(wrong.length === 0, 'all 32 controls are where they were left', wrong.join(', '));
+    check(wrong.length === 0, 'all 40 controls are where they were left', wrong.join(', '));
     check(want.filter_cutoff > 3000 && want.osc1_wave === 3, 'and those are the moved positions, not defaults');
     check(await again.page.evaluate(() => localStorage.getItem('synth.state.v1')) === blob, 'saved state is unchanged by the reload');
     check(again.errors.length === 0, 'no page errors', again.errors.join(' | '));
     await again.page.screenshot({ path: path.join(shotDir, 'page.png') });
+    // the stored patch is still in its slot, and still the one loaded
+    await press(again.page, 'btn_patch');
+    await sleep(300);
+    check(await lcdCount(again.page, AMBER, 78, 104) > 300, 'after a reload the Patch page still shows the stored patch as loaded', String(await lcdCount(again.page, AMBER, 78, 104)));
+    await press(again.page, 'btn_patch');
+    await press(again.page, 'btn_patch');
+    await sleep(200);
 
     // ---------------------------------------------------------------- AC2
     section('AC2  1:1 view uses the calibrated scale');
@@ -394,9 +601,11 @@ try {
     check(Math.abs(card.width - 85.6 * 4.25) < 1.5 && Math.abs(card.height - 53.98 * 4.25) < 1.5, 'calibration outline is one bank card at the chosen scale', JSON.stringify(card));
     await again.page.click('#cal-save');
     const w = (await again.page.locator('#panel').boundingBox()).width;
-    check(Math.abs(w - 464 * 4.25) < 1, '1:1 panel is 464 mm at the calibrated scale', String(w));
+    check(Math.abs(w - PANEL_MM * 4.25) < 1, `1:1 panel is ${PANEL_MM} mm at the calibrated scale`, String(w));
     const a = await again.page.locator('[data-id="lfo_rate"] .cap').boundingBox(), b = await again.page.locator('[data-id="lfo_depth"] .cap').boundingBox();
-    check(Math.abs((b.x - a.x) / 4.25 - 22) < 0.1, 'two knobs 22 mm apart in the file are 22 mm apart on screen', String((b.x - a.x) / 4.25));
+    const xOf = (id) => layout.controls.find((c) => c.id === id).x;
+    const apart = xOf('lfo_depth') - xOf('lfo_rate');
+    check(Math.abs((b.x - a.x) / 4.25 - apart) < 0.1, `two knobs ${apart} mm apart in the file are ${apart} mm apart on screen`, String((b.x - a.x) / 4.25));
     check(await again.page.evaluate(() => { const s = document.getElementById('stage'); return s.scrollWidth > s.clientWidth; }), 'the 1:1 panel can be panned');
     await again.page.click('#view-toggle');
     check((await again.page.locator('#panel').boundingBox()).width < 1500, 'toggling back fits the panel to the window');

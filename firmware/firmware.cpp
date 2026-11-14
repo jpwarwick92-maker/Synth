@@ -12,15 +12,18 @@ namespace {
 
 const char* const kEncoderNames[kNumEncoders] = {"enc1", "enc2", "enc3", "enc4"};
 const char* const kButtonNames[kNumButtons] = {
-    "btn_fx1", "btn_fx2", "btn_mod", "btn_arp", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine",
-    "btn_hold",
+    "btn_fx1", "btn_fx2", "btn_mod", "btn_engine", "btn_patch", "btn_osc1_engine", "btn_osc2_engine", "btn_hold",
+    "btn_chord",
 };
-constexpr int kButtonOsc1Engine = MB_COUNT, kButtonOsc2Engine = MB_COUNT + 1, kButtonHold = MB_COUNT + 2;
+// after the mode buttons: oscillator 1's engine button, oscillator 2's, Hold, Chord
+constexpr int kButtonOsc1Engine = MB_COUNT, kButtonHold = MB_COUNT + 2, kButtonChord = MB_COUNT + 3;
 
 constexpr uint32_t kSaveDelayMs = 1000;  // save once the controls have been still this long
 // Version 2: the LFO Shape control became a five-stop selector. Version 1
 // stored it as a pot position; that is converted on loading.
-constexpr uint8_t kStateVersion = 2;
+// Version 3: arp Tempo and Gate became panel pots (they were stepped encoder values).
+// Version 4: the panel's positions and the loaded patch follow the parameters.
+constexpr uint8_t kStateVersion = 4;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
@@ -42,18 +45,25 @@ uint32_t stateWrite(uint8_t* dst) {
     *p++ = (uint8_t)(v >> 8);
     sum = (uint16_t)(sum * 31u + v + 1u);
   }
+  uint32_t extra = gPatch.stateWrite(p);
+  for (uint32_t i = 0; i < extra; ++i) sum = (uint16_t)(sum * 31u + p[i] + 1u);
+  p += extra;
   *p++ = (uint8_t)(sum & 0xFF);
   *p++ = (uint8_t)(sum >> 8);
-  return kStateSize;
+  return (uint32_t)(p - dst);
 }
 
 bool stateRead(const uint8_t* src, uint32_t len) {
   if (len < 8 || len > kStateSize) return false;
   if (src[0] != 'S' || src[1] != 'Y' || src[2] != 'N' || src[3] != 'T') return false;
   uint8_t version = src[4];
-  if (version != 1 && version != kStateVersion) return false;
+  if (version < 1 || version > kStateVersion) return false;
   int count = src[5];  // parameters are only ever added at the end, so an older blob is a prefix
-  if (count < 1 || count > P_COUNT || len != 6u + (uint32_t)count * 2u + 2u) return false;
+  if (count < 1 || count > P_COUNT) return false;
+  uint32_t paramsEnd = 6u + (uint32_t)count * 2u;
+  if (len < paramsEnd + 2u) return false;
+  uint32_t extra = len - paramsEnd - 2u;  // the panel's part, from version 4 on
+  if (version < 4 ? extra != 0 : !PatchPanel::stateValid(src + paramsEnd, extra)) return false;
   uint16_t sum = 0;
   const uint8_t* p = src + 6;
   for (int i = 0; i < count; ++i) {
@@ -61,20 +71,27 @@ bool stateRead(const uint8_t* src, uint32_t len) {
     p += 2;
     sum = (uint16_t)(sum * 31u + v + 1u);
   }
+  for (uint32_t i = 0; i < extra; ++i) sum = (uint16_t)(sum * 31u + *p++ + 1u);
   if ((uint16_t)(p[0] | (p[1] << 8)) != sum) return false;
   p = src + 6;
   for (int i = 0; i < count; ++i) {
     int v = p[0] | (p[1] << 8);
     if (version == 1 && i == P_LFO_SHAPE) v = mapLfoShape((float)v * (1.0f / (float)kPotMax));
+    if (version < 3 && i == P_ARP_TEMPO) v = v * kPotMax / 200;  // was 0..200 for 40..240 BPM
+    if (version < 3 && i == P_ARP_GATE) v = v * kPotMax / 19;    // was 0..19 for 5..100%
     gParams.set(i, v);
     p += 2;
   }
+  gPatch.syncToParams();
+  if (version >= 4) gPatch.stateRead(src + paramsEnd, extra);
   return true;
 }
 
 void init(float sampleRate) {
   tablesInit();
   gParams.reset();
+  gPatch.init();
+  gPatch.scanSlots();
   uint8_t blob[kStateSize];
   uint32_t n = fw_hal_storage_load(blob, kStateSize);
   if (n > 0) stateRead(blob, n);
@@ -90,14 +107,27 @@ void process(float* outL, float* outR, int n) { gSynth.process(outL, outR, n); }
 void midiByte(uint8_t b) { gMidi.byte(b); }
 
 void onParamChanged(int id) {
+  if (id != P_VOLUME && id != P_HOLD) gPatch.markEdited();
   gUi.paramChanged(id);
   gSaveMs = kSaveDelayMs;
 }
 
+void stateTouched() { gSaveMs = kSaveDelayMs; }
+
+bool patchLoad(int slot) {
+  if (!gPatch.load(slot)) return false;
+  gUi.patchLoaded();
+  return true;
+}
+
+uint32_t ledColour(int index) { return gPatch.led(index); }
+
+int controlParam(int index) { return index >= 0 && index < kFirstEncoder ? kPanelParams[index] : -1; }
+
 ControlInfo controlInfo(int index) {
   if (index < 0 || index >= kNumControls) return ControlInfo{"", CK_BUTTON, 0};
   if (index < kFirstEncoder) {
-    const ParamDef& d = kParams[index];
+    const ParamDef& d = kParams[kPanelParams[index]];
     if (d.kind == PK_STEP) return ControlInfo{d.key, CK_SELECTOR, d.steps};
     return ControlInfo{d.key, CK_POT, 0};
   }
@@ -107,8 +137,8 @@ ControlInfo controlInfo(int index) {
 
 void controlSet(int index, int raw) {
   if (index < 0 || index >= kNumControls) return;
-  if (index < kFirstEncoder) {  // pot or selector: the control is the parameter
-    if (gParams.set(index, raw)) onParamChanged(index);
+  if (index < kFirstEncoder) {  // pot, selector or switch: the parameter, unless it is following a patch
+    gPatch.moved(index, raw);
     return;
   }
   if (raw == 0) return;  // buttons and encoder pushes act when pressed
@@ -119,6 +149,8 @@ void controlSet(int index, int raw) {
   int b = index - kFirstButton;
   if (b < MB_COUNT) {
     gUi.modeButton(b);
+  } else if (b == kButtonChord) {  // learns the chord being held, or forgets it
+    gSynth.post(EV_CHORD);
   } else if (b == kButtonHold) {  // Hold latches; press again to let go
     gParams.set(P_HOLD, gParams.step(P_HOLD) ? 0 : 1);
     onParamChanged(P_HOLD);
@@ -138,17 +170,19 @@ void encoderTurn(int index, int delta) {
 
 int controlGet(int index) {
   if (index < 0 || index >= kNumControls) return 0;
-  if (index < kFirstEncoder) return gParams.val[index];
+  if (index < kFirstEncoder) return gPatch.position(index);
   if (index < kFirstButton) return gEncoderPos[index - kFirstEncoder];
   int b = index - kFirstButton;
   if (b < MB_COUNT) return gUi.mode() == b ? 1 : 0;
   if (b == kButtonHold) return gParams.step(P_HOLD);
+  if (b == kButtonChord) return gSynth.chordOn() ? 1 : 0;
   // an engine button is lit while its oscillator is on anything but the plain VA engine
   return gParams.step(b == kButtonOsc1Engine ? P_OSC1_ENGINE : P_OSC2_ENGINE) != ENG_VA ? 1 : 0;
 }
 
 bool tick(uint32_t dtMs) {
   gMidi.tick(dtMs);
+  gPatch.tick(dtMs);
   if (gSaveMs > 0) {
     if (gSaveMs > dtMs) {
       gSaveMs -= dtMs;

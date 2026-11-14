@@ -14,7 +14,7 @@ Ui gUi;
 
 namespace {
 
-const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ARP", "ENGINE", "PATCH"};
+const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ENGINE", "PATCH"};
 
 // The soft-control pages. One parameter per encoder, in encoder order
 // (left-top, left-bottom, right-top, right-bottom); kNone leaves a slot empty.
@@ -28,11 +28,14 @@ const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
     /* FX 2   */ {{"CHORUS + REVERB", {P_CHORUS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
     /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
-    /* ARP    */ {{"ARP", {P_ARP_MODE, P_ARP_TEMPO, P_ARP_OCTAVES, P_ARP_GATE}}, {nullptr, {}}},
     /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
-    /* PATCH  */ {{nullptr, {}}, {nullptr, {}}},
+    // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
+    /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}}},
 };
+
+constexpr uint16_t kArmMs = 3000, kNoteMs = 2000;
+const char* const kGuideLabels[GUIDE_COUNT] = {"OFF", "TINT", "ON"};
 
 int pageCount(int mode) {
   int n = 0;
@@ -59,7 +62,10 @@ const char* paramName(int id) {
   if (osc >= 0) {
     int e = engineOf(osc);
     if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) return kEngineWaveName[e];
-    if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) return kEngineMacroName[e];
+    if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) {
+      bool super = e == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
+      return super ? "SAW DETUNE" : kEngineMacroName[e];  // under the supersaw, Macro spreads the seven saws
+    }
     if (id == P_OSC1_COLOR || id == P_OSC2_COLOR) return kEngineColorName[e];
   }
   return kParams[id].name;
@@ -125,7 +131,13 @@ void formatParam(int id, Str& s) {
   int osc = oscOf(id);
   int engine = osc >= 0 ? engineOf(osc) : ENG_VA;
   if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) {  // the stops mean something else under each engine
-    s.add(kEngineWaveLabels[engine][st & 3]);
+    s.add(kEngineWaveLabels[engine][st < WAVE_COUNT ? st : 0]);
+    return;
+  }
+  bool superSaw = osc >= 0 && engine == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
+  if ((id == P_OSC1_MACRO || id == P_OSC2_MACRO) && superSaw) {
+    s.addInt((int)((id == P_OSC1_MACRO ? n : gParams.frac(id)) * 100.0f + 0.5f));
+    s.add('%');
     return;
   }
   if (id == P_OSC1_MACRO && engine != ENG_VA) {
@@ -146,11 +158,11 @@ void formatParam(int id, Str& s) {
       break;
     case U_INT_PLAIN: s.addInt(st + d.intMin); break;
     case U_BPM:
-      s.addInt(st + d.intMin);
+      s.addInt((int)mapTempoBpm(n));
       s.add(" BPM");
       break;
     case U_GATE:
-      s.addInt((st + 1) * 5);
+      s.addInt((int)(mapArpGate(n) * 100.0f + 0.5f));
       s.add('%');
       break;
     case U_DLY_TIME: s.addTime(mapDelayTime(gParams.frac(id))); break;
@@ -259,6 +271,7 @@ void drawStatus() {
   const int y = 222;
   for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kTeal : kDarkGrey);
   if (gParams.step(P_HOLD)) gfxText(104, y, "HOLD", kAmber, 2);
+  else if (gSynth.chordOn()) gfxText(104, y, "CHRD", kAmber, 2);
   else gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
 
   float peak = minf(gSynth.peakLevel(), 1.0f);
@@ -306,13 +319,23 @@ float waveShape(int wave, float ph, float pw) {
 // One point of an oscillator's wave as it is set now, whichever engine it runs.
 float oscShape(int osc, float ph) {
   int engine = engineOf(osc);
-  int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) & 3;
+  int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE);
+  if (wave >= WAVE_COUNT) wave = 0;
   float macro = osc == 0 ? gParams.norm(P_OSC1_MACRO) : gParams.frac(P_OSC2_MACRO);
   float color = gParams.frac(osc == 0 ? P_OSC1_COLOR : P_OSC2_COLOR);
   switch (engine) {
-    case ENG_VA: return waveShape(wave, ph, mapPulseWidth(macro));
+    case ENG_VA:
+      if (wave == WAVE_SUPER) {  // a few of the seven saws, drifting apart as the detune goes up
+        float spread = 0.05f + 0.95f * macro * macro;
+        float a = 2.0f * ph - 1.0f;
+        float p2 = ph * (1.0f + 0.11f * spread) + 0.31f, p3 = ph * (1.0f - 0.11f * spread) + 0.67f;
+        p2 -= floorf_(p2);
+        p3 -= floorf_(p3);
+        return (a + 0.6f * (2.0f * p2 - 1.0f) + 0.6f * (2.0f * p3 - 1.0f)) * 0.5f;
+      }
+      return waveShape(wave, ph, mapPulseWidth(macro));
     case ENG_FM: {
-      static const float kRatios[4] = {1.0f, 2.0f, 3.0f, 3.5f};
+      static const float kRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f};
       float m = sinf_(kTwoPi * ph * kRatios[wave]);
       return sinf_(kTwoPi * ph + macro * macro * 8.0f * m);
     }
@@ -334,10 +357,11 @@ void drawOscWave(int osc) {
   const int x0 = 10, w = 300, mid = 138, amp = 64;
   gfxHLine(x0, mid, w, kGrid);
   bool once = engineOf(osc) == ENG_PLUCK;  // a pluck is one event, not a repeating wave
+  bool super = engineOf(osc) == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
   int py = 0;
   for (int px = 0; px < w; ++px) {
-    float ph = (float)px * ((once ? 1.0f : 2.0f) / (float)w);
-    if (!once) ph -= floorf_(ph);
+    float ph = (float)px * ((once ? 1.0f : super ? 4.0f : 2.0f) / (float)w);
+    if (!once && !super) ph -= floorf_(ph);
     int yy = clampi(mid - (int)(oscShape(osc, ph) * (float)amp), 56, 216);
     plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
     py = yy;
@@ -368,38 +392,146 @@ float filterStage(float w, float k, int type) {
   }
 }
 
-// The filter's frequency response, 20 Hz to 20 kHz, as it is set right now.
-void drawFilterCurve() {
-  const int x0 = 8, w = 304, y0 = 54, h = 156;
-  const float topDb = 18.0f, rangeDb = 66.0f;
-  int zero = y0 + (int)(topDb / rangeDb * (float)h);
-  gfxHLine(x0, zero, w, kGrid);
+// Spread: where each of the eight voices sits between the two speakers.
+void drawSpread() {
+  static const float kPan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
+  const int mid = 160, half = 130, y = 128;
+  float spread = gParams.norm(P_SPREAD);
+  gfxHLine(mid - half, y + 5, 2 * half + 1, kGrid);
+  gfxVLine(mid, y - 30, 70, kGrid);
+  for (int i = 0; i < kNumVoices; ++i) {
+    int x = mid + (int)(kPan[i] * spread * (float)half);
+    gfxFill(x - 5, y - 14 + (i % 4) * 9, 10, 8, gSynth.voiceActive(i) ? kAmber : kTeal);
+  }
+  gfxText(mid - half, 190, "L", kGrey, 2);
+  gfxTextRight(mid + half, 190, "R", kGrey, 2);
+}
+
+// ---- the filter pictures ----
+// All share one frame: frequency left to right, 20 Hz to 20 kHz, level up and down.
+constexpr int kFx0 = 8, kFw = 304, kFy0 = 54, kFh = 156;
+constexpr float kFTopDb = 18.0f, kFRangeDb = 66.0f;
+
+int freqX(float hz) { return kFx0 + clampi((int)(log2f_(maxf(hz, 20.0f) / 20.0f) * 0.1f * (float)kFw), 0, kFw - 1); }
+
+void drawFilterAxes() {
+  int zero = kFy0 + (int)(kFTopDb / kFRangeDb * (float)kFh);
+  gfxHLine(kFx0, zero, kFw, kGrid);
   static const float kMarks[3] = {100.0f, 1000.0f, 10000.0f};
   static const char* const kMarkNames[3] = {"100", "1k", "10k"};
   for (int i = 0; i < 3; ++i) {
-    int x = x0 + (int)(log2f_(kMarks[i] / 20.0f) * 0.1f * (float)w);
-    gfxVLine(x, y0, h, kGrid);
-    gfxTextCentre(x, y0 + h + 4, kMarkNames[i], kGrey, 2);
+    int x = freqX(kMarks[i]);
+    gfxVLine(x, kFy0, kFh, kGrid);
+    gfxTextCentre(x, kFy0 + kFh + 4, kMarkNames[i], kGrey, 2);
   }
+}
 
-  float fc = mapCutoffHz(gParams.norm(P_CUTOFF));
+// The filter's response with its cutoff at `fc`, everything else as set now.
+void plotFilter(float fc, Colour c) {
   float q = mapResonanceQ(gParams.norm(P_RESONANCE));
   float k = 1.0f / q;
   float comp = q > 1.0f ? 1.0f / sqrtf_(q) : 1.0f;
   int type = gParams.step(P_FILT_TYPE);
-  bool slope24 = gParams.step(P_FILT_SLOPE) == 1;
-
+  int slope = gParams.step(P_FILT_SLOPE);
+  float lk = mapLadderFeedback(gParams.norm(P_RESONANCE));
   int py = 0;
-  for (int px = 0; px < w; ++px) {
-    float f = 20.0f * exp2f_(10.0f * (float)px / (float)(w - 1));
+  for (int px = 0; px < kFw; ++px) {
+    float f = 20.0f * exp2f_(10.0f * (float)px / (float)(kFw - 1));
     float wn = f / fc;
-    float mag = filterStage(wn, k, type) * comp;
-    if (slope24) mag *= filterStage(wn, 1.41421356f, type);
+    float mag;
+    if (slope == SLOPE_LADDER) {  // four stages and their feedback: (1 + jw)^4 + k
+      float a = 1.0f - wn * wn, b = 2.0f * wn;
+      float re = a * a - b * b + lk, im = 2.0f * a * b;
+      mag = (1.0f + 0.5f * lk) / sqrtf_(maxf(re * re + im * im, 1e-12f));
+    } else {
+      mag = filterStage(wn, k, type) * comp;
+      if (slope == SLOPE_24) mag *= filterStage(wn, 1.41421356f, type);
+    }
     float db = 6.0206f * log2f_(maxf(mag, 1e-6f));
-    int yy = clampi(y0 + (int)((topDb - db) / rangeDb * (float)h), y0, y0 + h - 2);
-    plotColumn(x0 + px, px > 0 ? py : yy, yy, kTeal);
+    int yy = clampi(kFy0 + (int)((kFTopDb - db) / kFRangeDb * (float)kFh), kFy0, kFy0 + kFh - 2);
+    plotColumn(kFx0 + px, px > 0 ? py : yy, yy, c);
     py = yy;
   }
+}
+
+float cutoffNow() { return mapCutoffHz(gParams.norm(P_CUTOFF)); }
+float clampCutoff(float hz) { return clampf(hz, 20.0f, 20480.0f); }
+
+// Cutoff, Resonance, Type: the response as it is set right now.
+void drawFilterCurve() {
+  drawFilterAxes();
+  plotFilter(cutoffNow(), kTeal);
+}
+
+// Env amount: where the filter rests, where the envelope pushes it at its
+// peak, and an arrow for the sweep between the two.
+void drawFilterEnvAmount() {
+  drawFilterAxes();
+  float rest = cutoffNow();
+  float oct = mapEnvAmtOct(gParams.norm(P_FILT_ENV_AMT));
+  float peak = clampCutoff(rest * exp2f_(oct));
+  if (oct == 0.0f) {
+    plotFilter(rest, kTeal);
+    gfxTextCentre(160, kFy0 + 2, "NO SWEEP", kGrey, 2);
+    return;
+  }
+  plotFilter(rest, kDimTeal);
+  plotFilter(peak, kAmber);
+  int x0 = freqX(rest), x1 = freqX(peak), y = kFy0 + 6;
+  if (x1 == x0) {  // the cutoff is already as far as it goes that way: nothing left to sweep
+    gfxTextCentre(160, kFy0 + 2, oct > 0.0f ? "CUTOFF ALREADY OPEN" : "CUTOFF ALREADY SHUT", kGrey, 2);
+    return;
+  }
+  int dir = x1 > x0 ? 1 : -1;
+  gfxFill(x0 < x1 ? x0 : x1, y, (x1 > x0 ? x1 - x0 : x0 - x1) + 1, 2, kAmber);
+  for (int i = 1; i <= 5; ++i) gfxFill(x1 - dir * i, y - i, 2, 2 * i + 2, kAmber);  // arrow head at the peak end
+  gfxFill(x0, y - 4, 2, 10, kAmber);                                               // a tick where it rests
+}
+
+// Keytrack: the response for a low, a middle and a high key. With no
+// tracking the three sit on top of each other; with full tracking the
+// filter moves two octaves for two octaves of keys.
+void drawFilterKeytrack() {
+  drawFilterAxes();
+  float kt = gParams.norm(P_KEYTRACK);
+  float mid = cutoffNow();
+  float low = clampCutoff(mid * exp2f_(-2.0f * kt)), high = clampCutoff(mid * exp2f_(2.0f * kt));
+  plotFilter(low, kDimTeal);
+  plotFilter(high, kDimTeal);
+  plotFilter(mid, kTeal);
+  int xl = freqX(low), xm = freqX(mid), xh = freqX(high);
+  if (xh - xl < 60) {
+    gfxTextCentre(160, kFy0 + 2, kt < 0.02f ? "SAME FOR EVERY KEY" : "LOW AND HIGH KEYS", kGrey, 2);
+    return;
+  }
+  gfxTextCentre(clampi(xl, 20, 300), kFy0 + 2, "C2", kGrey, 2);
+  gfxTextCentre(clampi(xh, 20, 300), kFy0 + 2, "C6", kGrey, 2);
+  if (xm - xl > 44 && xh - xm > 44) gfxTextCentre(xm, kFy0 + 2, "C4", kTeal, 2);
+}
+
+// Drive: a smooth wave going in (dim) and what the two saturators make of
+// it (bright). The squarer it gets, the more harmonics are added.
+void drawFilterDrive() {
+  const int x0 = 10, w = 300, mid = 132, amp = 62;
+  gfxHLine(x0, mid, w, kGrid);
+  DriveSettings d = mapDrive(gParams.norm(P_DRIVE));
+  const float kIn = 0.5f, kBetween = 0.3f;  // typical levels at the two stages
+  auto through = [&](float x) {
+    return driveStage(driveStage(x, d.pre, d.preTrim, d.mix) * (kBetween / kIn), d.post, d.postTrim, d.mix);
+  };
+  float full = through(kIn);
+  int pyIn = 0, pyOut = 0;
+  for (int px = 0; px < w; ++px) {
+    float s = sinf_(kTwoPi * 2.0f * (float)px / (float)w);
+    float out = through(s * kIn) / full;
+    int yIn = mid - (int)(s * (float)amp), yOut = mid - (int)(out * (float)amp);
+    plotColumn(x0 + px, px > 0 ? pyIn : yIn, yIn, kGrey);
+    pyIn = yIn;
+    plotColumn(x0 + px, px > 0 ? pyOut : yOut, yOut, kTeal);
+    pyOut = yOut;
+  }
+  gfxText(8, 204, "IN", kGrey, 2);
+  gfxTextRight(312, 204, "OUT", kTeal, 2);
 }
 
 void drawAdsr(int firstParam, int selected) {
@@ -472,7 +604,90 @@ void Ui::init() {
   page_ = 0;
   popupParam_ = -1;
   popupMs_ = 0;
+  popupPickup_ = false;
   for (int i = 0; i < 4; ++i) burst_[i] = 0;
+  browse_ = 0;
+  cursor_ = 0;
+  armMs_ = 0;
+  noteMs_ = 0;
+  note_ = "";
+  dirty_ = true;
+}
+
+void Ui::say(const char* text) {
+  note_ = text;
+  noteMs_ = kNoteMs;
+  dirty_ = true;
+}
+
+void Ui::pickup(int id) {
+  popupParam_ = (int16_t)id;
+  popupPickup_ = true;
+  popupMs_ = kPopupMs;
+  dirty_ = true;
+}
+
+void Ui::patchLoaded() {
+  browse_ = (int8_t)(gPatch.slot() >= 0 ? gPatch.slot() : 0);
+  armMs_ = 0;
+  popupParam_ = -1;
+  popupMs_ = 0;
+  say("LOADED");
+}
+
+// The Patch pages. Page 1: encoder 1 picks a slot and loads it when pushed,
+// encoder 2 saves, encoder 3 sets what the label lights do, encoder 4 drops
+// the patch and makes the panel live. Page 2 edits the name.
+void Ui::patchTurn(int enc, int delta) {
+  popupParam_ = -1;  // using the page brings it back in front of any control's picture
+  popupMs_ = 0;
+  if (page_ == 0) {
+    if (enc == 0) {
+      browse_ = (int8_t)clampi(browse_ + delta, 0, kPatchSlots - 1);
+      armMs_ = 0;
+      noteMs_ = 0;
+    } else if (enc == 2) {
+      gPatch.setGuide(gPatch.guide() + delta);
+    }
+  } else {
+    if (enc == 0) {
+      cursor_ = (uint8_t)clampi((int)cursor_ + delta, 0, kPatchNameLen - 1);
+    } else if (enc == 2) {
+      int count = 0;
+      while (kNameChars[count]) ++count;
+      int i = (nameCharIndex(gPatch.name()[cursor_]) + delta) % count;
+      gPatch.setNameChar(cursor_, kNameChars[i < 0 ? i + count : i]);
+    }
+  }
+  dirty_ = true;
+}
+
+void Ui::patchPush(int enc) {
+  popupParam_ = -1;
+  popupMs_ = 0;
+  if (page_ == 0) {
+    if (enc == 0) {
+      armMs_ = 0;
+      if (gPatch.load(browse_)) say("LOADED");
+      else say("NOTHING STORED HERE");
+    } else if (enc == 1) {
+      if (gPatch.slotUsed(browse_) && armMs_ == 0) {  // never overwrite on a single push
+        armMs_ = kArmMs;
+        say("PUSH AGAIN TO OVERWRITE");
+      } else {
+        armMs_ = 0;
+        gPatch.save(browse_);
+        say("SAVED");
+      }
+    } else if (enc == 2) {
+      gPatch.setGuide((gPatch.guide() + 1) % GUIDE_COUNT);
+    } else if (enc == 3) {
+      gPatch.manual();
+      say("PANEL IS LIVE");
+    }
+  } else if (enc == 0) {
+    cursor_ = (uint8_t)((cursor_ + 1) % kPatchNameLen);  // push steps along the name
+  }
   dirty_ = true;
 }
 
@@ -493,6 +708,7 @@ void Ui::paramChanged(int id) {
       return;
     }
   popupParam_ = (int16_t)id;
+  popupPickup_ = false;
   popupMs_ = kPopupMs;
   dirty_ = true;
 }
@@ -502,6 +718,11 @@ void Ui::modeButton(int which) {
   if (mode_ != which) {
     mode_ = (int8_t)which;
     page_ = 0;
+    if (which == MB_PATCH) {
+      browse_ = (int8_t)(gPatch.slot() >= 0 ? gPatch.slot() : 0);
+      armMs_ = 0;
+      noteMs_ = 0;
+    }
   } else if (page_ + 1 < pageCount(which)) {
     ++page_;  // the lit button steps to the mode's next page
   } else {
@@ -514,6 +735,10 @@ void Ui::modeButton(int which) {
 }
 
 void Ui::encoderTurn(int enc, int delta) {
+  if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
+    patchTurn(enc, delta);
+    return;
+  }
   int id = pageParam(enc);
   if (id < 0) return;
   // Long ranges would take many turns one click at a time: a fast spin
@@ -527,6 +752,10 @@ void Ui::encoderTurn(int enc, int delta) {
 }
 
 void Ui::encoderPush(int enc) {
+  if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
+    patchPush(enc);
+    return;
+  }
   int id = pageParam(enc);
   if (id < 0) return;
   if (gParams.set(id, kParams[id].def)) onParamChanged(id);  // push = back to default
@@ -534,6 +763,8 @@ void Ui::encoderPush(int enc) {
 
 bool Ui::tick(uint32_t dtMs) {
   for (int i = 0; i < 4; ++i) burst_[i] = 0;
+  armMs_ = armMs_ > dtMs ? (uint16_t)(armMs_ - dtMs) : 0;
+  noteMs_ = noteMs_ > dtMs ? (uint16_t)(noteMs_ - dtMs) : 0;
 
   bool popup = popupMs_ > 0;
   if (popup) {
@@ -558,13 +789,126 @@ bool Ui::tick(uint32_t dtMs) {
   return true;
 }
 
+// "07 BRASS" for a stored patch, "-- INIT" for a sound that has no slot yet.
+static void patchTitle(Str& s, int slot, const char* name) {
+  if (slot < 0) {
+    s.add("--");
+  } else {
+    if (slot + 1 < 10) s.add('0');
+    s.addInt(slot + 1);
+  }
+  s.add(' ');
+  int len = kPatchNameLen;
+  while (len > 0 && name[len - 1] == ' ') --len;
+  for (int i = 0; i < len; ++i) s.add(name[i]);
+}
+
 void Ui::drawHome() {
-  gfxTextCentre(160, 10, "001 INIT", kAmber, 2);
+  Str title;
+  patchTitle(title, gPatch.slot(), gPatch.name());
+  if (gPatch.edited()) title.add(" *");  // changed since it was loaded or saved
+  gfxTextCentre(160, 10, title.b, kAmber, 2);
   drawScope(8, 40, 304, 168);
   drawStatus();
 }
 
+// The four corner captions of a Patch page, one per encoder.
+static void drawCorners(const char* const label[4], const char* const value[4]) {
+  static const int kLabelY[2] = {30, 164};
+  for (int e = 0; e < 4; ++e) {
+    int y = kLabelY[e & 1];
+    if (e < 2) {
+      gfxText(8, y, label[e], kDimTeal, 2);
+      gfxText(8, y + 16, value[e], kWhite, 3);
+    } else {
+      gfxTextRight(312, y, label[e], kDimTeal, 2);
+      gfxTextRight(312, y + 16, value[e], kWhite, 3);
+    }
+  }
+}
+
+void Ui::drawPatchPage() {
+  gfxTextCentre(160, 6, "PATCH 1/2", kAmber, 2);
+  Str slotNo;
+  if (browse_ + 1 < 10) slotNo.add('0');
+  slotNo.addInt(browse_ + 1);
+  int following = gPatch.followCount();
+  const char* const label[4] = {"SLOT/LOAD", "SAVE HERE", "GUIDE", "MANUAL"};
+  const char* const value[4] = {slotNo.b, armMs_ > 0 ? "SURE?" : "PUSH", kGuideLabels[gPatch.guide()], following > 0 ? "PUSH" : "--"};
+  drawCorners(label, value);
+
+  bool used = gPatch.slotUsed(browse_);
+  bool current = used && browse_ == gPatch.slot();
+  Str big;
+  if (used) patchTitle(big, browse_, gPatch.slotName(browse_));
+  else {
+    big.add(slotNo.b);
+    big.add(" EMPTY");
+  }
+  gfxTextCentre(160, 80, big.b, current ? kAmber : (used ? kWhite : kGrey), 3);
+
+  const char* line = noteMs_ > 0 ? note_ : !used ? "PUSH SAVE TO STORE HERE" : !current ? "PUSH SLOT TO LOAD" : gPatch.edited() ? "LOADED, CHANGED SINCE" : "LOADED";
+  gfxTextCentre(160, 112, line, noteMs_ > 0 ? kAmber : kGrey, 2);
+  Str f;
+  if (following > 0) {
+    f.addInt(following);
+    f.add(following == 1 ? " CONTROL FOLLOWS PATCH" : " CONTROLS FOLLOW PATCH");
+  } else {
+    f.add("EVERY CONTROL IS LIVE");
+  }
+  gfxTextCentre(160, 134, f.b, following > 0 ? kTeal : kDimTeal, 2);
+  drawStatus();
+}
+
+void Ui::drawNamePage() {
+  gfxTextCentre(160, 6, "NAME 2/2", kAmber, 2);
+  Str pos;
+  pos.addInt(cursor_ + 1);
+  char c = gPatch.name()[cursor_];
+  char letter[2] = {c == ' ' ? '_' : c, 0};
+  const char* const label[4] = {"CURSOR", "--", "LETTER", "--"};
+  const char* const value[4] = {pos.b, "", letter, ""};
+  drawCorners(label, value);
+
+  const int scale = 4, pitch = 6 * scale, x0 = 160 - kPatchNameLen * pitch / 2, y = 88;
+  for (int i = 0; i < kPatchNameLen; ++i) {
+    char one[2] = {gPatch.name()[i], 0};
+    gfxText(x0 + i * pitch, y, one, i == cursor_ ? kAmber : kWhite, scale);
+    gfxFill(x0 + i * pitch, y + 8 * scale + 2, 5 * scale, i == cursor_ ? 3 : 1, i == cursor_ ? kAmber : kDarkGrey);
+  }
+  gfxTextCentre(160, 140, "SAVE ON PAGE 1 TO KEEP IT", kGrey, 2);
+  drawStatus();
+}
+
+// A control that is following the patch was moved but has not taken over:
+// a track with the patch's value and the control's position on it, and
+// which way to go.
+void Ui::drawPickup(int id) {
+  int index = -1;
+  for (int i = 0; i < kPanelCount; ++i)
+    if (kPanelParams[i] == id) index = i;
+  if (index < 0) return;
+  const int x0 = 20, w = 280, y = 104;
+  int xPatch = x0 + (int)(gParams.norm(id) * (float)(w - 1));
+  int xPanel = x0 + gPatch.position(index) * (w - 1) / kPotMax;
+  bool up = xPatch > xPanel;
+  gfxTextCentre(160, 56, "FOLLOWING THE PATCH", kGrey, 2);
+  gfxFrame(x0 - 2, y, w + 4, 20, kDarkGrey);
+  gfxFill(up ? xPanel : xPatch, y + 7, (up ? xPatch - xPanel : xPanel - xPatch) + 1, 6, kDimTeal);  // the distance still to go
+  gfxFill(xPatch - 2, y - 8, 5, 36, kAmber);
+  gfxFill(xPanel - 3, y + 2, 7, 16, kWhite);
+  gfxTextCentre(clampi(xPatch, 38, 282), y - 28, "PATCH", kAmber, 2);
+  gfxTextCentre(clampi(xPanel, 38, 282), y + 34, "PANEL", kWhite, 2);
+  gfxTextCentre(160, 166, up ? "HIGHER >>" : "<< LOWER", up ? kAmber : kTeal, 3);
+  gfxTextCentre(160, 198, "TO TAKE OVER", kGrey, 2);
+}
+
 void Ui::drawModePage() {
+  if (mode_ == MB_PATCH) {
+    if (page_ == 0) drawPatchPage();
+    else drawNamePage();
+    return;
+  }
   int pages = pageCount(mode_);
   if (pages == 0) {
     gfxTextCentre(160, 6, kModeNames[mode_], kAmber, 2);
@@ -614,6 +958,10 @@ void Ui::drawParamPopup(int id) {
   formatParam(id, v);
   const char* name = paramName(id);
   drawHeader(kSectionNames[d.section], name[0] ? name : d.name, v.b);
+  if (popupPickup_) {
+    drawPickup(id);
+    return;
+  }
 
   bool engineSwitch = id == P_OSC1_ENGINE || id == P_OSC2_ENGINE;
   switch (engineSwitch ? (int)SEC_COUNT : (int)d.section) {
@@ -621,13 +969,18 @@ void Ui::drawParamPopup(int id) {
       drawOscWave(0);
       break;
     case SEC_OSC2:
-      drawOscWave(1);
+      if (id == P_XMOD) drawBar(gParams.norm(id));
+      else if (id == P_SYNC) drawSteps(d, gParams.step(id));
+      else drawOscWave(1);
       break;
     case SEC_MIXER:
       drawMixer(id);
       break;
     case SEC_FILTER:
-      drawFilterCurve();
+      if (id == P_FILT_ENV_AMT) drawFilterEnvAmount();
+      else if (id == P_KEYTRACK) drawFilterKeytrack();
+      else if (id == P_DRIVE) drawFilterDrive();
+      else drawFilterCurve();
       break;
     case SEC_FENV:
       drawAdsr(P_FENV_A, id);
@@ -640,7 +993,8 @@ void Ui::drawParamPopup(int id) {
       drawLfo();
       break;
     default:
-      if (d.kind == PK_STEP && d.labels) drawSteps(d, gParams.step(id));
+      if (id == P_SPREAD) drawSpread();
+      else if (d.kind == PK_STEP && d.labels) drawSteps(d, gParams.step(id));
       else if (d.kind == PK_STEP) drawBar(gParams.frac(id));
       else drawBar(gParams.norm(id));
       break;
