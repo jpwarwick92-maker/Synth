@@ -11,8 +11,10 @@ const int16_t kSawHarmonics[kSawLevels] = {512, 362, 256, 181, 128, 90, 64, 45, 
 constexpr int kTriFirstLevel = kSawLevels - kTriLevels;
 
 float gSine[kTabLen + 1];
-FW_BIGMEM int16_t gSaw[kSawLevels][kTabLen + 1];
-FW_BIGMEM int16_t gTri[kTriLevels][kTabLen + 1];
+// The saw and triangle tables are read many times a sample (the supersaw
+// alone reads fourteen), so on the Teensy they stay in its fast memory.
+int16_t gSaw[kSawLevels][kTabLen + 1];
+int16_t gTri[kTriLevels][kTabLen + 1];
 FW_BIGMEM int16_t gWt[kWtTables][kWtFrames][kWtLevels][kWtLen + 1];
 
 namespace {

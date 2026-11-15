@@ -1,8 +1,10 @@
 // Small maths library used everywhere in the core.
 //
-// The core does not link libm: these give identical results in the browser,
-// on the Teensy and in the native tests, and they are cheap enough to call
-// at control rate on a Cortex-M7.
+// The core does not link libm: these behave the same in the browser, on
+// the Teensy and in the native tests, and they are cheap enough to call at
+// control rate on a Cortex-M7. (The browser and native builds agree to the
+// last bit. The Teensy's compiler may fuse a multiply and an add into one
+// step, which changes the last bit here and there and nothing audible.)
 #pragma once
 
 #include "fw_config.h"

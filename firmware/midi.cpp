@@ -54,7 +54,7 @@ void MidiIn::message(uint8_t status, uint8_t d1, uint8_t d2) {
       else gSynth.post(EV_NOTE_OFF, d1);
       break;
     case 0x80: gSynth.post(EV_NOTE_OFF, d1); break;
-    case 0xE0: gSynth.post(EV_BEND, d1, d2); break;
+    case 0xE0: gSynth.setBend((float)(((int)d1 | ((int)d2 << 7)) - 8192) * (1.0f / 8192.0f)); break;
     case 0xB0: controlChange(d1, d2); break;
     case 0xC0: patchLoad(d1); break;  // program change: load that patch slot, if it holds one
     default: break;
@@ -63,7 +63,7 @@ void MidiIn::message(uint8_t status, uint8_t d1, uint8_t d2) {
 
 void MidiIn::controlChange(uint8_t cc, uint8_t value) {
   switch (cc) {
-    case 1: gSynth.post(EV_MOD_WHEEL, value); return;
+    case 1: gSynth.setModWheel((float)value * (1.0f / 127.0f)); return;
     case 64: gSynth.post(EV_SUSTAIN, value); return;
     case 120: gSynth.post(EV_ALL_SOUND_OFF); return;
     case 123: gSynth.post(EV_ALL_NOTES_OFF); return;

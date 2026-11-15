@@ -41,6 +41,7 @@ class Effects {
   bool reverbOn_;
   int rvPos_;
   int rvLen_[4];
+  float rvScale_;    // 1, or less when the sample rate is too high for the lines' full lengths
   float rvLp_[4];
   int apPos_[2];
   int apLen_[2];

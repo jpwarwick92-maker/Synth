@@ -13,6 +13,7 @@ const LS_VIEW = 'synth.view';
 const LS_KNOBS = 'synth.knobs';        // 'turn' or 'updown'
 const LS_ZOOM = 'synth.zoom';
 const LS_ACRYLIC = 'synth.acrylic';    // '1' = show the display as through amber acrylic
+const LS_ROUGH = 'synth.rough';        // '1' = feed the firmware jittery pot readings, as real hardware would
 
 const $ = (id) => document.getElementById(id);
 
@@ -333,6 +334,20 @@ function setupAids() {
     () => sendMidi(chord.flatMap((n) => [0x80, n, 0])));
   toggle($('sustain'), () => sendMidi([0xb0, 64, 127]), () => sendMidi([0xb0, 64, 0]));
 
+  // Real pots jitter and bleed into each other a little. This switches the
+  // stand-in hardware from perfect readings to rough ones.
+  const applyRough = () => {
+    const on = localStorage.getItem(LS_ROUGH) === '1';
+    $('rough').setAttribute('aria-pressed', String(on));
+    if (node) node.port.postMessage({ t: 'rough', on });
+  };
+  $('rough').addEventListener('click', () => {
+    localStorage.setItem(LS_ROUGH, localStorage.getItem(LS_ROUGH) === '1' ? '0' : '1');
+    applyRough();
+  });
+  window.__synth.applyRough = applyRough;
+  applyRough();
+
   $('panic').addEventListener('click', () => {
     sendMidi([0xb0, 120, 0, 0xb0, 123, 0]);          // all sound off, all notes off
     $('test-note').setAttribute('aria-pressed', 'false');
@@ -402,7 +417,13 @@ async function start() {
   try {
     if (!window.AudioWorkletNode) throw new Error('This browser cannot run the audio engine (no AudioWorklet).');
     const wasm = await (await fetch('firmware.wasm')).arrayBuffer();
-    ctx = new AudioContext({ latencyHint: 'interactive' });
+    // The firmware's delay and reverb lines are sized for 48 kHz. Asking for that rate, whatever the
+    // sound device is set to, keeps the page sounding the same on every machine; the browser converts.
+    try {
+      ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 });
+    } catch (_) {
+      ctx = new AudioContext({ latencyHint: 'interactive' });   // a browser that cannot: the firmware is safe at any rate
+    }
     await ctx.audioWorklet.addModule('worklet.js');
     node = new AudioWorkletNode(ctx, 'synth', {
       numberOfInputs: 0,
@@ -411,6 +432,7 @@ async function start() {
       processorOptions: { wasm, state: savedState(), patches: savedPatches() },
     });
     node.port.onmessage = onFirmwareMessage;
+    window.__synth.applyRough();
     node.onprocessorerror = () => { err.textContent = 'The audio engine stopped with an error.'; $('start').hidden = false; };
     node.connect(ctx.destination);
     await ctx.resume();

@@ -14,8 +14,6 @@ Ui gUi;
 
 namespace {
 
-const char* const kModeNames[MB_COUNT] = {"FX 1", "FX 2", "MOD", "ENGINE", "PATCH"};
-
 // The soft-control pages. One parameter per encoder, in encoder order
 // (left-top, left-bottom, right-top, right-bottom); kNone leaves a slot empty.
 constexpr uint8_t kNone = 255;
@@ -270,9 +268,10 @@ void drawScope(int x, int y, int w, int h) {
 // Bottom strip: voices in use, voice mode, output level, MIDI activity.
 void drawStatus() {
   const int y = 222;
-  for (int i = 0; i < kNumVoices; ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kLine : kDarkGrey);
-  if (gParams.step(P_HOLD)) gfxText(104, y, "HOLD", kAccent, 2);
-  else if (gSynth.chordOn()) gfxText(104, y, "CHRD", kAccent, 2);
+  // one square per voice; while the processor is overloaded, the voices it has given up are left out
+  for (int i = 0; i < gSynth.voiceLimit(); ++i) gfxFill(8 + i * 11, y + 3, 8, 8, gSynth.voiceActive(i) ? kLine : kDarkGrey);
+  bool hold = gParams.step(P_HOLD) != 0, chord = gSynth.chordOn();
+  if (hold || chord) gfxText(104, y, hold && chord ? "H+CH" : hold ? "HOLD" : "CHRD", kAccent, 2);
   else gfxText(104, y, kParams[P_VOICE_MODE].labels[gParams.step(P_VOICE_MODE)], kGrey, 2);
 
   float peak = minf(gSynth.peakLevel(), 1.0f);
@@ -316,7 +315,12 @@ struct Box {
 constexpr Box kPic = {8, 54, 304, 158};
 constexpr Box kMini = {8, 76, 304, 78};
 
-float frac01(float x) { return x - floorf_(x); }
+// The part of x after the point, always below 1. (For a tiny negative x,
+// x - floor(x) rounds to exactly 1, which is one past the end of a table.)
+float frac01(float x) {
+  x -= floorf_(x);
+  return x >= 1.0f ? 0.0f : x;
+}
 
 // A line of explanation over a picture, on a black strip so it never tangles with a curve.
 void hint(int y, const char* text) {
@@ -378,7 +382,22 @@ float oscShape(int osc, float ph) {
     default: {  // pluck: a wave that dies away, faster and duller with more damping
       float t = clampf(ph, 0.0f, 1.0f);
       float decay = exp2f_(-t * (5.0f - 4.0f * color));
-      return sinf_(kTwoPi * t * 4.0f * exp2f_(octaveOf(osc))) * decay * (1.0f - 0.5f * macro);
+      float th = kTwoPi * t * 4.0f * exp2f_(octaveOf(osc));
+      float body = sinf_(th) * decay * (1.0f - 0.5f * macro);
+      // What sets the string off is drawn at the start, where it is heard: a
+      // burst of hiss, a softer one, a short snap, a ramp, or a thin bright pick.
+      uint32_t h = (uint32_t)(t * 3000.0f) * 2654435761u;
+      h ^= h >> 15;
+      h *= 2246822519u;
+      float hiss = (float)((h >> 12) & 0xFFFF) * (2.0f / 65535.0f) - 1.0f;
+      float burst = exp2f_(-t * 40.0f);
+      switch (wave) {
+        case 0: return body + 0.5f * hiss * burst;
+        case 1: return body + 0.2f * hiss * exp2f_(-t * 16.0f);
+        case 2: return body + (t < 0.03f ? 0.9f * hiss : 0.0f);
+        case 3: return body + 0.5f * (2.0f * frac01(t * 14.0f) - 1.0f) * burst;
+        default: return body + 0.35f * sinf_(th * 6.0f) * burst;
+      }
     }
   }
 }
@@ -447,23 +466,34 @@ void drawXmod(const Box& b = kPic) {
   midLine(b);
   float x = gParams.norm(P_XMOD);
   float amount = x * x * 0.6f, ratio = oscRatio();
+  // A plucked string is not bent by X-Mod, and with oscillator 1's fader down there is nothing to hear.
+  bool pluck = engineOf(0) == ENG_PLUCK, silent = gParams.norm(P_MIX_OSC1) < 0.0001f;
+  if (pluck || silent) amount = 0.0f;
   plotWave(b, 2.0f, kLineDim, [](float t) { return oscShape(0, t); });
   plotWave(b, 2.0f, kLine, [amount, ratio](float t) { return oscShape(0, t + amount * oscShape(1, t * ratio)); });
+  if (pluck) hint(b.y + 2, "NO EFFECT ON A PLUCK");
+  else if (silent) hint(b.y + 2, "OSC 1 FADER IS DOWN");
 }
 
 // Sync: oscillator 2 over two cycles of oscillator 1. With Sync on it
 // starts again at every cycle of oscillator 1 (the marks along the top).
 void drawSync(const Box& b = kPic) {
   midLine(b);
-  bool on = gParams.step(P_SYNC) != 0;
+  // A plucked string has no cycle to restart, so the engine leaves it alone.
+  bool pluck = engineOf(1) == ENG_PLUCK;
+  bool on = gParams.step(P_SYNC) != 0 && !pluck;
   float ratio = oscRatio();
+  // Running at a whole multiple of oscillator 1 (the same pitch, an octave
+  // up, two octaves up), oscillator 2 restarts where it would have anyway.
+  float whole = floorf_(ratio + 0.5f);
+  bool inStep = whole >= 1.0f && absf(ratio - whole) < 0.012f * whole;
   for (int k = 0; k < 2; ++k) {
     int x = b.x + k * b.w / 2;
     gfxVLine(x, b.y + 18, b.h - 18, kGrid);
     if (on) gfxFill(x, b.y + 18, 3, 12, kAccent);
   }
   plotWave(b, 2.0f, kLine, [on, ratio](float t) { return oscShape(1, on ? frac01(t) * ratio : t * ratio); }, 0.8f);
-  const char* note = !on ? "OSC 2 RUNS FREE" : ratio < 1.03f ? "RAISE OSC 2 TO HEAR IT" : "RESTARTS WITH OSC 1";
+  const char* note = pluck ? "NO EFFECT ON A PLUCK" : !on ? "OSC 2 RUNS FREE" : inStep ? "IN STEP: DETUNE TO HEAR" : "RESTARTS WITH OSC 1";
   hint(b.y + 2, note);
 }
 
@@ -510,7 +540,9 @@ float filterStage(float w, float k, int type) {
 void drawSpread() {
   static const float kPan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
   const int mid = 160, half = 130, y = 128;
-  float spread = gParams.norm(P_SPREAD);
+  bool mono = gParams.step(P_VOICE_MODE) == MODE_MONO;  // a lone mono voice stays in the middle
+  float spread = mono ? 0.0f : gParams.norm(P_SPREAD);
+  if (mono) hint(58, "MONO STAYS IN THE MIDDLE");
   gfxHLine(mid - half, y + 5, 2 * half + 1, kGrid);
   gfxVLine(mid, y - 30, 70, kGrid);
   for (int i = 0; i < kNumVoices; ++i) {
@@ -773,8 +805,9 @@ void drawDrift(const Box& b = kPic) {
   hint(b.y + 2, drift < 0.004f ? "EVERY VOICE IN TUNE" : "EACH VOICE WANDERS");
 }
 
-// A straight relationship: how much comes out (up) against how hard the
-// key is hit (across). Used for Velocity and for velocity to cutoff.
+// How much comes out (up) against how hard the key is hit (across). The
+// engine squares the key's velocity, so a middling hit gives a quarter, not
+// a half; the curve shows that. Used for Velocity and for velocity to cutoff.
 void drawVelocityLine(float atSoft, float atHard, const Box& b = kPic) {
   int x0 = b.x + 14, x1 = b.x + b.w - 14, base = b.y + b.h - 22, top = b.y + 22;
   bool small = b.h < 100;
@@ -783,12 +816,17 @@ void drawVelocityLine(float atSoft, float atHard, const Box& b = kPic) {
     top = b.y + 16;
   }
   gfxHLine(b.x, base, b.w, kGrid);
-  int ya = base - (int)(atSoft * (float)(base - top)), yb = base - (int)(atHard * (float)(base - top));
+  auto yAt = [&](float hit) { return base - (int)((atSoft + (atHard - atSoft) * hit * hit) * (float)(base - top)); };
   for (int k = 0; k <= 6; ++k) {  // seven keystrokes, soft to hard
-    int x = x0 + (x1 - x0) * k / 6, y = ya + (yb - ya) * k / 6;
+    int x = x0 + (x1 - x0) * k / 6, y = yAt((float)k / 6.0f);
     gfxFill(x - 2, y, 5, base - y, kLineDim);
   }
-  gfxPlotLine(x0, ya, x1, yb, kLine);
+  int py = yAt(0.0f);
+  for (int x = x0; x <= x1; ++x) {
+    int yy = yAt((float)(x - x0) / (float)(x1 - x0));
+    plotColumn(x, py, yy, kLine);
+    py = yy;
+  }
   gfxText(b.x, small ? b.y : base + 6, "SOFT", kGrey, 2);
   gfxTextRight(b.x + b.w, small ? b.y : base + 6, "HARD", kGrey, 2);
 }
@@ -925,7 +963,8 @@ void drawLfoFade(const Box& b) {
   });
 }
 
-// Envelope to pitch: the pitch starts high and falls back as the filter envelope dies away.
+// Envelope to pitch: the pitch rises with the filter envelope and settles
+// wherever that envelope's Sustain holds it, until the key is let go.
 void drawEnvPitch(const Box& b) {
   int base = b.y + b.h - 6;
   gfxHLine(b.x, base, b.w, kGrid);
@@ -933,29 +972,31 @@ void drawEnvPitch(const Box& b) {
   int py = 0;
   for (int px = 0; px < b.w; ++px) {
     float t = (float)px / (float)b.w;
-    float env = t < 0.04f ? t / 0.04f : exp2f_(-7.0f * (t - 0.04f));
+    float sus = gParams.norm(P_FENV_S);
+    float env = t < 0.04f ? t / 0.04f : t < 0.72f ? sus + (1.0f - sus) * exp2f_(-12.0f * (t - 0.04f)) : sus * exp2f_(-22.0f * (t - 0.72f));
     int yy = base - (int)(env * semis * (float)(b.h - 12));
     plotColumn(b.x + px, px > 0 ? py : yy, yy, kLine);
     py = yy;
   }
 }
 
-// LFO key sync: three key presses (the marks). With KEY the LFO starts again at each one.
+// LFO key sync. Three keys, drawn as bars along the top: the second is
+// played while the first is still down, the third after a silence. With KEY
+// the LFO starts again when a note begins from silence (the first and the
+// third), not for a note that joins others already sounding.
 void drawLfoSync(const Box& b) {
   midLine(b);
   bool key = gParams.step(P_LFO_SYNC) != 0;
-  static const float kKeys[3] = {0.08f, 0.41f, 0.67f};
-  for (float k : kKeys) {
-    int x = b.x + (int)(k * (float)b.w);
-    gfxVLine(x, b.y, b.h, kGrid);
-    gfxFill(x, b.y, 3, 10, kAccent);
+  static const float kDown[3] = {0.08f, 0.30f, 0.70f}, kUp[3] = {0.46f, 0.56f, 0.94f};
+  for (int k = 0; k < 3; ++k) {
+    int x0 = b.x + (int)(kDown[k] * (float)b.w), x1 = b.x + (int)(kUp[k] * (float)b.w);
+    gfxFill(x0, b.y + (k == 1 ? 5 : 0), x1 - x0, 3, kAccent);
+    if (k != 1) gfxVLine(x0, b.y, b.h, kGrid);
   }
   plotWave(b, 1.0f, kLine, [key](float t) {
     float since = t;
-    if (key)
-      for (float k : kKeys)
-        if (t >= k) since = t - k;
-    return 0.8f * tabRead(gSine, frac01(since * 5.3f));
+    if (key) since = t >= kDown[2] ? t - kDown[2] : t >= kDown[0] ? t - kDown[0] : t;
+    return 0.75f * tabRead(gSine, frac01(since * 5.3f));
   });
 }
 
@@ -1156,6 +1197,8 @@ void Ui::encoderTurn(int enc, int delta) {
   }
   int id = pageParam(enc);
   if (id < 0) return;
+  popupParam_ = -1;  // the page comes back in front of any control's picture, so the value being turned is seen
+  popupMs_ = 0;
   // Long ranges would take many turns one click at a time: a fast spin
   // (several clicks within one display tick) moves in bigger steps.
   if (kParams[id].steps > 30) {
@@ -1340,12 +1383,6 @@ void Ui::drawModePage() {
     return;
   }
   int pages = pageCount(mode_);
-  if (pages == 0) {
-    gfxTextCentre(160, 6, kModeNames[mode_], kAccent, 2);
-    gfxTextCentre(160, 104, "NOT BUILT YET", kGrey, 2);
-    drawStatus();
-    return;
-  }
   Str title;
   title.add(kPages[mode_][page_].title);
   if (pages > 1) {
@@ -1417,7 +1454,10 @@ void Ui::drawParamPopup(int id) {
     case P_FILT_ENV_AMT: drawFilterEnvAmount(); return;
     case P_KEYTRACK: drawFilterKeytrack(); return;
     case P_DRIVE: drawFilterDrive(); return;
-    case P_CUTOFF: case P_RESONANCE: case P_FILT_TYPE: case P_FILT_SLOPE: drawFilterCurve(); return;
+    case P_CUTOFF: case P_RESONANCE: case P_FILT_TYPE: case P_FILT_SLOPE:
+      drawFilterCurve();
+      if (id == P_FILT_TYPE && gParams.step(P_FILT_SLOPE) == SLOPE_LADDER) hint(kPic.y + 2, "THE LADDER IS LOW-PASS ONLY");
+      return;
     // ---- the rest of the panel ----
     case P_VELOCITY: drawVelocityLine(1.0f - gParams.norm(P_VELOCITY), 1.0f); return;
     case P_VOLUME: drawLevelWave(gParams.norm(P_VOLUME) * gParams.norm(P_VOLUME)); return;

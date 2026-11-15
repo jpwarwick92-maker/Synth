@@ -75,7 +75,7 @@ struct OscRun {
   const int16_t* wtB;
   float wtMix;
   float ksDelay, ksDamp, ksGain;
-  float ssInc[6];  // supersaw: the six side saws' speeds
+  uint32_t ssInc[6];  // supersaw: the six side saws' speeds, as 32-bit fractions of a cycle per sample
 };
 
 namespace {
@@ -187,8 +187,20 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
         case WAVE_TRI: return readTable(o, ph);
         case WAVE_SQR: return pulseAt(o, ph, r.pw);
         case WAVE_SUPER: {  // seven saws: one in tune, three either side
-          float sides = 0.0f;
-          for (int k = 0; k < 6; ++k) sides += tabRead16(o.tab, pm == 0.0f ? o.ss[k] : wrap01(o.ss[k] + pm));
+          // The six side saws, read with integer arithmetic throughout:
+          // the phase is a 32-bit fraction of a cycle, its top 11 bits pick
+          // the table entry and the next 15 the place between two entries.
+          uint32_t shift = pm == 0.0f ? 0u : (uint32_t)(wrap01(pm) * 4294967296.0f);  // wrap01 < 1, so this fits
+          const int16_t* t = o.tab;
+          int32_t acc = 0;
+          for (int k = 0; k < 6; ++k) {
+            uint32_t at = o.ss[k] + shift;
+            uint32_t idx = at >> 21;  // kTabLen is 2^11
+            int32_t f = (int32_t)((at >> 6) & 0x7FFFu);
+            int32_t a = t[idx];
+            acc += a + (((t[idx + 1] - a) * f) >> 15);
+          }
+          float sides = (float)acc * (1.0f / kTabScale);
           return (readTable(o, ph) + kSuperSide * sides) * kSuperGain;
         }
         default: return tabRead(gSine, ph);
@@ -244,10 +256,7 @@ inline void oscStep(Osc& o, const OscRun& r) {
   if (r.engine == ENG_FM) {
     o.phase2 = wrap01(o.phase2 + r.inc * r.fmRatio);
   } else if (r.engine == ENG_VA && r.wave == WAVE_SUPER) {
-    for (int k = 0; k < 6; ++k) {
-      float ph = o.ss[k] + r.ssInc[k];
-      o.ss[k] = ph >= 1.0f ? ph - 1.0f : ph;
-    }
+    for (int k = 0; k < 6; ++k) o.ss[k] += r.ssInc[k];
   }
   advance(o, r.inc);
 }
@@ -317,6 +326,11 @@ void Synth::init(float sampleRate) {
   lfoPhase_ = lfoValue_ = lfoRandom_ = 0.0f;
   lfoRng_ = 0x1234567u;
   qWrite_ = qRead_ = 0;
+  overflow_ = false;
+  load_ = 0.0f;
+  voiceLimit_ = kNumVoices;
+  overBlocks_ = 0;
+  calmSamples_ = 0.0f;
   activeCount_ = 0;
   peak_ = 0.0f;
   scopePos_ = 0;
@@ -332,6 +346,7 @@ void Synth::init(float sampleRate) {
   for (int i = 0; i < kNumVoices; ++i) {
     Voice& v = voices_[i];
     v.active = v.gate = v.keyDown = v.sustained = false;
+    v.fresh = v.letGo = v.choke = false;
     v.note = 60;
     v.vel = 0.0f;
     v.age = 0;
@@ -340,8 +355,8 @@ void Synth::init(float sampleRate) {
     v.o2 = Osc{(float)i * 0.071f + 0.3f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][1], 0, 0, 1, false, {}, 0.0f};
     v.sub = Osc{0.0f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, nullptr, 0, 0, 1, false, {}, 0.0f};
     for (int k = 0; k < 6; ++k) {  // the supersaw's saws start scattered, so they never line up into one
-      v.o1.ss[k] = wrap01(0.137f * (float)(k + 1) + 0.071f * (float)i);
-      v.o2.ss[k] = wrap01(0.211f * (float)(k + 1) + 0.053f * (float)i + 0.4f);
+      v.o1.ss[k] = (uint32_t)(wrap01(0.137f * (float)(k + 1) + 0.071f * (float)i) * 4294967296.0f);
+      v.o2.ss[k] = (uint32_t)(wrap01(0.211f * (float)(k + 1) + 0.053f * (float)i + 0.4f) * 4294967296.0f);
     }
     v.drift1 = v.drift2 = v.driftCut = 0.0f;
     v.driftRng = 0x6C8E9CF5u * (uint32_t)(i + 3) | 1u;
@@ -362,7 +377,10 @@ void Synth::init(float sampleRate) {
 bool Synth::post(uint8_t type, uint8_t a, uint8_t b) {
   uint32_t w = qWrite_;
   uint32_t next = (w + 1) % kQueueLen;
-  if (next == qRead_) return false;
+  if (next == qRead_) {
+    overflow_ = true;
+    return false;
+  }
   queue_[w] = Event{type, a, b};
   qWrite_ = next;
   return true;
@@ -380,8 +398,8 @@ void Synth::handleEvent(uint8_t type, uint8_t a, uint8_t b) {
         setSustain(pedal_);
       }
       break;
-    case EV_BEND: bend_ = (float)(((int)a | ((int)b << 7)) - 8192) * (1.0f / 8192.0f); break;
-    case EV_MOD_WHEEL: modWheel_ = (float)a * (1.0f / 127.0f); break;
+    case EV_BEND: setBend((float)(((int)a | ((int)b << 7)) - 8192) * (1.0f / 8192.0f)); break;
+    case EV_MOD_WHEEL: setModWheel((float)a * (1.0f / 127.0f)); break;
     case EV_ALL_NOTES_OFF:
       releaseAll();
       physN_ = setN_ = 0;
@@ -641,6 +659,9 @@ void Synth::trigger(Voice& v, uint8_t note, float vel) {
   v.gate = true;
   v.keyDown = true;
   v.sustained = false;
+  v.fresh = true;
+  v.letGo = false;
+  v.choke = false;
   v.note = note;
   v.vel = vel;
   v.age = ++clock_;
@@ -652,6 +673,12 @@ void Synth::trigger(Voice& v, uint8_t note, float vel) {
 }
 
 void Synth::releaseVoice(Voice& v) {
+  if (v.fresh) {  // nothing of this note has sounded yet: let the block play before letting go,
+    v.letGo = true;  // or a note-on and note-off arriving together would be silent
+    v.keyDown = false;
+    v.sustained = false;
+    return;
+  }
   v.gate = false;
   v.keyDown = false;
   v.sustained = false;
@@ -661,28 +688,52 @@ void Synth::releaseVoice(Voice& v) {
 
 int Synth::pickVoice(uint8_t note) {
   // the same key played again reuses its voice
+  int sounding = 0;
   for (int i = 0; i < kNumVoices; ++i) {
     const Voice& v = voices_[i];
     if (v.active && v.note == note && (v.keyDown || v.sustained)) return i;
+    sounding += v.active;
   }
-  for (int i = 0; i < kNumVoices; ++i)
-    if (!voices_[i].active) return i;
+  if (sounding < voiceLimit_)  // (fewer than eight may be allowed while the processor is overloaded)
+    for (int i = 0; i < kNumVoices; ++i)
+      if (!voices_[i].active) return i;
   // then the quietest voice that is already dying away
   int best = -1;
   float bestLevel = 2.0f;
   for (int i = 0; i < kNumVoices; ++i) {
     const Voice& v = voices_[i];
-    if (!v.gate && v.aenv.level < bestLevel) {
+    if (v.active && !v.gate && v.aenv.level < bestLevel) {
       bestLevel = v.aenv.level;
       best = i;
     }
   }
   if (best >= 0) return best;
-  // all eight are held: the oldest note gives way
-  best = 0;
-  for (int i = 1; i < kNumVoices; ++i)
-    if (voices_[i].age < voices_[best].age) best = i;
-  return best;
+  // every voice allowed is held: the oldest note gives way
+  best = -1;
+  for (int i = 0; i < kNumVoices; ++i)
+    if (voices_[i].active && (best < 0 || voices_[i].age < voices_[best].age)) best = i;
+  return best < 0 ? 0 : best;
+}
+
+// The processor cannot keep up: drop the voice that will be missed least,
+// and allow one fewer until things have been calm for a while.
+void Synth::shedVoice() {
+  int sounding = 0, pick = -1;
+  for (int i = 0; i < kNumVoices; ++i) {
+    const Voice& v = voices_[i];
+    if (!v.active || v.choke) continue;
+    ++sounding;
+    if (pick < 0) {
+      pick = i;
+      continue;
+    }
+    const Voice& b = voices_[pick];
+    bool better = v.gate != b.gate ? !v.gate : (v.gate ? v.age < b.age : v.aenv.level < b.aenv.level);
+    if (better) pick = i;
+  }
+  if (sounding <= 2) return;  // never below two voices
+  voiceLimit_ = sounding - 1;
+  voices_[pick].choke = true;
 }
 
 void Synth::noteOn(uint8_t note, uint8_t velocity) {
@@ -709,7 +760,7 @@ void Synth::noteOn(uint8_t note, uint8_t velocity) {
   stackVel_[stackN_] = velocity;
   ++stackN_;
 
-  int nv = mode_ == MODE_UNI ? kNumVoices : 1;
+  int nv = mode_ == MODE_UNI ? voiceLimit_ : 1;  // (all eight, unless the processor is overloaded)
   for (int i = 0; i < nv; ++i) {
     Voice& v = voices_[i];
     if (wasHeld && v.active && v.gate) {  // legato: slide without restarting the envelopes
@@ -778,6 +829,7 @@ void Synth::killAll() {
   for (int i = 0; i < kNumVoices; ++i) {
     Voice& v = voices_[i];
     v.active = v.gate = v.keyDown = v.sustained = false;
+    v.fresh = v.letGo = v.choke = false;
     v.aenv = Env{0.0f, ENV_IDLE};
     v.fenv = Env{0.0f, ENV_IDLE};
     v.f1 = Svf{0.0f, 0.0f};
@@ -789,6 +841,7 @@ void Synth::killAll() {
   arpRestart_ = true;
   sustain_ = false;
   pedal_ = false;
+  gFx.init(sr_);  // all sound off means the echoes and the reverb tail as well
 }
 
 // ---------------------------------------------------------------- per-block settings
@@ -915,7 +968,8 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
       if (wave == WAVE_SUPER) {
         // Macro is the detune. Never quite zero, so it always sounds like more than one saw.
         float amount = 0.05f + 0.95f * macro * macro;
-        for (int k = 0; k < 6; ++k) r.ssInc[k] = minf(inc * (1.0f + kSuperDetune[k] * amount), 0.45f);
+        for (int k = 0; k < 6; ++k)
+          r.ssInc[k] = (uint32_t)(minf(inc * (1.0f + kSuperDetune[k] * amount), 0.45f) * 4294967296.0f);
         setTable(o, sawTableFor(minf(inc * 1.11f, 0.45f)), sameSound);  // clean for the sharpest of the seven
       } else {
         setTable(o, wave == WAVE_TRI ? triTableFor(inc) : sawTableFor(inc), sameSound);
@@ -950,13 +1004,16 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
     default: {  // pluck
       r.ksDamp = 1.0f - 0.8f * macro;  // Macro is damping: higher is duller
       // the loop filter delays the wave a little; shorten the string to stay in tune
-      r.ksDelay = clampf(1.0f / inc - (1.0f - r.ksDamp) / r.ksDamp, 2.0f, (float)(kKsLen - 2));
+      // A string too long for its buffer plays an octave up (or two) rather than a wrong note.
+      float period = 1.0f / inc;
+      while (period > (float)(kKsLen - 4)) period *= 0.5f;
+      r.ksDelay = clampf(period - (1.0f - r.ksDamp) / r.ksDamp, 2.0f, (float)(kKsLen - 2));
       r.ksGain = 0.985f + 0.0148f * color;  // Color is how long the string rings
       if (o.pluck || !sameSound) {
         for (int i = 0; i < kKsLen; ++i) o.ks[i] = 0;
         o.lp = 0.0f;
         o.fb = 0.0f;
-        o.exciteLen = clampi((int)(1.0f / inc), 2, kKsLen - 2);
+        o.exciteLen = clampi((int)period, 2, kKsLen - 2);
         o.excite = o.exciteLen;
       }
       break;
@@ -1035,7 +1092,12 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float gainR = amp * (pan < 0.0f ? 1.0f + pan : 1.0f);
 
   bool on1 = p.mix[0] > 1e-4f, on2 = p.mix[1] > 1e-4f, onSub = p.mix[2] > 1e-4f, onNoise = p.mix[3] > 1e-4f;
-  bool need2 = on2 || xmod > 0.0f;  // oscillator 2 is also needed, unheard, to bend oscillator 1
+  // Oscillator 2 is also needed, unheard, to bend oscillator 1. A plucked
+  // string is always run: left alone with its fader down it would freeze
+  // mid-pluck and sound when the fader came up.
+  bool need2 = on2 || xmod > 0.0f || r2.engine == ENG_PLUCK;
+  bool run1 = on1 || r1.engine == ENG_PLUCK;
+  float chokeGain = 1.0f, chokeStep = v.choke ? 1.0f / (float)n : 0.0f;
   float m1 = p.mix[0] * 0.5f, m2 = p.mix[1] * 0.5f, m3 = p.mix[2] * 0.5f, m4 = p.mix[3] * 0.5f;
 
   for (int i = 0; i < n; ++i) {
@@ -1051,7 +1113,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
     oscStep(v.o2, r2);
 
     float before1 = v.o1.phase;
-    float s1 = on1 ? oscValue(v.o1, r1, xmod * s2, v.rng) : 0.0f;
+    float s1 = run1 ? oscValue(v.o1, r1, xmod * s2, v.rng) : 0.0f;
     oscStep(v.o1, r1);
 
     if (sync && v.o1.phase < before1) {
@@ -1100,14 +1162,17 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
     }
     if (p.driveOn) x += p.drive.mix * (tanhf_(x * p.drive.post) * p.drive.postTrim - x);  // after the filter: these harmonics stay
 
-    float out = x * ae;
+    float out = x * ae * chokeGain;
+    chokeGain -= chokeStep;
     outL[i] += out * gainL;
     outR[i] += out * gainR;
   }
 
+  if (v.choke) v.aenv = Env{0.0f, ENV_IDLE};  // dropped to save processor time: it has just faded out
   if (v.aenv.stage == ENV_IDLE) {
     v.active = false;
     v.gate = false;
+    v.keyDown = v.sustained = v.fresh = v.letGo = v.choke = false;
     v.fenv = Env{0.0f, ENV_IDLE};
   }
 }
@@ -1117,6 +1182,31 @@ void Synth::process(float* outL, float* outR, int n) {
     Event e = queue_[qRead_];
     qRead_ = (qRead_ + 1) % kQueueLen;
     handleEvent(e.type, e.a, e.b);
+  }
+  if (overflow_) {  // an event was lost, perhaps a note-off: let everything go rather than risk a stuck note
+    overflow_ = false;
+    handleEvent(EV_ALL_NOTES_OFF, 0, 0);
+    setSustain(false);
+    pedal_ = false;
+  }
+
+  // ---- overload: shed a voice when blocks keep taking nearly all the time there is ----
+  float load = load_;
+  if (load > 0.85f) {
+    calmSamples_ = 0.0f;
+    if (++overBlocks_ >= 3) {
+      overBlocks_ = 0;
+      shedVoice();
+    }
+  } else {
+    overBlocks_ = 0;
+    if (voiceLimit_ < kNumVoices && load < 0.6f) {
+      calmSamples_ += (float)n;
+      if (calmSamples_ > 2.0f * sr_) {  // two calm seconds earn a voice back
+        calmSamples_ = 0.0f;
+        ++voiceLimit_;
+      }
+    }
   }
 
   // ---- switches that change how notes are handled ----
@@ -1131,8 +1221,13 @@ void Synth::process(float* outL, float* outR, int n) {
     arpNote_ = -1;
     arpRestart_ = true;
     arpMode_ = arp;
-    if (arp == ARP_OFF)
+    if (arp == ARP_OFF) {
+      if (!latching()) dropUnheld();  // keys only the pedal was latching have no finger on them
+      sustain_ = pedal_;              // the pedal goes back to being a sustain pedal
       for (int i = 0; i < setN_; ++i) soundKey(i);
+    } else {
+      setSustain(false);              // the pedal is now a temporary Hold, not sustain
+    }
   }
   arpMode_ = arp;
   uint8_t mode = (uint8_t)gParams.step(P_VOICE_MODE);
@@ -1186,6 +1281,18 @@ void Synth::process(float* outL, float* outR, int n) {
     done += len;
   }
   activeCount_ = active;
+
+  // Notes that began in this block have now sounded: any that were let go
+  // before they had can be released.
+  for (int i = 0; i < kNumVoices; ++i) {
+    Voice& v = voices_[i];
+    if (!v.fresh) continue;
+    v.fresh = false;
+    if (v.letGo) {
+      v.letGo = false;
+      releaseVoice(v);
+    }
+  }
 }
 
 }  // namespace fw

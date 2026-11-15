@@ -669,7 +669,7 @@ static void testEveryControl() {
 }
 
 static void testMidi() {
-  section("AC9  a controller number sets its parameter; the control stays put and follows until it is touched");
+  section("AC9  a controller number sets its parameter; the control stays put and follows until it is moved through the value");
   boot(48000);
   for (int c = 0; c < fw::kFirstEncoder; ++c) {
     fw::ControlInfo info = fw::controlInfo(c);
@@ -681,10 +681,6 @@ static void testMidi() {
     int expect = info.kind == fw::CK_SELECTOR ? 100 * info.steps / 128 : (100 * 4095 + 63) / 127;
     CHECK(fw::gParams.val[id] == expect, "%s via CC %d: got %d, expected %d", info.name, cc, (int)fw::gParams.val[id], expect);
     CHECK(fw::gUi.popupParam() == id, "%s via CC did not bring up its visual", info.name);
-    if (id == fw::P_VOLUME) {  // master volume has no pick-up
-      CHECK(fw::controlGet(c) == expect, "volume should simply take the value");
-      continue;
-    }
     CHECK(fw::controlGet(c) == was, "%s: a real control cannot move by itself (was %d, now %d)", info.name, was, fw::controlGet(c));
     CHECK(fw::gPatch.following(c) == (was != expect), "%s should be following the incoming value", info.name);
     // dragged to the same place, the control takes over with the same value
@@ -760,7 +756,7 @@ static void testUi() {
   CHECK(fw::gUi.popupParam() < 0, "visual still up after 1.6 s");
   CHECK(countColour(fw::kAccent, 0, 30) > 100, "home screen did not come back");
 
-  section("AC7  Engine page, placeholders and the oscillator engine buttons");
+  section("AC7  Engine page and the oscillator engine buttons");
   boot(48000);
   int enc1 = ctl("enc1"), enc4 = ctl("enc4");
   int before = fw::gParams.step(fw::P_UNI_DETUNE);
@@ -921,12 +917,12 @@ static void testSoftPages() {
   section("Hold button latches, lights, and shows on the display");
   boot(48000);
   fw::tick(33);
-  long amberBefore = countColour(fw::kAccent, 222, 236);
+  long accentBefore = countColour(fw::kAccent, 222, 236);
   press("btn_hold");
   CHECK(fw::gParams.step(fw::P_HOLD) == 1 && fw::controlGet(ctl("btn_hold")) == 1, "Hold should be on and lit");
   fw::tick(1600);
   fw::tick(33);
-  CHECK(countColour(fw::kAccent, 222, 236) > amberBefore + 60, "status strip should show HOLD");
+  CHECK(countColour(fw::kAccent, 222, 236) > accentBefore + 60, "status strip should show HOLD");
   saveFrame("home_hold");
   press("btn_hold");
   CHECK(fw::gParams.step(fw::P_HOLD) == 0 && fw::controlGet(ctl("btn_hold")) == 0, "Hold should be off again");
@@ -2166,7 +2162,7 @@ static void testPackedFrame() {
   fw::gfxFill(315, 235, 10, 10, fw::kLine);
   fw::gfxPixel(320, 0, fw::kAccent);
   fw::gfxPixel(-1, 0, fw::kAccent);
-  CHECK(countColour(fw::kLine) == 50 && countColour(fw::kAccent) == 0, "clipping at the edges: %ld teal, %ld amber", countColour(fw::kLine), countColour(fw::kAccent));
+  CHECK(countColour(fw::kLine) == 50 && countColour(fw::kAccent) == 0, "clipping at the edges: %ld line-colour pixels, %ld accent", countColour(fw::kLine), countColour(fw::kAccent));
   // a row expands to the display's own colours
   uint16_t row[fw::kDisplayW];
   fw::gfxClear(fw::kBlack);
@@ -2669,8 +2665,6 @@ static void testPictures() {
         }
         if (e == 0 || id == fw::P_RVB_SIZE || id == fw::P_FENV_PITCH) saveFrame((std::string("soft_") + fw::kParams[id].key).c_str());
       }
-      fw::tick(1600);
-      CHECK(pictureRows(76, 154) != std::vector<uint8_t>(), "frame");
     }
   }
   CHECK(shown == 19, "expected 19 values across the encoder pages, found %d", shown);
@@ -2730,6 +2724,542 @@ static void testPictures() {
     CHECK(fw::gfxPalette() == fw::PALETTE_AMBER, "older state has no palette: amber");
     CHECK(fw::gParams.val[fw::P_CUTOFF] != std::lround(0.123 * 4095), "older state should still load its values");
   }
+}
+
+// ------------------------------------------------- findings of the independent review, 2026-11-15
+
+// Lets go of everything a player could be holding.
+static void letGoOfEverything(const std::vector<int>& keys) {
+  for (int k : keys) midi({0x80, k, 0});
+  midi({0xB0, 64, 0});
+  if (fw::gParams.step(fw::P_HOLD)) press("btn_hold");
+}
+
+static void testNotesEndInSilence() {
+  section("review: the sustain pedal held across an arp on/off switch leaves nothing stuck");
+  boot(48000);
+  midi({0xB0, 64, 127});                    // pedal down, then the arp goes on
+  setSel("arp_mode", fw::ARP_UP);
+  midi({0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100});
+  renderNew(0.5);
+  midi({0x80, 60, 0, 0x80, 64, 0, 0x80, 67, 0, 0xB0, 64, 0});
+  renderNew(2.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "arp on with the pedal down: %d voices still sounding", fw::gSynth.activeVoices());
+  setSel("arp_mode", fw::ARP_OFF);
+  midi({0x90, 62, 100});
+  renderNew(0.2);
+  midi({0x80, 62, 0});
+  renderNew(2.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "a plain note afterwards stuck (%d voices)", fw::gSynth.activeVoices());
+  boot(48000);
+  setSel("arp_mode", fw::ARP_UP);           // the pedal as a temporary Hold, then the arp goes off
+  midi({0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100, 0xB0, 64, 127});
+  renderNew(0.5);
+  midi({0x80, 60, 0, 0x80, 64, 0, 0x80, 67, 0});
+  renderNew(0.5);
+  setSel("arp_mode", fw::ARP_OFF);
+  renderNew(0.2);
+  midi({0xB0, 64, 0});
+  renderNew(3.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "arp off with latched keys: %d voices still sounding", fw::gSynth.activeVoices());
+
+  section("review: any mix of keys, pedal, Hold, Chord, arp and voice mode ends in silence once everything is let go");
+  uint32_t rng = 0xC0FFEEu;
+  auto rnd = [&rng](int n) {
+    rng = rng * 1664525u + 1013904223u;
+    return (int)((rng >> 10) % (uint32_t)n);
+  };
+  int stuck = 0;
+  for (int run = 0; run < 150 && stuck == 0; ++run) {
+    boot(48000);
+    setPot("aenv_release", 0.2);
+    std::vector<int> keys;
+    std::string story;
+    for (int step = 0; step < 50; ++step) {
+      int a = rnd(100);
+      char what[40];
+      if (a < 40) {
+        int k = 40 + rnd(30);
+        midi({0x90, k, 100});
+        keys.push_back(k);
+        std::snprintf(what, sizeof what, "down %d", k);
+      } else if (a < 62 && !keys.empty()) {
+        int at = rnd((int)keys.size());
+        midi({0x80, keys[at], 0});
+        std::snprintf(what, sizeof what, "up %d", keys[at]);
+        keys.erase(keys.begin() + at);
+      } else if (a < 72) {
+        int v = rnd(2) * 127;
+        midi({0xB0, 64, v});
+        std::snprintf(what, sizeof what, "pedal %d", v);
+      } else if (a < 80) {
+        press("btn_hold");
+        std::snprintf(what, sizeof what, "hold");
+      } else if (a < 86) {
+        press("btn_chord");
+        std::snprintf(what, sizeof what, "chord");
+      } else if (a < 94) {
+        int m = rnd(6);
+        setSel("arp_mode", m);
+        std::snprintf(what, sizeof what, "arp %d", m);
+      } else {
+        int m = rnd(3);
+        setSel("voice_mode", m);
+        std::snprintf(what, sizeof what, "mode %d", m);
+      }
+      story += std::string(what) + ", ";
+      renderNew(0.01 * (1 + rnd(8)));
+    }
+    letGoOfEverything(keys);
+    renderNew(3.0);
+    if (fw::gSynth.activeVoices() != 0) {
+      ++stuck;
+      CHECK(false, "run %d: %d voices never stopped after: %s", run, fw::gSynth.activeVoices(), story.c_str());
+    }
+  }
+  CHECK(stuck == 0, "stuck notes found");
+
+  section("review: a burst of MIDI between two audio blocks loses no note-off");
+  boot(48000);
+  for (int i = 0; i < 100; ++i) midi({0x90, 30 + i % 60, 100});
+  for (int i = 0; i < 100; ++i) midi({0x80, 30 + i % 60, 0});
+  renderNew(2.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "200 events in one block: %d voices stuck", fw::gSynth.activeVoices());
+  for (int i = 0; i < 400; ++i) midi({0x90, 30 + i % 60, 100});  // more than the queue holds: notes are lost,
+  renderNew(0.1);                                                  // so the engine lets everything go
+  for (int i = 0; i < 60; ++i) midi({0x80, 30 + i, 0});
+  renderNew(2.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "after an overflow: %d voices stuck", fw::gSynth.activeVoices());
+  midi({0x90, 60, 100});
+  renderNew(0.1);
+  CHECK(fw::gSynth.activeVoices() == 1, "and the engine should play normally again afterwards");
+  for (int i = 0; i < 2000; ++i) midi({0xE0, i % 128, 64 + i % 60, 0xB0, 1, i % 128});  // wheels cannot crowd the notes out
+  midi({0x80, 60, 0});
+  renderNew(2.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "a note-off after a storm of wheel messages was lost");
+
+  section("review: Panic silences the delay and the reverb as well as the voices");
+  boot(48000);
+  setStep(fw::P_DLY_MIX, 80);
+  setStep(fw::P_DLY_FDBK, 100);
+  setStep(fw::P_RVB_MIX, 80);
+  setStep(fw::P_RVB_SIZE, 100);
+  midi({0x90, 60, 120, 0x90, 67, 120});
+  renderNew(1.0);
+  midi({0xB0, 120, 0});
+  renderNew(0.02);
+  CHECK(peakOf(renderNew(1.0)) == 0.0, "sound left after Panic: peak %.5f", peakOf(renderNew(1.0)));
+
+  section("review: a note-on and note-off arriving together still sounds");
+  for (int engine : {(int)fw::ENG_VA, (int)fw::ENG_PLUCK}) {
+    boot(48000);
+    setStep(fw::P_OSC1_ENGINE, engine);
+    renderNew(0.05);
+    midi({0x90, 60, 110, 0x80, 60, 0});
+    double peak = peakOf(renderNew(0.2));
+    CHECK(peak > 0.02, "engine %d: a note shorter than one block made no sound (peak %.5f)", engine, peak);
+    renderNew(3.0);
+    CHECK(fw::gSynth.activeVoices() == 0, "and it should still end");
+  }
+
+  section("review: a plucked string does not wait for its fader");
+  boot(48000);
+  setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+  setPot("mix_osc1", 0.0);
+  setPot("mix_osc2", 0.0);
+  setPot("aenv_sustain", 1.0);
+  renderNew(0.05);
+  midi({0x90, 60, 110});
+  renderNew(2.0);              // the pluck happens, unheard
+  setPot("mix_osc2", 0.8);
+  double late = rmsOf(renderNew(0.3), 0.0, 0.3);
+  CHECK(late < 0.003, "raising the fader two seconds later replayed the pluck (level %.4f)", late);
+
+  section("review: a pluck too low for its string plays an octave up, not a wrong note");
+  boot(48000);
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_PLUCK);
+  setSel("osc1_octave", 0);    // two octaves down
+  setPot("mix_osc2", 0.0);
+  setPot("filter_cutoff", 1.0);
+  setStep(fw::P_OSC1_COLOR, 100);
+  renderNew(0.05);
+  midi({0x90, 36, 110});       // C2 two octaves down is 16.4 Hz: its period does not fit the string
+  std::vector<float> low = renderNew(1.5);
+  // The wave should repeat every 1/32.7 s (C1, the nearest octave that fits),
+  // and not at the clamped length it used to play, which was no note at all.
+  auto repeatsAt = [&low](double hz) {
+    size_t lag = (size_t)std::lround(gSr / hz), from = (size_t)(0.4 * gSr), n = (size_t)(0.8 * gSr);
+    double best = 0;
+    for (size_t d = lag - 3; d <= lag + 3; ++d) {
+      double ab = 0, aa = 0, bb = 0;
+      for (size_t i = from; i < from + n; ++i) {
+        ab += (double)low[i] * low[i + d];
+        aa += (double)low[i] * low[i];
+        bb += (double)low[i + d] * low[i + d];
+      }
+      best = std::max(best, ab / std::sqrt(aa * bb + 1e-30));
+    }
+    return best;
+  };
+  CHECK(repeatsAt(32.703) > 0.9, "the pluck should play C1; its likeness to itself one C1 period later is only %.2f", repeatsAt(32.703));
+  CHECK(repeatsAt(23.46) < 0.6, "it still repeats at the old clamped length (%.2f)", repeatsAt(23.46));
+}
+
+static void testHighSampleRates() {
+  for (double sr : {96000.0, 192000.0}) {
+    char title[96];
+    std::snprintf(title, sizeof title, "review: at %.0f Hz everything stays in bounds and finite, effects on", sr);
+    section(title);
+    boot(sr);
+    setStep(fw::P_CHORUS, 100);
+    setStep(fw::P_DLY_MIX, 70);
+    setStep(fw::P_DLY_TIME, 100);
+    setStep(fw::P_DLY_FDBK, 70);
+    setStep(fw::P_RVB_MIX, 70);
+    setStep(fw::P_RVB_SIZE, 100);
+    setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+    setSel("osc1_wave", fw::WAVE_SUPER);
+    for (int k : {36, 48, 60, 72}) midi({0x90, k, 100});
+    std::vector<float> x = renderNew(1.5);
+    bool finite = true;
+    for (float v : x) finite = finite && std::isfinite(v);
+    CHECK(finite && peakOf(x) > 0.01 && peakOf(x) <= 1.0, "output at %.0f Hz: finite %d, peak %.3f", sr, (int)finite, peakOf(x));
+    midi({0xB0, 123, 0});
+    setPot("aenv_release", 0.1);
+    setStep(fw::P_DLY_MIX, 0);
+    renderNew(1.0);
+    // the reverb must still be a reverb: after the notes stop its tail should fade smoothly, not ring at one pitch
+    std::vector<float> tail = renderNew(0.5);
+    double early = rmsOf(tail, 0.0, 0.12), later = rmsOf(tail, 0.38, 0.5);
+    CHECK(early > 0 && later < early, "reverb tail should be dying away (%.5f then %.5f)", early, later);
+  }
+}
+
+static void testOverloadAndSaving() {
+  section("review: when the processor is overloaded the engine sheds voices instead of falling behind");
+  boot(48000);
+  for (int k = 0; k < 8; ++k) midi({0x90, 40 + k * 3, 100});
+  renderNew(0.2);
+  CHECK(fw::gSynth.activeVoices() == 8 && fw::gSynth.voiceLimit() == 8, "set-up: eight voices, no limit");
+  fw::reportLoad(0.5f);
+  renderNew(0.5);
+  CHECK(fw::gSynth.activeVoices() == 8, "half the time used is no reason to drop anything");
+  fw::reportLoad(0.97f);
+  renderNew(0.02);
+  int after = fw::gSynth.activeVoices();
+  CHECK(after < 8 && after >= 2, "a sustained overload should drop a voice within a few blocks (%d sounding)", after);
+  renderNew(1.0);
+  CHECK(fw::gSynth.activeVoices() == 2 && fw::gSynth.voiceLimit() == 2, "it keeps shedding while overloaded, but never below two (%d sounding, limit %d)",
+        fw::gSynth.activeVoices(), fw::gSynth.voiceLimit());
+  midi({0x90, 90, 100});
+  renderNew(0.05);
+  CHECK(fw::gSynth.activeVoices() == 2, "a new note should take a voice over, not add one (%d sounding)", fw::gSynth.activeVoices());
+  std::vector<float> x = renderNew(0.2);
+  bool finite = true;
+  for (float v : x) finite = finite && std::isfinite(v);
+  CHECK(finite, "output while shedding");
+  fw::reportLoad(0.3f);
+  renderNew(1.0);
+  CHECK(fw::gSynth.voiceLimit() == 2, "one calm second is not enough to give a voice back");
+  renderNew(14.0);
+  CHECK(fw::gSynth.voiceLimit() == 8, "after a calm spell every voice should be allowed again (limit %d)", fw::gSynth.voiceLimit());
+  fw::tick(33);
+  CHECK(countColour(fw::kDarkGrey, 225, 233) + countColour(fw::kLine, 225, 233) >= 8 * 64, "the status strip should show all eight voice squares again");
+
+  section("review: saving waits for silence, so a save cannot interrupt a held note");
+  boot(48000);
+  gSaveCount = 0;
+  midi({0x90, 60, 100});
+  renderNew(0.1);
+  setPot("filter_cutoff", 0.4);
+  for (int i = 0; i < 100; ++i) {  // five seconds with the note held
+    renderNew(0.05);
+    fw::tick(50);
+  }
+  CHECK(gSaveCount == 0, "saved while a note was sounding");
+  midi({0x80, 60, 0});
+  for (int i = 0; i < 100 && gSaveCount == 0; ++i) {
+    renderNew(0.05);
+    fw::tick(50);
+  }
+  CHECK(gSaveCount == 1, "it should save once the note has died away (%d saves)", gSaveCount);
+  midi({0x90, 60, 100});
+  renderNew(0.1);
+  setPot("filter_cutoff", 0.6);
+  for (int i = 0; i < 700 && gSaveCount == 1; ++i) {  // a drone: it does not wait for ever
+    renderNew(0.05);
+    fw::tick(50);
+  }
+  CHECK(gSaveCount == 2, "after half a minute it should save anyway");
+
+  section("review: Hold, like Chord, does not come back on by itself after a restart");
+  boot(48000);
+  press("btn_hold");
+  CHECK(fw::gParams.step(fw::P_HOLD) == 1, "set-up: Hold on");
+  fw::tick(1200);
+  boot(48000, true);
+  CHECK(fw::gParams.step(fw::P_HOLD) == 0 && fw::controlGet(ctl("btn_hold")) == 0, "Hold should be off after a restart");
+  CHECK(fw::kParams[fw::P_HOLD].section == fw::SEC_ARP, "Hold belongs with the arp, where its button is");
+
+  section("review: master volume by MIDI behaves like every other control: the knob stays put and follows");
+  boot(48000);
+  int vol = ctl("volume");
+  int was = fw::controlGet(vol);
+  setCC(fw::P_VOLUME, 30);
+  CHECK(fw::controlGet(vol) == was && fw::gPatch.following(vol), "the volume knob must not move by itself");
+  CHECK(fw::gParams.val[fw::P_VOLUME] == (30 * 4095 + 63) / 127, "the sound takes the value");
+  fw::controlSet(vol, was - 400);
+  CHECK(fw::gPatch.following(vol), "moving without reaching the value does not take over");
+  fw::controlSet(vol, 500);
+  CHECK(!fw::gPatch.following(vol) && fw::gParams.val[fw::P_VOLUME] == 500, "moving through the value does");
+}
+
+// A real pot's converter reading: the true position plus jitter.
+static int roughReading(int truth, uint32_t& rng, int jitter = 8) {
+  rng = rng * 1664525u + 1013904223u;
+  int r = truth + (int)((rng >> 9) % (uint32_t)(2 * jitter + 1)) - jitter;
+  return r < 0 ? 0 : (r > 4095 ? 4095 : r);
+}
+
+static void testPotReadings() {
+  section("pots: jitter on a resting knob is not a movement");
+  boot(48000);
+  int cut = ctl("filter_cutoff"), res = ctl("filter_resonance");
+  uint32_t rng = 99;
+  int truth = fw::controlGet(cut);
+  fw::tick(2000);
+  gSaveCount = 0;
+  int reports = 0, last = fw::controlGet(cut);
+  for (int i = 0; i < 20000; ++i) {  // more than three minutes of scanning at 100 Hz
+    fw::potReading(cut, roughReading(truth, rng));
+    if (fw::controlGet(cut) != last) {
+      ++reports;
+      last = fw::controlGet(cut);
+    }
+    if (i % 3 == 0) fw::tick(30);
+  }
+  CHECK(reports == 0, "a still knob reported %d movements", reports);
+  CHECK(fw::gUi.popupParam() < 0, "jitter must not bring up the control's picture");
+  CHECK(gSaveCount == 0, "nor keep restarting the save timer (%d saves)", gSaveCount);
+
+  section("pots: a turned knob is followed closely and both ends can be reached");
+  int worst = 0;
+  for (int step = 0; step <= 40; ++step) {
+    truth = step * 4095 / 40;
+    for (int i = 0; i < 40; ++i) fw::potReading(cut, roughReading(truth, rng));  // 0.4 s at 100 Hz
+    worst = std::max(worst, std::abs(fw::controlGet(cut) - truth));
+  }
+  CHECK(worst <= 16, "settled readings should be within 16 counts of the true position (worst %d)", worst);
+  CHECK(fw::controlGet(cut) == 4095 && fw::gParams.val[fw::P_CUTOFF] == 4095, "the top must be reachable (got %d)", fw::controlGet(cut));
+  truth = 3;
+  for (int i = 0; i < 60; ++i) fw::potReading(cut, roughReading(truth, rng));
+  CHECK(fw::controlGet(cut) == 0, "the bottom must be reachable (got %d)", fw::controlGet(cut));
+  truth = 2000;
+  int need = 0;
+  while (std::abs(fw::controlGet(cut) - truth) > 40 && need < 100) {
+    fw::potReading(cut, roughReading(truth, rng));
+    ++need;
+  }
+  CHECK(need <= 6, "a quick turn should be followed within a few readings (took %d)", need);
+
+  section("pots: a little bleed from a neighbour is absorbed; a lot is not, and has to be dealt with in the circuit");
+  int resTruth = fw::controlGet(res), moves = 0;
+  last = resTruth;
+  for (int sweep = 0; sweep < 4095; sweep += 15) {  // the neighbouring pot swept end to end, 0.15% of it leaking in
+    int reading = roughReading(resTruth, rng) + (int)std::lround(0.0015 * (sweep - resTruth));
+    fw::potReading(res, reading);
+    moves += fw::controlGet(res) != last;
+    last = fw::controlGet(res);
+  }
+  CHECK(moves == 0, "0.15%% of a neighbour's swing moved a resting pot %d times", moves);
+  moves = 0;
+  for (int sweep = 0; sweep < 4095; sweep += 15) {  // 2%: what an unbuffered multiplexer read too quickly can do
+    int reading = roughReading(resTruth, rng) + (int)std::lround(0.02 * (sweep - resTruth));
+    fw::potReading(res, reading);
+    moves += fw::controlGet(res) != last;
+    last = fw::controlGet(res);
+  }
+  std::printf("    (for information: with 2%% bleed the resting pot was moved %d times by its neighbour; the firmware cannot hide that)\n", moves);
+
+  section("pots: taking over from a patch still works through rough readings");
+  boot(48000);
+  rng = 7;
+  setPot("filter_cutoff", 0.3);
+  savePatchTo(0);
+  while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
+  setPot("filter_cutoff", 0.8);
+  fw::patchLoad(0);
+  int stored = fw::gParams.val[fw::P_CUTOFF];
+  truth = fw::controlGet(cut);
+  CHECK(fw::gPatch.following(cut), "set-up: Cutoff should be following the patch");
+  for (int i = 0; i < 3000; ++i) fw::potReading(cut, roughReading(truth, rng));
+  CHECK(fw::gPatch.following(cut) && fw::gParams.val[fw::P_CUTOFF] == stored, "jitter on a following knob must not take over or change the sound");
+  bool jumped = false;
+  for (; truth > stored - 300; truth -= 12) {  // turned down through the stored value
+    int before = fw::gParams.val[fw::P_CUTOFF];
+    for (int i = 0; i < 3; ++i) fw::potReading(cut, roughReading(truth, rng));
+    jumped = jumped || std::abs((int)fw::gParams.val[fw::P_CUTOFF] - before) > 140;
+  }
+  CHECK(!fw::gPatch.following(cut), "turning through the stored value should take over");
+  CHECK(!jumped, "and the sound should not jump on the way");
+
+  section("pots: at power-up a knob left where it was is not a movement, and one that was turned is");
+  boot(48000);
+  fw::tick(2000);
+  rng = 3;
+  int restAt = fw::controlGet(cut);
+  fw::potReading(cut, restAt + 13);  // the worst a first reading should be: full jitter plus a trace of a neighbour
+  for (int i = 0; i < 200; ++i) fw::potReading(cut, roughReading(restAt, rng));
+  CHECK(fw::controlGet(cut) == restAt && fw::gUi.popupParam() < 0, "first readings within the jitter should change nothing");
+  fw::potReading(res, 3900);
+  CHECK(fw::controlGet(res) == 3900, "a knob turned while the power was off should be picked up at once");
+}
+
+static void testReviewPictures() {
+  section("review: pictures that misled under particular settings now tell the truth");
+  auto hintShown = [] { return countColour(fw::kGrey, 54, 74) > 150; };
+
+  boot(48000);  // Filter Type under the ladder
+  setStep(fw::P_FILT_SLOPE, fw::SLOPE_LADDER);
+  setSel("filter_type", fw::FILT_HP);
+  fw::tick(33);
+  CHECK(hintShown(), "Type under the ladder slope should say the ladder is low-pass only");
+  saveFrame("review_type_ladder");
+
+  boot(48000);  // Sync
+  setStep(fw::P_OSC2_ENGINE, fw::ENG_PLUCK);
+  setSel("osc_sync", 1);
+  fw::tick(33);
+  CHECK(hintShown() && countColour(fw::kAccent, 70, 90) == 0, "Sync with oscillator 2 plucked should say it has no effect and draw no restarts");
+  boot(48000);
+  setSel("osc2_octave", 1);  // an octave below oscillator 1: sync chops it, which is plainly audible
+  setSel("osc_sync", 1);
+  fw::tick(33);
+  std::vector<uint8_t> on = pictureRows(76, 216);
+  setSel("osc_sync", 0);
+  fw::tick(33);
+  CHECK(pictureRows(76, 216) != on, "Sync with oscillator 2 below oscillator 1 should show the wave being cut short");
+  saveFrame("review_sync_below");
+
+  boot(48000);  // X-Mod
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_PLUCK);
+  setPot("osc_xmod", 0.3);
+  fw::tick(33);
+  std::vector<uint8_t> a = pictureRows(76, 216);
+  setPot("osc_xmod", 0.9);
+  fw::tick(33);
+  CHECK(hintShown() && pictureRows(76, 216) == a, "X-Mod on a plucked oscillator 1 should say so and not pretend to bend it");
+  boot(48000);
+  setPot("mix_osc1", 0.0);
+  setPot("osc_xmod", 0.7);
+  fw::tick(33);
+  CHECK(hintShown(), "X-Mod with oscillator 1's fader down should say so");
+  boot(48000);  // the table read past its end that the review's sanitizer run caught
+  setSel("osc1_wave", fw::WAVE_SIN);
+  setSel("osc2_wave", fw::WAVE_SUPER);
+  for (int raw : {1, 2, 3, 4094}) {
+    fw::controlSet(ctl("osc_xmod"), raw);
+    fw::tick(33);
+  }
+
+  boot(48000);  // Spread in mono
+  setSel("voice_mode", fw::MODE_MONO);
+  setPot("voice_spread", 0.2);
+  fw::tick(33);
+  a = pictureRows(80, 216);
+  setPot("voice_spread", 0.9);
+  fw::tick(33);
+  CHECK(hintShown() && pictureRows(80, 216) == a, "Spread in mono should say the voice stays in the middle and draw it there");
+
+  boot(48000);  // Wave under the pluck engine: five exciters, five pictures
+  setStep(fw::P_OSC1_ENGINE, fw::ENG_PLUCK);
+  std::vector<std::vector<uint8_t>> seen;
+  for (int w = 0; w < fw::WAVE_COUNT; ++w) {
+    setSel("osc1_wave", (w + 1) % fw::WAVE_COUNT);
+    fw::tick(33);
+    std::vector<uint8_t> pic = pictureRows(48, 218);
+    bool fresh = true;
+    for (const auto& other : seen) fresh = fresh && other != pic;
+    if (fresh) seen.push_back(pic);
+  }
+  CHECK(seen.size() == (size_t)fw::WAVE_COUNT, "the five pluck exciters should each look different (%zu distinct)", seen.size());
+  saveFrame("review_pluck_exciter");
+
+  boot(48000);  // Env>Pitch settles where the filter envelope's Sustain holds it
+  setPot("fenv_sustain", 0.9);
+  setCC(fw::P_FENV_PITCH, 70);
+  setCC(fw::P_FENV_PITCH, 62);
+  fw::tick(33);
+  a = pictureRows(48, 218);
+  setPot("fenv_sustain", 0.1);
+  setCC(fw::P_FENV_PITCH, 70);
+  setCC(fw::P_FENV_PITCH, 62);
+  fw::tick(33);
+  CHECK(pictureRows(48, 218) != a, "the Env>Pitch picture should show the pitch held up by the filter envelope's Sustain");
+  saveFrame("review_env_pitch");
+
+  boot(48000);  // an encoder turned while a control's picture is up
+  press("btn_fx1");
+  setPot("filter_cutoff", 0.3);
+  CHECK(fw::gUi.popupParam() == fw::P_CUTOFF, "set-up: the Cutoff picture is up");
+  fw::encoderTurn(ctl("enc1"), 2);
+  CHECK(fw::gUi.popupParam() < 0, "turning an encoder should bring its page back, so the value being changed is seen");
+}
+
+// The firmware's whole API driven at random, at several sample rates and
+// with controls at the very ends of their travel. On its own this checks
+// only that the output stays finite; under the sanitizers (make sanitize)
+// it is the search for reads and writes outside a buffer.
+static void testRandomUse() {
+  section("review: random use of every control, button, encoder and MIDI message, 44.1 to 192 kHz");
+  uint32_t rng = 0xBADC0DEu;
+  auto rnd = [&rng](int n) {
+    rng = rng * 1664525u + 1013904223u;
+    return (int)((rng >> 9) % (uint32_t)n);
+  };
+  static const double kRates[] = {44100, 48000, 88200, 96000, 192000};
+  static const int kEdges[] = {0, 1, 2, 2047, 2048, 4093, 4094, 4095};
+  bool finite = true;
+  for (int run = 0; run < 10; ++run) {
+    boot(kRates[run % 5]);
+    float l[fw::kMaxBlock], r[fw::kMaxBlock];
+    for (int step = 0; step < 1500; ++step) {
+      int a = rnd(100);
+      if (a < 30) {
+        int c = rnd(fw::kFirstEncoder);
+        fw::ControlInfo info = fw::controlInfo(c);
+        fw::controlSet(c, info.kind == fw::CK_SELECTOR ? rnd(info.steps) : (rnd(2) ? kEdges[rnd(8)] : rnd(4096)));
+      } else if (a < 40) {
+        fw::potReading(rnd(fw::kFirstEncoder), rnd(4200) - 50);
+      } else if (a < 55) {
+        fw::midiByte((uint8_t)(rnd(2) ? 0x90 : 0x80));
+        fw::midiByte((uint8_t)rnd(128));
+        fw::midiByte((uint8_t)rnd(128));
+      } else if (a < 70) {
+        fw::midiByte(0xB0);
+        fw::midiByte((uint8_t)rnd(128));
+        fw::midiByte((uint8_t)rnd(128));
+      } else if (a < 75) {
+        fw::midiByte((uint8_t)rnd(256));  // anything at all
+      } else if (a < 85) {
+        int c = fw::kFirstEncoder + rnd(fw::kNumEncoders + fw::kNumButtons);
+        fw::controlSet(c, 1);
+        fw::controlSet(c, 0);
+      } else if (a < 93) {
+        fw::encoderTurn(fw::kFirstEncoder + rnd(4), rnd(41) - 20);
+      } else if (a < 96) {
+        fw::midiByte(0xC0);
+        fw::midiByte((uint8_t)rnd(20));
+      } else {
+        fw::reportLoad((float)rnd(120) * 0.01f);
+      }
+      int len = 1 + rnd(fw::kMaxBlock);
+      fw::process(l, r, len);
+      for (int i = 0; i < len; ++i) finite = finite && std::isfinite(l[i]) && std::isfinite(r[i]) && std::fabs(l[i]) <= 1.0f && std::fabs(r[i]) <= 1.0f;
+      if (step % 7 == 0) fw::tick((uint32_t)(1 + rnd(60)));
+    }
+  }
+  CHECK(finite, "the output left the range -1..1 or stopped being a number");
 }
 
 static void benchmark() {
@@ -2832,6 +3362,12 @@ int main(int argc, char** argv) {
   testChordMemory();
   testPatches();
   testPictures();
+  testNotesEndInSilence();
+  testHighSampleRates();
+  testOverloadAndSaving();
+  testPotReadings();
+  testReviewPictures();
+  testRandomUse();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

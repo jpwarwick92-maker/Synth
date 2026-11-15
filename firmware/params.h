@@ -11,7 +11,7 @@
 namespace fw {
 
 enum ParamId : uint8_t {
-  // ---- front panel, layout A2 ----
+  // ---- front panel (the first build's controls; later panel controls are further down) ----
   P_OSC1_WAVE,
   P_OSC1_OCTAVE,
   P_OSC1_MACRO,
@@ -45,8 +45,9 @@ enum ParamId : uint8_t {
   P_LFO_DEST,
   // ---- rear panel ----
   P_VOLUME,
-  // ---- soft controls. New ones are only ever added at the end, so saved
-  // state from an older build still lines up. ----
+  // ---- everything added since. New parameters only ever go at the end, so
+  // saved state from an older build still lines up. Most are soft controls
+  // (encoder pages); the arp's four and the last four became panel controls. ----
   // Engine page 1: voice
   P_UNI_DETUNE,
   P_SUB_OCTAVE,

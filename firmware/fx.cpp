@@ -9,10 +9,19 @@ Effects gFx;
 
 namespace {
 
-constexpr int kChorusLen = 2048;    // 21 ms at 96 kHz
+// The lines are sized for 48 kHz, the rate the page runs at; the Teensy
+// runs at 44.1 kHz. At a higher rate everything still works and stays in
+// bounds, but there is less time in each line: the longest delay is shorter
+// than its setting says and the reverb's lines are scaled down together.
+constexpr int kChorusLen = 2048;    // 42 ms at 48 kHz
 constexpr int kDelayLen = 36000;    // 0.75 s at 48 kHz
 constexpr int kReverbLen = 2304;    // 48 ms at 48 kHz
 constexpr int kAllpassLen = 512;
+
+// Feedback loops left to die away end up holding numbers too small to
+// matter but slow to compute with on some processors. Anything this small
+// is called zero.
+inline float tiny0(float x) { return absf(x) < 1e-15f ? 0.0f : x; }
 
 float gChorus[kChorusLen];
 FW_BIGMEM int16_t gDelay[kDelayLen];  // 16-bit: half the memory, noise far below the signal
@@ -54,12 +63,15 @@ void Effects::init(float sampleRate) {
   chPos_ = 0;
   chPhase_ = 0.0f;
   dlPos_ = 0;
-  dlLen_ = 0.3f * sr_;
+  dlLen_ = minf(0.3f * sr_, (float)(kDelayLen - 2));
   dlGlide_ = 1.0f - exp2f_(-1.4427f / (0.06f * sr_));
   dlLp_ = 0.0f;
   rvPos_ = 0;
+  // If the longest line does not fit its buffer, all four shrink by the
+  // same factor, so they stay different lengths and the reverb keeps its character.
+  rvScale_ = minf(1.0f, (float)(kReverbLen - 2) / (kReverbSec[3] * sr_));
   for (int i = 0; i < 4; ++i) {
-    rvLen_[i] = clampi((int)(kReverbSec[i] * sr_), 8, kReverbLen - 1);
+    rvLen_[i] = clampi((int)(kReverbSec[i] * sr_ * rvScale_), 8, kReverbLen - 1);
     rvLp_[i] = 0.0f;
   }
   for (int i = 0; i < 2; ++i) {
@@ -82,7 +94,8 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
     for (int i = 0; i < kChorusLen; ++i) gChorus[i] = 0.0f;
   chorusOn_ = chorus;
   if (chorus) {
-    float base = 0.012f * sr_, depth = 0.004f * sr_ * s.chorus;
+    float room = minf(1.0f, (float)(kChorusLen - 4) / (0.016f * sr_));  // keeps the taps inside the line at any rate
+    float base = 0.012f * sr_ * room, depth = 0.004f * sr_ * s.chorus * room;
     float wet = 0.5f * s.chorus;
     float inc = 0.6f / sr_;
     for (int i = 0; i < n; ++i) {
@@ -125,7 +138,7 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       if (i0 >= kDelayLen) i0 -= kDelayLen;  // pos can round up to exactly the length (see readFrac)
       int i1 = i0 + 1 < kDelayLen ? i0 + 1 : 0;
       float echo = ((float)gDelay[i0] + (float)(gDelay[i1] - gDelay[i0]) * f) * (1.0f / 32767.0f);
-      dlLp_ += tone * (echo - dlLp_);
+      dlLp_ = tiny0(dlLp_ + tone * (echo - dlLp_));
       float write = tanhf_(0.5f * (outL[i] + outR[i]) + dlLp_ * fdbk);
       gDelay[dlPos_] = (int16_t)(write * 32767.0f);
       if (++dlPos_ >= kDelayLen) dlPos_ = 0;
@@ -147,7 +160,7 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
   reverbOn_ = reverb;
   if (reverb) {
     // gain per trip round the loop for the level to fall 60 dB in rvbTime
-    float g = exp2f_(-9.966f * 0.038f / maxf(s.rvbTime, 0.05f));
+    float g = exp2f_(-9.966f * 0.038f * rvScale_ / maxf(s.rvbTime, 0.05f));
     float damp = 0.15f + 0.85f * s.rvbTone;
     // a long tail piles up on itself; trim it so a bigger room is not simply louder
     float wet = 0.95f * s.rvbMix * sqrtf_(1.0f - g * g);
@@ -155,7 +168,7 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       float x = 0.5f * (outL[i] + outR[i]);
       for (int a = 0; a < 2; ++a) {  // diffusion: smears each note into a wash
         float d = gAllpass[a][apPos_[a]];
-        float v = x + 0.6f * d;
+        float v = tiny0(x + 0.6f * d);
         gAllpass[a][apPos_[a]] = v;
         if (++apPos_[a] >= apLen_[a]) apPos_[a] = 0;
         x = d - 0.6f * v;
@@ -164,7 +177,7 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       for (int l = 0; l < 4; ++l) {
         int rp = rvPos_ - rvLen_[l];
         if (rp < 0) rp += kReverbLen;
-        rvLp_[l] += damp * (gReverb[l][rp] - rvLp_[l]);
+        rvLp_[l] = tiny0(rvLp_[l] + damp * (gReverb[l][rp] - rvLp_[l]));
         d[l] = rvLp_[l];
       }
       // every line feeds every other, in a pattern that neither gains nor loses energy

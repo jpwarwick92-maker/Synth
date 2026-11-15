@@ -338,7 +338,7 @@ export function makeControl(parent, def, sizes, send) {
   const g = el('g', { transform: `translate(${def.x} ${def.y})`, class: `ctl ${def.type}`, 'data-id': def.id }, parent);
   const c = {
     id: def.id, type: def.type, def, el: g, value: 0, fine: 0, held: false, movedAt: -1e9,
-    labelEl: null, ledRgb: 0,
+    labelEl: null, ledRgb: 0, placed: false,
     draw() {},
     // The light behind the control's label, as the firmware drives it.
     led(rgb) {
@@ -352,6 +352,11 @@ export function makeControl(parent, def, sizes, send) {
     // firmware's reports run a frame or two behind and would tug it back.
     set(v) {
       if (this.held || v === this.value || performance.now() - this.movedAt < 250) return;
+      // The firmware's reading of a real pot is never exact, and a real knob
+      // does not twitch to agree with it: small differences are left alone.
+      const pot = this.type === 'knob' || this.type === 'fader';
+      if (pot && this.placed && Math.abs(v - this.value) <= 40) return;
+      this.placed = true;
       this.value = v;
       this.draw();
     },

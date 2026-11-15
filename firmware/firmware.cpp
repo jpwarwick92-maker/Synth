@@ -19,6 +19,9 @@ const char* const kButtonNames[kNumButtons] = {
 constexpr int kButtonOsc1Engine = MB_COUNT, kButtonHold = MB_COUNT + 2, kButtonChord = MB_COUNT + 3;
 
 constexpr uint32_t kSaveDelayMs = 1000;  // save once the controls have been still this long
+// Writing to storage can stop everything for a moment on real hardware, so
+// a save also waits for silence, though never longer than this.
+constexpr uint32_t kSaveWaitMaxMs = 30000;
 // Version 2: the LFO Shape control became a five-stop selector. Version 1
 // stored it as a pot position; that is converted on loading.
 // Version 3: arp Tempo and Gate became panel pots (they were stepped encoder values).
@@ -27,6 +30,7 @@ constexpr uint8_t kStateVersion = 4;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
+uint32_t gSaveWaitedMs;  // how long a due save has been waiting for silence
 
 }  // namespace
 
@@ -96,14 +100,19 @@ void init(float sampleRate) {
   uint8_t blob[kStateSize];
   uint32_t n = fw_hal_storage_load(blob, kStateSize);
   if (n > 0) stateRead(blob, n);
+  gParams.set(P_HOLD, 0);  // Hold is a performance switch, like Chord: it does not come back on by itself
   gSynth.init(sampleRate);
   gMidi.init();
   gUi.init();
   for (int i = 0; i < kNumEncoders; ++i) gEncoderPos[i] = 0;
   gSaveMs = 0;
+  gSaveWaitedMs = 0;
+  potsReset();
 }
 
 void process(float* outL, float* outR, int n) { gSynth.process(outL, outR, n); }
+
+void reportLoad(float fraction) { gSynth.reportLoad(fraction); }
 
 void midiByte(uint8_t b) { gMidi.byte(b); }
 
@@ -186,8 +195,12 @@ bool tick(uint32_t dtMs) {
   if (gSaveMs > 0) {
     if (gSaveMs > dtMs) {
       gSaveMs -= dtMs;
+    } else if (gSynth.activeVoices() > 0 && gSaveWaitedMs < kSaveWaitMaxMs) {
+      gSaveMs = 1;  // due, but notes are sounding: look again next tick
+      gSaveWaitedMs += dtMs;
     } else {
       gSaveMs = 0;
+      gSaveWaitedMs = 0;
       uint8_t blob[kStateSize];
       fw_hal_storage_save(blob, stateWrite(blob));
     }

@@ -14,11 +14,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const siteDir = process.argv[2] || 'build/site';
-const minutes = Number(process.argv[3] || 15);
+const fullMinutes = Number(process.argv[3] || 15);
 const wasm = await readFile(path.join(siteDir, 'firmware.wasm'));
 let fails = 0;
 
-for (const sampleRate of [44100, 48000]) {
+// 44.1 kHz is the Teensy's rate and 48 kHz the page's. 96 kHz is run for a shorter time: the firmware is
+// not made for it, but a sound device set that high must not be able to break it.
+for (const [sampleRate, minutes] of [[44100, fullMinutes], [48000, fullMinutes], [96000, Math.min(5, fullMinutes)]]) {
   const x = (await WebAssembly.instantiate(wasm, {})).instance.exports;
   x.fw_init(sampleRate);
   const block = x.fw_max_block();

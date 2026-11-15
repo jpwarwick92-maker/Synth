@@ -95,6 +95,8 @@ const char* FW_EXPORT(fw_control_name)(int i) { return fw::controlInfo(i).name; 
 int FW_EXPORT(fw_control_kind)(int i) { return fw::controlInfo(i).kind; }
 int FW_EXPORT(fw_control_steps)(int i) { return fw::controlInfo(i).steps; }
 void FW_EXPORT(fw_control_set)(int i, int raw) { fw::controlSet(i, raw); }
+// A pot as a converter would read it, jitter and all (the page's "rough pots" stand-in for real hardware).
+void FW_EXPORT(fw_pot_reading)(int i, int raw) { fw::potReading(i, raw); }
 void FW_EXPORT(fw_encoder_turn)(int i, int delta) { fw::encoderTurn(i, delta); }
 int FW_EXPORT(fw_control_get)(int i) { return fw::controlGet(i); }
 // The light behind a control's label, 0xRRGGBB, as an LED driver would be sent it.

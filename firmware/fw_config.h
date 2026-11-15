@@ -8,9 +8,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Large static buffers (wavetables, the display buffer) are tagged with
-// FW_BIGMEM. A target can define it to place them in a specific memory
-// region. On the Teensy 4.1 they go in RAM2, leaving the fast RAM for code.
+// Large static buffers that are read only now and then per sample (the
+// wavetables, the delay line, the scope) are tagged with FW_BIGMEM. A target
+// can define it to place them in a specific memory region. On the Teensy 4.1
+// they go in RAM2, leaving the fast RAM for code, the tables read most
+// often, and the display buffer.
 #ifndef FW_BIGMEM
 #if defined(__IMXRT1062__)  // Teensy 4.x: RAM2. Not cleared at start-up; the core initialises all of it.
 #define FW_BIGMEM __attribute__((section(".dmabuffers"), used))

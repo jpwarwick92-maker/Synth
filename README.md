@@ -28,7 +28,9 @@ on-screen knob never moves by itself, because a real one cannot.
 Rules for code in `firmware/`:
 
 - no memory allocation, at start-up or while playing;
-- audio in blocks of at most 128 samples, at any sample rate;
+- audio in blocks of at most 128 samples. Safe at any sample rate; made for 44.1 kHz
+  (the Teensy) and 48 kHz (the page asks the browser for it). Above 48 kHz the longest
+  delay is shorter than its setting says and the reverb's lines are scaled down;
 - only `<stdint.h>` and `<stddef.h>`; maths comes from `fw_math.h`;
 - the display is drawn with pixels, lines, fills and a bitmap font only, in a fixed
   set of colours named by what they are for (the frame is 4 bits per pixel), and no
@@ -71,8 +73,11 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
 - **1:1 size** shows the panel at true physical size. It asks once for calibration
   against a bank card held to the screen.
 - Each control's label stands in for a back-lit label on the real panel. It is plain
-  warm white normally, and turns orange or blue when the control is off a loaded patch
-  (see Patches below).
+  warm white normally, and glows red to amber or blue when the control is off a loaded
+  patch (see Patches below).
+- **Rough pots** (among the test aids) feeds the firmware pot readings as real hardware
+  gives them: a few counts of jitter and a trace of the neighbouring pot. The firmware
+  smooths them, so nothing should look or sound different with it on.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
   and mod wheels, a Test note button that holds a chord, a sustain-pedal switch and Panic.
 
@@ -111,8 +116,9 @@ neighbours. The panel is 490 x 152 mm.
 **The display.** Every control has a picture that follows it: turn a control and its
 picture changes, or says in words why there is nothing to show (Macro on a saw wave,
 a delay with its mix at zero). The tests enforce this for every panel control and
-every value on the encoder pages. On an encoder page the picture takes the place of
-the scope for a moment after an encoder is turned.
+every value on the encoder pages, from the default settings, with further tests for
+the settings under which a control does nothing. On an encoder page the picture takes
+the place of the scope for a moment after an encoder is turned.
 
 The display has two sets of colours, chosen on the Setup page. **Amber** is ambers and
 orange on black, for a bare display. **White** is warm whites told apart by brightness,
@@ -171,7 +177,8 @@ loading a patch cannot move it. Instead:
 - **Manual** (push encoder 4) drops the patch: every control goes live where it stands.
 - The home screen shows the slot and name, with `*` once the sound has changed.
 - A MIDI controller message for a panel parameter is treated like a one-control load:
-  the control follows the incoming value until it is touched.
+  the control follows the incoming value until it is moved through it (or, for a
+  selector, changed). That goes for master volume too.
 
 On the Teensy the slots sit in the on-board EEPROM for now, which is why there are
 sixteen; a memory card or the board's flash would hold far more.
@@ -180,9 +187,20 @@ sixteen; a memory card or the board's flash would hold far more.
 up-down, random or as played, over 1 to 4 octaves, at 40 to 240 BPM. **Hold** keeps
 notes sounding after the keys are let go; the next chord replaces them. It works with
 the arp on or off. While the arp runs, the sustain pedal acts as a temporary Hold.
+Neither Hold nor Chord comes back on by itself after a restart.
 
-**Output** is stereo once the chorus or reverb is on. With every effect off, both
-channels carry exactly the dry signal.
+**The LFO's PW destination** moves whatever Macro sets on that oscillator: pulse width
+on a square, the supersaw's detune, FM amount, wavetable position, pluck damping. It
+does nothing on a plain saw, triangle or sine.
+
+**When the processor is short of time.** A target that can time its audio (the Teensy)
+reports how much of each block's time was used. If that stays above about 85% the
+engine drops voices one at a time, down to two at the fewest, and gives them back
+after a calm spell, instead of falling behind. Saving to storage waits for silence
+(for up to half a minute), because on real hardware a save can interrupt the sound.
+
+**Output** is stereo once Spread, the chorus or the reverb is in use. With Spread at
+zero and every effect off, both channels carry exactly the same signal.
 
 Not built yet: MIDI clock sync for the arp, loading patches from files, and the iPad version
 (Safari on iPad has no Web MIDI, so it needs a small wrapper app).
