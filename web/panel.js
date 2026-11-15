@@ -351,12 +351,13 @@ export function makeControl(parent, def, sizes, send) {
     // stays where the finger put it, and for a moment afterwards too: the
     // firmware's reports run a frame or two behind and would tug it back.
     set(v) {
-      if (this.held || v === this.value || performance.now() - this.movedAt < 250) return;
-      // The firmware's reading of a real pot is never exact, and a real knob
-      // does not twitch to agree with it: small differences are left alone.
-      const pot = this.type === 'knob' || this.type === 'fader';
-      if (pot && this.placed && Math.abs(v - this.value) <= 40) return;
+      const first = !this.placed;   // the first report puts the control where the firmware last knew it to be
       this.placed = true;
+      if (this.held || v === this.value || performance.now() - this.movedAt < 250) return;
+      // After that, the firmware's reading of a real pot is never exact, and a real
+      // knob does not twitch to agree with it: small differences are left alone.
+      const pot = this.type === 'knob' || this.type === 'fader';
+      if (pot && !first && Math.abs(v - this.value) <= 40) return;
       this.value = v;
       this.draw();
     },

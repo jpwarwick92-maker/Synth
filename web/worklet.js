@@ -74,6 +74,11 @@ class SynthProcessor extends AudioWorkletProcessor {
         else x.fw_control_set(m.i, m.v);
         break;
       case 'rough':
+        if (this.rough && !m.on) {
+          // Back to perfect hardware: each pot is reported exactly where it is,
+          // so the firmware is not left holding its last rough reading of it.
+          for (const i of this.pots) if (this.truePos[i] >= 0) x.fw_control_set(i, this.truePos[i]);
+        }
         this.rough = !!m.on;
         if (this.rough) for (const i of this.pots) this.truePos[i] = x.fw_control_get(i);
         break;
