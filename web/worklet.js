@@ -39,6 +39,14 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.leds = new Uint32Array(this.count);       // the light behind each control's label
     this.saveCount = x.fw_storage_save_count();
     this.patchSaveCount = x.fw_patch_save_count();
+    // "Rough pots": the worklet stands in for a real panel's converter and
+    // multiplexers. It keeps each pot's true position and feeds the
+    // firmware readings of it with jitter and a little of the neighbouring
+    // pot mixed in, a few pots at a time, as a scan would.
+    this.rough = false;
+    this.truePos = new Int32Array(this.count).fill(-1);
+    this.scanAt = 0;
+    this.noise = 0x1234567;
     this.pool = [];            // display buffers handed back by the page, reused to avoid garbage
     this.first = true;
     this.frameSamples = sampleRate / 30;
@@ -52,6 +60,8 @@ class SynthProcessor extends AudioWorkletProcessor {
       controls.push({ name, kind: x.fw_control_kind(i), steps: x.fw_control_steps(i) });
     }
 
+    this.kinds = controls.map((c) => c.kind);
+    this.pots = controls.map((c, i) => (c.kind === 0 ? i : -1)).filter((i) => i >= 0);   // kind 0 = pot or fader
     this.port.onmessage = (e) => this.onMessage(e.data);
     this.port.postMessage({ t: 'ready', controls, display: { w: this.width, h: this.height }, sampleRate });
   }
@@ -59,7 +69,19 @@ class SynthProcessor extends AudioWorkletProcessor {
   onMessage(m) {
     const x = this.x;
     switch (m.t) {
-      case 'set': x.fw_control_set(m.i, m.v); break;       // pot position, selector stop, button down/up
+      case 'set':                                          // pot position, selector stop, button down/up
+        if (this.rough && this.kinds[m.i] === 0) this.truePos[m.i] = m.v;   // the scan will find it there
+        else x.fw_control_set(m.i, m.v);
+        break;
+      case 'rough':
+        if (this.rough && !m.on) {
+          // Back to perfect hardware: each pot is reported exactly where it is,
+          // so the firmware is not left holding its last rough reading of it.
+          for (const i of this.pots) if (this.truePos[i] >= 0) x.fw_control_set(i, this.truePos[i]);
+        }
+        this.rough = !!m.on;
+        if (this.rough) for (const i of this.pots) this.truePos[i] = x.fw_control_get(i);
+        break;
       case 'enc': x.fw_encoder_turn(m.i, m.d); break;      // encoder clicks
       case 'midi':
         for (let i = 0; i < m.bytes.length; i += this.midiCap) {
@@ -83,6 +105,8 @@ class SynthProcessor extends AudioWorkletProcessor {
       if (out.length > 1) out[1].set(whole ? this.outR : this.outR.subarray(0, len), done);
     }
 
+    if (this.rough) this.scanPots(8);
+
     this.sinceFrame += n;
     if (this.sinceFrame >= this.frameSamples) {
       const dt = Math.round((this.sinceFrame * 1000) / sampleRate);
@@ -90,6 +114,23 @@ class SynthProcessor extends AudioWorkletProcessor {
       this.frame(dt);
     }
     return true;
+  }
+
+  // Reads the next few pots as rough hardware would: the true position,
+  // plus or minus 8 counts of jitter (about what a Teensy 4's converter
+  // gives), plus 0.15% of the difference from the pot read just before it
+  // (a multiplexer that has been given time to settle).
+  scanPots(howMany) {
+    const pots = this.pots;
+    for (let k = 0; k < howMany; k++) {
+      const i = pots[this.scanAt], before = pots[(this.scanAt + pots.length - 1) % pots.length];
+      this.scanAt = (this.scanAt + 1) % pots.length;
+      this.noise = (Math.imul(this.noise, 1664525) + 1013904223) | 0;
+      const jitter = ((this.noise >>> 8) % 17) - 8;
+      const truth = this.truePos[i];
+      const reading = truth + jitter + Math.round(0.0015 * (this.truePos[before] - truth));
+      this.x.fw_pot_reading(i, Math.min(4095, Math.max(0, reading)));
+    }
   }
 
   // About 30 times a second: advance the firmware's clock and pass on

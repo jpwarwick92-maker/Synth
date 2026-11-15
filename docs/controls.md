@@ -83,7 +83,7 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `osc2_color` | OSC 2 | COLOR | 0 to 100 | 114 |
 | `osc1_engine` | OSC 1 | ENGINE | VA, FM, WAVETABLE, PLUCK | 115 |
 | `osc2_engine` | OSC 2 | ENGINE | VA, FM, WAVETABLE, PLUCK | 116 |
-| `hold` | VOICE | HOLD | OFF, ON | 69 |
+| `hold` | ARP | HOLD | OFF, ON | 69 |
 
 ## Encoders and buttons
 

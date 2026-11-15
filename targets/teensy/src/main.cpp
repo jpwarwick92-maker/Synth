@@ -30,7 +30,13 @@ class AudioSynthFirmware : public AudioStream {
       return;
     }
     float l[AUDIO_BLOCK_SAMPLES], r[AUDIO_BLOCK_SAMPLES];
+    // Time the block against the time there is for one. If the engine keeps
+    // using nearly all of it, it sheds voices: otherwise an overload starves
+    // loop(), MIDI stops being read, and the notes causing it never end.
+    uint32_t start = ARM_DWT_CYCCNT;
     fw::process(l, r, AUDIO_BLOCK_SAMPLES);
+    static const float kBudget = (float)F_CPU_ACTUAL * (float)AUDIO_BLOCK_SAMPLES / AUDIO_SAMPLE_RATE_EXACT;
+    fw::reportLoad((float)(ARM_DWT_CYCCNT - start) / kBudget);
     for (int i = 0; i < AUDIO_BLOCK_SAMPLES; ++i) {
       left->data[i] = toInt16(l[i]);
       right->data[i] = toInt16(r[i]);
@@ -51,6 +57,9 @@ class AudioSynthFirmware : public AudioStream {
 };
 
 static AudioSynthFirmware synthOut;
+// A plain I2S converter (PCM5102 and the like) needs nothing more than
+// this. The PJRC audio shield would also need an AudioControlSGTL5000
+// object and its enable() call in setup(), or it stays silent.
 static AudioOutputI2S i2sOut;  // also drives the audio clock
 static AudioOutputUSB usbOut;
 static AudioConnection patch1(synthOut, 0, i2sOut, 0);
@@ -115,6 +124,12 @@ void loop() {
     if (type != 0xC0 && type != 0xD0) fw::midiByte(usbMIDI.getData2() & 0x7F);
   }
 
+  // The panel, when it exists: each pot's converter reading goes to
+  // fw::potReading(index, reading) on every scan, which does the smoothing.
+  // Through a multiplexer, wait for the line to settle after switching
+  // channel and throw away the first conversion, or each pot picks up a
+  // little of the one read before it.
+
   // Display and soft-control timing. The frame is drawn into fw::frame();
   // pushing it to the ST7789 is added with the display hardware.
   static elapsedMillis sinceTick;
@@ -130,7 +145,8 @@ void loop() {
   static elapsedMillis sinceReport;
   if (sinceReport >= 1000) {
     sinceReport = 0;
-    Serial.printf("audio cpu %.1f%% (max %.1f%%)\n", (double)AudioProcessorUsage(), (double)AudioProcessorUsageMax());
+    // only when something is listening: an unread port fills up and a write then stalls loop()
+    if (Serial.dtr()) Serial.printf("audio cpu %.1f%% (max %.1f%%)\n", (double)AudioProcessorUsage(), (double)AudioProcessorUsageMax());
     AudioProcessorUsageMaxReset();
   }
 }

@@ -122,7 +122,7 @@ const ParamDef kParams[P_COUNT] = {
     {"osc2_color",    "COLOR",      SEC_OSC2,   PK_STEP, 101,  0,         114, U_INT_PERCENT, nullptr,      0},
     {"osc1_engine",   "ENGINE",     SEC_OSC1,   PK_STEP, 4,    0,         115, U_STEP,       kEngineLabels, 0},
     {"osc2_engine",   "ENGINE",     SEC_OSC2,   PK_STEP, 4,    0,         116, U_STEP,       kEngineLabels, 0},
-    {"hold",          "HOLD",       SEC_VOICE,  PK_STEP, 2,    0,         69,  U_STEP,       kOnOffLabels,  0},
+    {"hold",          "HOLD",       SEC_ARP,    PK_STEP, 2,    0,         69,  U_STEP,       kOnOffLabels,  0},
     {"voice_drift",   "DRIFT",      SEC_VOICE,  PK_POT,  0,    pot(0.0f), 14,  U_PERCENT,    nullptr,       0},
     {"voice_spread",  "SPREAD",     SEC_VOICE,  PK_POT,  0,    pot(0.0f), 15,  U_PERCENT,    nullptr,       0},
     {"osc_xmod",      "X-MOD",      SEC_OSC2,   PK_POT,  0,    pot(0.0f), 16,  U_PERCENT,    nullptr,       0},

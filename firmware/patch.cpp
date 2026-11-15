@@ -119,7 +119,6 @@ void PatchPanel::syncToParams() {
 // MIDI: decide whether the control is still where the sound is.
 void PatchPanel::retarget(int index) {
   int id = kPanelParams[index];
-  if (!inPatch(id)) return;
   int v = gParams.val[id];
   target_[index] = (uint16_t)v;
   int gap = absi(v - (int)phys_[index]);
@@ -131,8 +130,7 @@ void PatchPanel::retarget(int index) {
 void PatchPanel::remoteSet(int id) {
   for (int i = 0; i < kPanelCount; ++i)
     if (kPanelParams[i] == id) {
-      if (!inPatch(id)) phys_[i] = target_[i] = gParams.val[id];  // volume has no pickup: the knob is simply overruled
-      else retarget(i);
+      retarget(i);  // every control alike, master volume included: a real knob cannot move by itself
       stateTouched();
       return;
     }
@@ -278,7 +276,7 @@ void PatchPanel::manual() {
     int id = kPanelParams[i];
     flags_[i] = 0;
     target_[i] = phys_[i];
-    if (inPatch(id) && gParams.set(id, phys_[i])) edited_ = true;
+    if (gParams.set(id, phys_[i]) && inPatch(id)) edited_ = true;
   }
   stateTouched();
 }
@@ -314,6 +312,7 @@ uint32_t PatchPanel::stateWrite(uint8_t* dst) const {
   *p++ = edited_ ? 1 : 0;
   for (int i = 0; i < kPatchNameLen; ++i) *p++ = (uint8_t)name_[i];
   *p++ = (uint8_t)gfxPalette();
+  *p++ = (uint8_t)lightsMode();
   return (uint32_t)(p - dst);
 }
 
@@ -321,7 +320,7 @@ bool PatchPanel::stateValid(const uint8_t* src, uint32_t len) {
   if (len < 1) return false;
   uint32_t n = src[0];
   uint32_t base = 1u + n * 5u + 3u + kPatchNameLen;
-  return n >= 1 && n <= (uint32_t)kPanelCount && (len == base || len == base + 1u);  // the palette byte came later
+  return n >= 1 && n <= (uint32_t)kPanelCount && len >= base && len <= base + 2u;  // the two settings bytes came later
 }
 
 void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
@@ -334,7 +333,7 @@ void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
     int hi = d.kind == PK_STEP ? d.steps - 1 : kPotMax;
     phys_[i] = (uint16_t)clampi(p[0] | (p[1] << 8), 0, hi);
     target_[i] = (uint16_t)clampi(p[2] | (p[3] << 8), 0, hi);
-    flags_[i] = inPatch(id) ? (uint8_t)(p[4] & (kFollow | kOff)) : 0;
+    flags_[i] = (uint8_t)(p[4] & (kFollow | kOff));
     // A control saved as live must agree with its parameter.
     if (!following(i) && phys_[i] != gParams.val[id]) phys_[i] = gParams.val[id];
   }
@@ -346,7 +345,9 @@ void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
   for (int i = 0; i < kPatchNameLen; ++i) raw[i] = (char)p[3 + i];
   raw[kPatchNameLen] = 0;
   setName(name_, raw);
-  if (len == 1u + (uint32_t)n * 5u + 3u + kPatchNameLen + 1u) gfxSetPalette(p[3 + kPatchNameLen]);
+  uint32_t extra = len - (1u + (uint32_t)n * 5u + 3u + kPatchNameLen);
+  if (extra >= 1) gfxSetPalette(p[3 + kPatchNameLen]);
+  if (extra >= 2) lightsSetMode(p[4 + kPatchNameLen]);
 }
 
 }  // namespace fw

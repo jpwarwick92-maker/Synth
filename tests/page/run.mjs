@@ -280,7 +280,7 @@ try {
       const d = ctx.getImageData(0, 0, c.width, Math.round(c.height * 30 / 240)).data;
       const lit = new Array(c.width).fill(false);
       for (let i = 0; i < d.length; i += 4) if (d[i] > 40) lit[(i / 4) % c.width] = true;
-      // title "001 INIT" spans frame columns 114..206; map to canvas columns
+      // the title ("-- INIT") sits in the middle of the frame, within columns 114..206; map to canvas columns
       const a = Math.ceil(116 * c.width / 320), b = Math.floor(204 * c.width / 320);
       let dark = 0, run = 0, longest = 0;
       for (let x = a; x <= b; x++) { if (!lit[x]) { dark++; run++; longest = Math.max(longest, run); } else run = 0; }
@@ -314,7 +314,7 @@ try {
     check(Math.abs(v2 - v0) < 70, 'knob: turning back returns to where it started', `${v0} -> ${v1} -> ${v2}`);
     await arc(page, 'filter_resonance', 0, 720, 24);      // two full circles: stops at the end, does not wrap
     check(await pos(page, 'filter_resonance') === 4095, 'knob: stops at the end of its travel', String(await pos(page, 'filter_resonance')));
-    await page.evaluate(() => window.__synth.midi([0xb0, 71, 26]));   // put it back near its default
+    await page.evaluate(() => window.__synth.midi([0xb0, 71, 26]));   // the sound's resonance back near its default (the knob stays at the top, following)
 
     await arc(page, 'osc1_octave', 0, 80, 18);            // point at +2
     check(await pos(page, 'osc1_octave') === 4, 'selector: points at the stop the cursor is nearest', String(await pos(page, 'osc1_octave')));
@@ -381,7 +381,7 @@ try {
   }
 
   // ------------------------------------------------------------------ soft controls
-  section('AC7  Engine page: button lights, encoders change values, placeholders');
+  section('AC7  Engine page: button lights, encoders change values');
   {
     await press(page, 'btn_engine');
     await sleep(150);
@@ -449,7 +449,7 @@ try {
   }
 
   // ------------------------------------------------------------------ MIDI
-  section('AC9  a MIDI controller number changes the sound; the real control stays put and its label lights');
+  section('AC9  a MIDI controller number sets the value shown; the real control stays put and its label lights');
   const IDLE = 0x96876a;                                // the firmware's plain label light
   const led = (pg, id) => pg.evaluate((i) => window.__synth.led(i), id);
   const labelFill = (pg, id) => pg.locator(`[data-id="${id}"] text.label`).evaluate((e) => getComputedStyle(e).fill.match(/\d+/g).map(Number));
@@ -499,6 +499,31 @@ try {
     await stop('voice_mode', 'UNI');
     check(await led(page, 'voice_mode') === IDLE, 'on the value\'s stop the light goes plain');
     await stop('voice_mode', 'POLY');
+  }
+
+  section('rough pots: jittery readings with a trace of crosstalk change nothing that can be seen');
+  {
+    await sleep(1800);                                  // any picture has gone: home screen
+    const saves = await page.evaluate(() => window.__synth.saves);
+    await page.click('#rough');
+    check(await page.locator('#rough').getAttribute('aria-pressed') === 'true', 'Rough pots switches on');
+    await sleep(2500);                                  // some 250 scans of every pot
+    check(await lcdCount(page, INK, 0, 44) === 0, 'no control\'s picture comes up by itself', String(await lcdCount(page, INK, 0, 44)));
+    const quiet = await page.evaluate(() => window.__synth.saves);
+    check(quiet - saves <= 1, 'and the firmware does not keep saving as if controls were moving', `${saves} -> ${quiet}`);
+    const before = await pos(page, 'lfo_depth');
+    await drag(page, 'lfo_depth', -60);                 // a real turn still gets through
+    await sleep(400);
+    check(await pos(page, 'lfo_depth') > before + 1000, 'a knob that is turned still moves', `${before} -> ${await pos(page, 'lfo_depth')}`);
+    check(await lcdCount(page, INK, 0, 44) > 60, 'and its picture comes up');
+    const turned = await pos(page, 'lfo_depth');
+    await sleep(2200);
+    check(await pos(page, 'lfo_depth') === turned, 'the on-screen knob is not tugged about by the firmware\'s rough reading of it', `${turned} -> ${await pos(page, 'lfo_depth')}`);
+    check(await lcdCount(page, INK, 0, 44) === 0, 'and the picture goes away again once the knob is still');
+    await drag(page, 'lfo_depth', 60);
+    await sleep(300);
+    await page.click('#rough');
+    await sleep(1800);
   }
 
   section('patches: saved from the Patch page, loaded without moving a control, lights guide the panel back');
@@ -559,6 +584,40 @@ try {
     await press(page, 'btn_patch');                     // home
     await sleep(200);
     check(!(await lit('btn_patch')), 'three more presses return home');
+  }
+
+  section('lights: Dance, chosen on the Setup page, moves the labels with the sound');
+  {
+    await sleep(1700);
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');     // Patch, Name, Setup
+    await drag(page, 'enc3', -12);                                  // one click: Lights to Dance
+    await sleep(200);
+    await page.screenshot({ path: path.join(shotDir, 'page_setup_dance.png') });
+    await press(page, 'btn_patch');                                 // home
+    await sleep(600);
+    const fills = async (id, ms) => {
+      const seen = new Set();
+      for (let t = 0; t < ms; t += 60) { seen.add((await labelFill(page, id)).join(',')); await sleep(60); }
+      return seen;
+    };
+    check((await fills('lfo_rate', 1200)).size >= 4, 'with nothing playing, the LFO labels rise and fall with the LFO');
+    check((await fills('filter_cutoff', 600)).size === 1, 'and a label with nothing to follow holds still');
+    const restLight = await led(page, 'filter_cutoff');
+    check(restLight !== IDLE && ((restLight >> 16) & 255) < 120, 'at rest a label is a dim amber', restLight.toString(16));
+    await page.click('#test-note');
+    const moving = await fills('volume', 900);
+    await page.screenshot({ path: path.join(shotDir, 'page_dance.png') });
+    check(moving.size >= 3, 'with notes sounding, the Volume label follows the level', String(moving.size));
+    const seenColours = [];
+    for (const id of ['filter_cutoff', 'volume', 'mix_osc1', 'aenv_sustain']) seenColours.push(await labelFill(page, id));
+    check(seenColours.every((c) => c[0] >= c[1] && c[1] >= c[2]), 'every colour is an amber: no blue, no green', JSON.stringify(seenColours));
+    await page.click('#test-note');
+    await sleep(300);
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');
+    await drag(page, 'enc3', 12);                                   // back to Steady
+    await press(page, 'btn_patch');
+    await sleep(500);
+    check(await led(page, 'filter_cutoff') === IDLE && await led(page, 'lfo_rate') === IDLE, 'Steady puts every label back to plain');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');

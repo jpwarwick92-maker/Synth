@@ -45,7 +45,9 @@ struct Osc {
   int excite;           // Pluck: samples of excitation still to feed in
   int exciteLen;
   bool pluck;           // Pluck: pluck the string at the next block
-  float ss[6];          // Supersaw: phases of the six saws either side of the centre one
+  uint32_t ss[6];       // Supersaw: phases of the six saws either side of the centre one, as 32-bit
+                        // fractions of a cycle. They wrap by themselves and are read with integer
+                        // arithmetic, which is a good deal cheaper on the Teensy than six float reads.
   float blep;           // Sync: second half of the correction that smooths a reset, due next sample
 };
 
@@ -54,6 +56,9 @@ struct Voice {
   bool gate;        // envelopes held open
   bool keyDown;     // key physically held
   bool sustained;   // key released but held by the pedal
+  bool fresh;       // started since the last audio block: nothing of it has been heard yet
+  bool letGo;       // released while still fresh: the release waits until the block has sounded
+  bool choke;       // being dropped to save processor time: fades out within one control block
   uint8_t note;
   float vel;        // 0..1
   uint32_t age;     // note-on order, for stealing the oldest
@@ -87,8 +92,18 @@ class Synth {
  public:
   void init(float sampleRate);
 
-  // Control context. Returns false if the queue is full.
+  // Control context. Returns false if the queue is full; the engine then
+  // lets every note go at the next block, since a lost note-off would
+  // otherwise sound for ever.
   bool post(uint8_t type, uint8_t a = 0, uint8_t b = 0);
+  // Pitch bend (-1..1) and mod wheel (0..1). Only the latest value matters,
+  // so they are not queued: a burst of wheel movement cannot crowd out notes.
+  void setBend(float v) { bend_ = v; }
+  void setModWheel(float v) { modWheel_ = v; }
+  // How much of the time available for one block the last block took (1 =
+  // all of it). A target that can measure this reports it; when it stays too
+  // high the engine sheds voices rather than fall behind.
+  void reportLoad(float fraction) { load_ = fraction; }
 
   // Audio context. Stereo output, n <= kMaxBlock.
   void process(float* outL, float* outR, int n);
@@ -99,6 +114,15 @@ class Synth {
   float peakLevel() const { return peak_; }
   float sampleRate() const { return sr_; }
   bool chordOn() const { return chordOn_; }
+  int voiceLimit() const { return voiceLimit_; }
+
+  // ---- read by the label lights (control context) ----
+  float lfoNow() const { return lfoValue_; }                  // -1..1
+  uint32_t noteCount() const { return clock_; }               // goes up by one for every note started
+  uint32_t arpStepCount() const { return arpSteps_; }         // and this for every arp step
+  bool arpRunning() const { return arpMode_ != ARP_OFF; }
+  // The envelopes and velocity of the most recently started voice still sounding. False if none is.
+  bool leadVoice(Env& filter, Env& amp, float& velocity) const;
   const float* scope() const { return scope_; }
   uint32_t scopeWritePos() const { return scopePos_; }
 
@@ -167,11 +191,19 @@ class Synth {
   int arpNote_;               // note the arpeggiator has sounding, or -1
   bool arpRestart_;
   uint32_t arpRng_;
+  volatile uint32_t arpSteps_;
 
   bool sustain_;
-  float bend_;                // -1..1 target
+  volatile float bend_;       // -1..1 target
   float bendSmooth_;
-  float modWheel_;            // 0..1
+  volatile float modWheel_;   // 0..1
+
+  // overload protection
+  volatile float load_;       // as last reported by the target
+  int voiceLimit_;            // how many voices may sound; normally all of them
+  int overBlocks_;            // blocks in a row over the limit
+  float calmSamples_;         // time spent comfortably under it
+  void shedVoice();
 
   float lfoPhase_;
   float lfoValue_;
@@ -186,10 +218,11 @@ class Synth {
   struct Event {
     uint8_t type, a, b;
   };
-  static constexpr int kQueueLen = 64;
+  static constexpr int kQueueLen = 256;
   Event queue_[kQueueLen];
   volatile uint32_t qWrite_;
   volatile uint32_t qRead_;
+  volatile bool overflow_;    // an event was lost
 
   // display feeds
   int activeCount_;
