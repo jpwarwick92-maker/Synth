@@ -320,6 +320,7 @@ void Synth::init(float sampleRate) {
   arpNote_ = -1;
   arpRestart_ = true;
   arpRng_ = 0x2545F491u;
+  arpSteps_ = 0;
   sustain_ = false;
   bend_ = bendSmooth_ = 0.0f;
   modWheel_ = 0.0f;
@@ -638,6 +639,7 @@ void Synth::arpAdvance(int len) {
   uint8_t vel = 100;
   arpNote_ = arpPick(vel);
   ++arpIndex_;
+  ++arpSteps_;
   if (arpNote_ < 0) return;
   noteOn((uint8_t)arpNote_, vel);
   float gate = mapArpGate(gParams.norm(P_ARP_GATE));
@@ -713,6 +715,17 @@ int Synth::pickVoice(uint8_t note) {
   for (int i = 0; i < kNumVoices; ++i)
     if (voices_[i].active && (best < 0 || voices_[i].age < voices_[best].age)) best = i;
   return best < 0 ? 0 : best;
+}
+
+bool Synth::leadVoice(Env& filter, Env& amp, float& velocity) const {
+  int lead = -1;
+  for (int i = 0; i < kNumVoices; ++i)
+    if (voices_[i].active && (lead < 0 || voices_[i].age > voices_[lead].age)) lead = i;
+  if (lead < 0) return false;
+  filter = voices_[lead].fenv;
+  amp = voices_[lead].aenv;
+  velocity = voices_[lead].vel;
+  return true;
 }
 
 // The processor cannot keep up: drop the voice that will be missed least,

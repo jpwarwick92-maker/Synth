@@ -2708,9 +2708,9 @@ static void testPictures() {
   CHECK(gStoreLen == fw::kStateSize, "state should be saved with the palette (%u bytes)", gStoreLen);
   boot(48000, true);
   CHECK(fw::gfxPalette() == fw::PALETTE_WHITE, "the palette should survive a restart");
-  {  // state saved before the palette existed is one byte shorter and must still load
+  {  // state saved before the palette and the lights setting existed is two bytes shorter and must still load
     uint8_t old[1024];
-    uint32_t n = gStoreLen - 1;
+    uint32_t n = gStoreLen - 2;
     std::memcpy(old, gStore, n - 2);
     uint16_t sum = 0;
     for (int i = 0; i < fw::P_COUNT; ++i) sum = (uint16_t)(sum * 31u + (old[6 + i * 2] | (old[7 + i * 2] << 8)) + 1u);
@@ -3262,6 +3262,129 @@ static void testRandomUse() {
   CHECK(finite, "the output left the range -1..1 or stopped being a number");
 }
 
+// The label lights' dance mode: each section's labels follow what that section is doing.
+static void testDanceLights() {
+  section("lights: steady by default; Dance is chosen on the Setup page and kept over a restart");
+  boot(48000);
+  int cut = ctl("filter_cutoff"), rate = ctl("lfo_rate"), tempo = ctl("arp_tempo"), vol = ctl("volume");
+  int fa = ctl("fenv_attack"), fd = ctl("fenv_decay"), fs = ctl("fenv_sustain"), fr = ctl("fenv_release");
+  auto bright = [](int c) {
+    uint32_t v = fw::ledColour(c);
+    return (int)((v >> 16) & 255) + (int)((v >> 8) & 255) + (int)(v & 255);
+  };
+  // advances sound and lights together, as the hardware loop does; returns the brightest a light got
+  auto play = [&](double sec, int c) {
+    int most = 0;
+    for (int i = 0; i < (int)(sec * 30); ++i) {
+      renderNew(1.0 / 30);
+      fw::tick(33);
+      most = std::max(most, bright(c));
+    }
+    return most;
+  };
+  midi({0x90, 60, 110});
+  play(0.3, cut);
+  bool plain = true;
+  for (int c = 0; c < fw::kFirstEncoder; ++c) plain = plain && fw::ledColour(c) == fw::kLedIdle;
+  CHECK(plain && fw::lightsMode() == fw::LIGHTS_STEADY, "with Dance off every label is plain, whatever is playing");
+  midi({0x80, 60, 0});
+  play(1.5, cut);
+  press("btn_patch");
+  press("btn_patch");
+  press("btn_patch");
+  fw::encoderTurn(ctl("enc3"), 1);
+  CHECK(fw::lightsMode() == fw::LIGHTS_DANCE, "encoder 3 on the Setup page should switch Dance on");
+  fw::tick(33);
+  saveFrame("mode_setup_dance");
+  press("btn_patch");
+  fw::tick(1200);
+  boot(48000, true);
+  CHECK(fw::lightsMode() == fw::LIGHTS_DANCE, "the setting should survive a restart");
+
+  section("lights: in Dance, each section follows its own part of the sound, in ambers only");
+  setPot("fenv_attack", 0.62);   // slow enough to see each stage: about 0.3 s up, 0.8 s down
+  setPot("fenv_decay", 0.72);
+  setPot("fenv_sustain", 0.5);
+  setPot("fenv_release", 0.6);
+  setPot("aenv_release", 0.6);
+  setPot("lfo_rate", 0.55);      // about 1.7 Hz
+  int rest = play(0.5, cut);
+  bool warm = true, still = true;
+  uint32_t first[64];
+  for (int c = 0; c < fw::kFirstEncoder; ++c) first[c] = fw::ledColour(c);
+  play(1.0, cut);
+  for (int c = 0; c < fw::kFirstEncoder; ++c)
+    if (fw::kParams[fw::controlParam(c)].section != fw::SEC_LFO) still = still && fw::ledColour(c) == first[c];
+  CHECK(still, "with nothing playing only the LFO's labels should be moving");
+  int lfoLow = 9999, lfoHigh = 0;
+  for (int i = 0; i < 60; ++i) {
+    renderNew(1.0 / 30);
+    fw::tick(33);
+    lfoLow = std::min(lfoLow, bright(rate));
+    lfoHigh = std::max(lfoHigh, bright(rate));
+  }
+  CHECK(lfoHigh > lfoLow + 200, "the LFO's labels should rise and fall with it (%d..%d)", lfoLow, lfoHigh);
+
+  midi({0x90, 60, 127});
+  int cutPeak = 0, volPeak = 0, attackPeak = 0, stage[4] = {0, 0, 0, 0};
+  for (int i = 0; i < 150; ++i) {  // five seconds held
+    renderNew(1.0 / 30);
+    fw::tick(33);
+    cutPeak = std::max(cutPeak, bright(cut));
+    volPeak = std::max(volPeak, bright(vol));
+    attackPeak = std::max(attackPeak, bright(fa));
+    int lit = 0;
+    for (int k = 1; k < 4; ++k)
+      if (bright(fa + k) > bright(fa + lit)) lit = k;
+    stage[lit]++;
+    for (int c = 0; c < fw::kFirstEncoder; ++c) {
+      uint32_t v = fw::ledColour(c);
+      warm = warm && ((v >> 16) & 255) >= ((v >> 8) & 255) && ((v >> 8) & 255) >= (v & 255);
+    }
+  }
+  CHECK(fd == fa + 1 && fs == fa + 2 && fr == fa + 3, "set-up: the four filter envelope faders are neighbours");
+  CHECK(cutPeak > rest + 250, "Cutoff's label should follow the filter envelope's sweep (%d at rest, %d at the peak)", rest, cutPeak);
+  CHECK(volPeak > rest + 100, "Volume's label should follow the output level");
+  CHECK(stage[0] > 3 && stage[1] > 3 && stage[2] > 3 && stage[3] == 0,
+        "held note: Attack, then Decay, then Sustain should be the brightest envelope label in turn (%d, %d, %d, %d frames)", stage[0], stage[1],
+        stage[2], stage[3]);
+  midi({0x80, 60, 0});
+  play(0.15, cut);
+  int lit = 0;
+  for (int k = 1; k < 4; ++k)
+    if (bright(fa + k) > bright(fa + lit)) lit = k;
+  CHECK(lit == 3, "after the key is let go, Release should be the brightest (it was fader %d)", lit);
+  CHECK(warm, "every dance colour should be an amber: red at least green, green at least blue");
+  play(4.0, cut);
+  CHECK(bright(cut) <= rest + 5, "once the note has died the labels should be back at rest");
+
+  section("lights: the arp flashes on its steps; a loaded patch's guide lights take the panel back");
+  setSel("arp_mode", fw::ARP_UP);
+  setPot("arp_tempo", 0.3);
+  midi({0x90, 48, 100, 0x90, 55, 100});
+  int flashes = 0, wasBright = 0;
+  for (int i = 0; i < 90; ++i) {  // three seconds: about 20 steps at 100 BPM
+    renderNew(1.0 / 30);
+    fw::tick(33);
+    int now = bright(tempo) > rest + 150;
+    flashes += now && !wasBright;
+    wasBright = now;
+  }
+  CHECK(flashes >= 8, "Tempo's label should flash with the arp's steps (%d flashes in three seconds)", flashes);
+  midi({0x80, 48, 0, 0x80, 55, 0});
+  setSel("arp_mode", fw::ARP_OFF);
+  play(2.0, cut);
+  savePatchTo(1);
+  while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
+  setPot("filter_cutoff", 0.9);
+  fw::patchLoad(1);
+  midi({0x90, 60, 110});
+  play(0.4, cut);
+  CHECK((fw::ledColour(cut) & 255) > 200 && ((fw::ledColour(cut) >> 16) & 255) < 120, "a control off the loaded patch shows its guide colour (blue: turn down), not the dance (%06x)", fw::ledColour(cut));
+  CHECK(fw::ledColour(rate) == fw::kLedIdle, "and the dance waits while the guide has the panel");
+  midi({0x80, 60, 0});
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -3368,6 +3491,7 @@ int main(int argc, char** argv) {
   testPotReadings();
   testReviewPictures();
   testRandomUse();
+  testDanceLights();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

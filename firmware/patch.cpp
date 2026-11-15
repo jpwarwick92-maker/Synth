@@ -312,6 +312,7 @@ uint32_t PatchPanel::stateWrite(uint8_t* dst) const {
   *p++ = edited_ ? 1 : 0;
   for (int i = 0; i < kPatchNameLen; ++i) *p++ = (uint8_t)name_[i];
   *p++ = (uint8_t)gfxPalette();
+  *p++ = (uint8_t)lightsMode();
   return (uint32_t)(p - dst);
 }
 
@@ -319,7 +320,7 @@ bool PatchPanel::stateValid(const uint8_t* src, uint32_t len) {
   if (len < 1) return false;
   uint32_t n = src[0];
   uint32_t base = 1u + n * 5u + 3u + kPatchNameLen;
-  return n >= 1 && n <= (uint32_t)kPanelCount && (len == base || len == base + 1u);  // the palette byte came later
+  return n >= 1 && n <= (uint32_t)kPanelCount && len >= base && len <= base + 2u;  // the two settings bytes came later
 }
 
 void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
@@ -344,7 +345,9 @@ void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
   for (int i = 0; i < kPatchNameLen; ++i) raw[i] = (char)p[3 + i];
   raw[kPatchNameLen] = 0;
   setName(name_, raw);
-  if (len == 1u + (uint32_t)n * 5u + 3u + kPatchNameLen + 1u) gfxSetPalette(p[3 + kPatchNameLen]);
+  uint32_t extra = len - (1u + (uint32_t)n * 5u + 3u + kPatchNameLen);
+  if (extra >= 1) gfxSetPalette(p[3 + kPatchNameLen]);
+  if (extra >= 2) lightsSetMode(p[4 + kPatchNameLen]);
 }
 
 }  // namespace fw

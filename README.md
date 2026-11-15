@@ -152,7 +152,7 @@ encoder restores its default.
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
-| Patch | 3: Setup | display colours (amber, or white for behind amber acrylic) |
+| Patch | 3: Setup | display colours (amber, or white for behind amber acrylic); label lights (steady or dance) |
 
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
@@ -179,6 +179,16 @@ loading a patch cannot move it. Instead:
 - A MIDI controller message for a panel parameter is treated like a one-control load:
   the control follows the incoming value until it is moved through it (or, for a
   selector, changed). That goes for master volume too.
+
+**Dance** (Setup page, encoder 3) makes the label lights move with the sound instead of
+staying plain. Each section's labels follow what that section is doing: the LFO's rise
+and fall with it; the envelope faders light in turn as a note passes through Attack,
+Decay, Sustain and Release; Cutoff follows the filter envelope's sweep; a ripple runs
+from the oscillators through the mixer to the filter on every note; the arp's flash on
+each step; Volume follows the level. Everything stays between a dim amber and a bright
+cream. While a loaded patch has controls to bring back, the dance stops and the guide
+lights show. On hardware this mode changes the LEDs' current many times a second, so
+their supply has to be kept well away from the audio's.
 
 On the Teensy the slots sit in the on-board EEPROM for now, which is why there are
 sixteen; a memory card or the board's flash would hold far more.

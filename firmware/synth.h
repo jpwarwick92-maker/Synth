@@ -115,6 +115,14 @@ class Synth {
   float sampleRate() const { return sr_; }
   bool chordOn() const { return chordOn_; }
   int voiceLimit() const { return voiceLimit_; }
+
+  // ---- read by the label lights (control context) ----
+  float lfoNow() const { return lfoValue_; }                  // -1..1
+  uint32_t noteCount() const { return clock_; }               // goes up by one for every note started
+  uint32_t arpStepCount() const { return arpSteps_; }         // and this for every arp step
+  bool arpRunning() const { return arpMode_ != ARP_OFF; }
+  // The envelopes and velocity of the most recently started voice still sounding. False if none is.
+  bool leadVoice(Env& filter, Env& amp, float& velocity) const;
   const float* scope() const { return scope_; }
   uint32_t scopeWritePos() const { return scopePos_; }
 
@@ -183,6 +191,7 @@ class Synth {
   int arpNote_;               // note the arpeggiator has sounding, or -1
   bool arpRestart_;
   uint32_t arpRng_;
+  volatile uint32_t arpSteps_;
 
   bool sustain_;
   volatile float bend_;       // -1..1 target

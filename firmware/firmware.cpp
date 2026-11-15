@@ -95,6 +95,7 @@ void init(float sampleRate) {
   tablesInit();
   gParams.reset();
   gfxSetPalette(PALETTE_AMBER);
+  lightsReset();
   gPatch.init();
   gPatch.scanSlots();
   uint8_t blob[kStateSize];
@@ -130,7 +131,7 @@ bool patchLoad(int slot) {
   return true;
 }
 
-uint32_t ledColour(int index) { return gPatch.led(index); }
+uint32_t ledColour(int index) { return lightColour(index); }
 
 int controlParam(int index) { return index >= 0 && index < kFirstEncoder ? kPanelParams[index] : -1; }
 
@@ -192,6 +193,7 @@ int controlGet(int index) {
 
 bool tick(uint32_t dtMs) {
   gMidi.tick(dtMs);
+  lightsTick(dtMs);
   if (gSaveMs > 0) {
     if (gSaveMs > dtMs) {
       gSaveMs -= dtMs;

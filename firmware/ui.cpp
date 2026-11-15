@@ -1108,6 +1108,8 @@ void Ui::patchTurn(int enc, int delta) {
       gfxSetPalette(next);
       stateTouched();
     }
+  } else if (enc == 2) {  // Setup: what the label lights do
+    lightsSetMode(lightsMode() + delta);
   }
   dirty_ = true;
 }
@@ -1140,6 +1142,8 @@ void Ui::patchPush(int enc) {
   } else if (enc == 0) {
     gfxSetPalette((gfxPalette() + 1) % PALETTE_COUNT);
     stateTouched();
+  } else if (enc == 2) {
+    lightsSetMode((lightsMode() + 1) % LIGHTS_COUNT);
   }
   dirty_ = true;
 }
@@ -1342,9 +1346,10 @@ void Ui::drawNamePage() {
 // Setup: things about the instrument itself, not the sound.
 void Ui::drawSetupPage() {
   gfxTextCentre(160, 6, "SETUP 3/3", kAccent, 2);
-  const char* const label[4] = {"DISPLAY", "--", "--", "--"};
-  const char* const value[4] = {kPaletteNames[gfxPalette()], "", "", ""};
+  const char* const label[4] = {"DISPLAY", "--", "LIGHTS", "--"};
+  const char* const value[4] = {kPaletteNames[gfxPalette()], "", kLightsNames[lightsMode()], ""};
   drawCorners(label, value);
+  gfxTextCentre(160, 138, lightsMode() == LIGHTS_DANCE ? "LABELS FOLLOW THE SOUND" : "LABELS STAY PLAIN", kGrey, 2);
   // every colour in use, so the two sets can be judged side by side with the panel
   static const Colour kSwatch[6] = {kInk, kAccent, kLine, kLineDim, kGrey, kDarkGrey};
   for (int i = 0; i < 6; ++i) gfxFill(40 + i * 41, 86, 35, 22, kSwatch[i]);

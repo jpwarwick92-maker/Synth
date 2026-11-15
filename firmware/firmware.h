@@ -57,6 +57,13 @@ void encoderTurn(int index, int delta);
 // What the control shows: the pot's or selector's physical position as last
 // reported, a button's light (0/1), or the encoder's running click count.
 int controlGet(int index);
+// What the label lights do when no control is being guided to a patch:
+// stay a plain warm white, or move with the sound (lights.cpp).
+enum LightsMode : uint8_t { LIGHTS_STEADY, LIGHTS_DANCE, LIGHTS_COUNT };
+extern const char* const kLightsNames[LIGHTS_COUNT];
+int lightsMode();
+void lightsSetMode(int mode);
+
 // The colour of the light behind a control's label, 0xRRGGBB (0 = it has none).
 // Read after each tick: the colour follows the control as it nears a loaded patch.
 uint32_t ledColour(int index);
@@ -71,6 +78,9 @@ const uint8_t* frame();
 void frameRow565(int y, uint16_t* dst);
 
 // ---- used inside the core ----
+void lightsReset();
+void lightsTick(uint32_t dtMs);
+uint32_t lightColour(int index);
 void potsReset();
 void onParamChanged(int id);
 // Something worth keeping changed: save the state once things have been still a moment.

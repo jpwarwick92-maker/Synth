@@ -586,6 +586,40 @@ try {
     check(!(await lit('btn_patch')), 'three more presses return home');
   }
 
+  section('lights: Dance, chosen on the Setup page, moves the labels with the sound');
+  {
+    await sleep(1700);
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');     // Patch, Name, Setup
+    await drag(page, 'enc3', -12);                                  // one click: Lights to Dance
+    await sleep(200);
+    await page.screenshot({ path: path.join(shotDir, 'page_setup_dance.png') });
+    await press(page, 'btn_patch');                                 // home
+    await sleep(600);
+    const fills = async (id, ms) => {
+      const seen = new Set();
+      for (let t = 0; t < ms; t += 60) { seen.add((await labelFill(page, id)).join(',')); await sleep(60); }
+      return seen;
+    };
+    check((await fills('lfo_rate', 1200)).size >= 4, 'with nothing playing, the LFO labels rise and fall with the LFO');
+    check((await fills('filter_cutoff', 600)).size === 1, 'and a label with nothing to follow holds still');
+    const restLight = await led(page, 'filter_cutoff');
+    check(restLight !== IDLE && ((restLight >> 16) & 255) < 120, 'at rest a label is a dim amber', restLight.toString(16));
+    await page.click('#test-note');
+    const moving = await fills('volume', 900);
+    await page.screenshot({ path: path.join(shotDir, 'page_dance.png') });
+    check(moving.size >= 3, 'with notes sounding, the Volume label follows the level', String(moving.size));
+    const seenColours = [];
+    for (const id of ['filter_cutoff', 'volume', 'mix_osc1', 'aenv_sustain']) seenColours.push(await labelFill(page, id));
+    check(seenColours.every((c) => c[0] >= c[1] && c[1] >= c[2]), 'every colour is an amber: no blue, no green', JSON.stringify(seenColours));
+    await page.click('#test-note');
+    await sleep(300);
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');
+    await drag(page, 'enc3', 12);                                   // back to Steady
+    await press(page, 'btn_patch');
+    await sleep(500);
+    check(await led(page, 'filter_cutoff') === IDLE && await led(page, 'lfo_rate') === IDLE, 'Steady puts every label back to plain');
+  }
+
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');
   {
     await sleep(1700);
