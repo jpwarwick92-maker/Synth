@@ -62,8 +62,8 @@ for (const [sampleRate, minutes] of [[44100, fullMinutes], [48000, fullMinutes],
 }
 
 // The same again with the newer paths busy: a tone at the audio input going
-// through the effects, and the arpeggiator following MIDI clock whose ticks
-// arrive unevenly. The settings are made the way a player makes them, with
+// through the effects and half-driving the vocoder, and the arpeggiator
+// following MIDI clock whose ticks arrive unevenly. The settings are made the way a player makes them, with
 // the Patch button and the encoders.
 {
   const sampleRate = 48000, minutes = Math.min(5, fullMinutes);
@@ -90,7 +90,7 @@ for (const [sampleRate, minutes] of [[44100, fullMinutes], [48000, fullMinutes],
   x.fw_encoder_turn(control('enc3'), 2);                    // Send To: FX
   press('btn_patch');
   x.fw_control_set(control('arp_mode'), 1);
-  midi([0xb0, 50, 127, 0xb0, 49, 80, 0xb0, 48, 80, 0xb0, 53, 80]);   // chorus, delay, reverb
+  midi([0xb0, 50, 127, 0xb0, 49, 80, 0xb0, 48, 80, 0xb0, 53, 80, 0xb0, 106, 64]);   // chorus, delay, reverb, vocoder at half
   midi([0x90, 48, 100, 0x90, 55, 100, 0x90, 60, 100, 0x90, 63, 100, 0xfa]);
 
   const perSecond = Math.round(sampleRate / block), tickEvery = (sampleRate * 60) / (126 * 24);
@@ -130,7 +130,7 @@ for (const [sampleRate, minutes] of [[44100, fullMinutes], [48000, fullMinutes],
   }
   const ok = notNumber < 0 && normal > 0.01 && worst < 2 * normal;
   if (!ok) fails++;
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${minutes} minutes at ${sampleRate} Hz with the audio input and a MIDI clock in use: level ${normal.toFixed(3)} at the start, never above ${worst.toFixed(3)}`
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${minutes} minutes at ${sampleRate} Hz with the audio input, the vocoder and a MIDI clock in use: level ${normal.toFixed(3)} at the start, never above ${worst.toFixed(3)}`
     + (notNumber >= 0 ? `, output stopped being a number at ${notNumber} s` : ''));
 }
 

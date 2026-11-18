@@ -89,6 +89,10 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `compress` | FX 2 | COMPRESS | 0 to 100 | 19 |
 | `duck` | MOD | DUCK | 0 to 100 | 30 |
 | `sub_detune` | ENGINE | SUB DETUNE | -25 to 25 | 31 |
+| `vocoder` | FX 2 | VOCODER | 0 to 100 | 106 |
+| `vocoder_formant` | FX 2 | FORMANT | -12 to 12 | 107 |
+| `vocoder_consonants` | FX 2 | CONSONANTS | 0 to 100 | 117 |
+| `vocoder_smooth` | FX 2 | SMOOTH | 0 to 100 | 118 |
 
 ## Settings (Patch button, MIDI and Input pages)
 

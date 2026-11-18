@@ -7,6 +7,7 @@
 #include "params.h"
 #include "synth.h"
 #include "tables.h"
+#include "vocoder.h"
 
 namespace fw {
 
@@ -24,7 +25,8 @@ struct Page {
 constexpr int kMaxPages = 5;
 const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
-    /* FX 2   */ {{"COMPRESSOR + REVERB", {P_COMPRESS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
+    /* FX 2   */ {{"COMPRESSOR + REVERB", {P_COMPRESS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}},
+                  {"VOCODER", {P_VOCODER, P_VOC_FORMANT, P_VOC_CONSONANTS, P_VOC_SMOOTH}}},
     /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_DUCK}}, {nullptr, {}}},
     /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_DETUNE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
@@ -1089,9 +1091,101 @@ void drawFilterIn(const Box& b) {
   gF = keep;
 }
 
+// ---- the vocoder's pictures ----
+
+// Says why the vocoder cannot be heard, if it cannot. True if it said something.
+bool vocoderSilent(const Box& b) {
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+  else if (gSynth.inputLevel() < 0.003f) hint(b.y + 2, "NO SIGNAL AT THE INPUT");
+  else if (gSynth.activeVoices() == 0) hint(b.y + 2, "PLAY A NOTE TO HEAR IT");
+  else return false;
+  return true;
+}
+
+// The level of each of the voice's sixteen bands, live: low on the left.
+// The column at the right is the amount: how much of the synth's sound the
+// vocoded sound has replaced.
+void drawVocoder(const Box& b) {
+  int base = b.y + b.h - 2, top = b.y + 20, w = (b.w - 20) / kVocBands;
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (int k = 0; k < kVocBands; ++k) {
+    int h = (int)(gVocoder.band(k) * (float)(base - top));
+    gfxFill(b.x + k * w + 2, base - (h > 2 ? h : 2), w - 4, h > 2 ? h : 2, h > 2 ? kLine : kDarkGrey);
+  }
+  int amount = (int)(gParams.frac(P_VOCODER) * (float)(base - top - 2));
+  gfxFrame(b.x + b.w - 12, top, 12, base - top, kDarkGrey);
+  gfxFill(b.x + b.w - 11, base - 1 - amount, 10, amount, kAccent);
+  vocoderSilent(b);
+}
+
+// Formant: where each band of the voice (top row) lands in the synth's sound (bottom row).
+void drawFormant(const Box& b) {
+  float shift = exp2f_((float)(gParams.step(P_VOC_FORMANT) + kParams[P_VOC_FORMANT].intMin) * (1.0f / 12.0f));
+  int x0 = b.x + 70, w = b.w - 74, yTop = b.y + 26, yBot = b.y + b.h - 8;
+  auto xOf = [&](float hz) { return x0 + (int)(clampf(log2f_(hz * (1.0f / 60.0f)) * (1.0f / 8.2f), 0.0f, 1.0f) * (float)w); };
+  gfxText(b.x, yTop - 6, "VOICE", kLineDim, 2);
+  gfxText(b.x, yBot - 8, "SYNTH", kAccent, 2);
+  for (int k = 0; k < kVocBands; ++k) {
+    int xv = xOf(vocBandHz(k)), xs = xOf(minf(vocBandHz(k) * shift, 0.45f * gSynth.sampleRate()));
+    gfxLine(xv, yTop + 4, xs, yBot - 4, kDarkGrey);
+    gfxFill(xv - 1, yTop - 4, 3, 8, kLine);
+    gfxFill(xs - 1, yBot - 4, 3, 8, kAccent);
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+}
+
+// Consonants: the sixteen bands, with hiss in the top three as tall as the setting.
+void drawConsonants(const Box& b) {
+  float amount = gParams.frac(P_VOC_CONSONANTS);
+  int base = b.y + b.h - 2, top = b.y + 22, w = b.w / kVocBands;
+  gfxHLine(b.x, base, b.w, kGrid);
+  uint32_t rng = 0x3C6EF35Fu;
+  for (int k = 0; k < kVocBands; ++k) {
+    int x = b.x + k * w + 2;
+    if (k < kVocBands - kVocHissBands) {
+      gfxFill(x, base - 3, w - 4, 3, kDarkGrey);
+      continue;
+    }
+    for (int px = 0; px < w - 4; px += 2) {
+      rng = rng * 1664525u + 1013904223u;
+      int h = (int)(amount * (float)(base - top) * (0.45f + 0.55f * (float)(rng >> 24) * (1.0f / 255.0f)));
+      gfxFill(x + px, base - (h > 3 ? h : 3), 2, h > 3 ? h : 3, h > 3 ? kLine : kDarkGrey);
+    }
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+  else if (amount < 0.005f) hint(b.y + 2, "NO HISS: S AND T ARE LOST");
+}
+
+// Smooth: three short sounds from the voice (blocks) and how a band's level follows them.
+void drawSmooth(const Box& b) {
+  float fallSec = mapVocRelease(gParams.frac(P_VOC_SMOOTH));
+  int base = b.y + b.h - 2, top = b.y + 22;
+  const float window = 0.8f;
+  static const float kSound[3][2] = {{0.04f, 0.14f}, {0.30f, 0.40f}, {0.56f, 0.62f}};
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (const float* sound : kSound)
+    gfxFill(b.x + (int)(sound[0] / window * (float)b.w), top, (int)((sound[1] - sound[0]) / window * (float)b.w), base - top, kDarkGrey);
+  float dt = window / (float)b.w, keep = exp2f_(-1.4427f * dt / fallSec), level = 0.0f;
+  int py = base;
+  for (int px = 0; px < b.w; ++px) {
+    float t = (float)px * dt;
+    bool sounding = false;
+    for (const float* sound : kSound) sounding = sounding || (t >= sound[0] && t < sound[1]);
+    level = sounding ? 1.0f : level * keep;
+    int yy = base - (int)(level * (float)(base - top));
+    plotColumn(b.x + px, px > 0 ? py : yy, yy, kLine);
+    py = yy;
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+}
+
 // The picture for a value that lives on an encoder page. False if it has none.
 bool drawSoftPicture(int id, const Box& b) {
   switch (id) {
+    case P_VOCODER: drawVocoder(b); return true;
+    case P_VOC_FORMANT: drawFormant(b); return true;
+    case P_VOC_CONSONANTS: drawConsonants(b); return true;
+    case P_VOC_SMOOTH: drawSmooth(b); return true;
     case P_UNI_DETUNE: drawUnison(b); return true;
     case P_SUB_OCTAVE: drawSub(b); return true;
     case P_SUB_DETUNE: drawSubDetune(b); return true;
@@ -1576,7 +1670,13 @@ void Ui::drawModePage() {
   }
   // The middle band is the live scope, except just after an encoder is
   // turned, when it shows what that value does.
-  if (!(softMs_ > 0 && softParam_ >= 0 && drawSoftPicture(softParam_, kMini))) drawScope(8, 74, 304, 82);
+  if (softMs_ > 0 && softParam_ >= 0 && drawSoftPicture(softParam_, kMini)) {
+    // the picture of the value just turned
+  } else if (pageParam(0) == P_VOCODER && gParams.step(P_VOCODER) > 0) {
+    drawVocoder(kMini);  // the Vocoder page, with the vocoder on: the voice's bands, live
+  } else {
+    drawScope(8, 74, 304, 82);
+  }
   drawStatus();
 }
 

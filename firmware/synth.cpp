@@ -4,6 +4,7 @@
 #include "fx.h"
 #include "midi.h"
 #include "tables.h"
+#include "vocoder.h"
 
 namespace fw {
 
@@ -75,6 +76,7 @@ struct Synth::Patch {
   float xmod;              // 0..1: oscillator 2 bending oscillator 1
   bool sync;               // oscillator 2 restarts with each cycle of oscillator 1
   FxSettings fx;
+  VocSettings voc;
 };
 
 // One oscillator's settings for one control block.
@@ -418,6 +420,7 @@ void Synth::init(float sampleRate) {
       for (int k = 0; k < kKsLen; ++k) gStrings[i][o][k] = 0;
   }
   gFx.init(sampleRate);
+  gVocoder.init(sampleRate);
 }
 
 bool Synth::post(uint8_t type, uint8_t a, uint8_t b) {
@@ -1174,6 +1177,13 @@ void Synth::derive(Patch& p, int len) {
   p.xmod = sm[P_XMOD];
   p.sync = gParams.step(P_SYNC) != 0;
 
+  // ---- vocoder ----
+  p.voc.amount = gParams.frac(P_VOCODER);
+  p.voc.formant = (float)(gParams.step(P_VOC_FORMANT) + kParams[P_VOC_FORMANT].intMin);
+  p.voc.consonants = gParams.frac(P_VOC_CONSONANTS);
+  p.voc.smooth = gParams.frac(P_VOC_SMOOTH);
+  p.voc.playing = false;  // filled in once the voices have been counted
+
   // ---- effects ----
   p.fx.chorus = sm[P_CHORUS];
   p.fx.ensemble = gParams.step(P_CHORUS_TYPE) == CHORUS_ENSEMBLE;
@@ -1536,15 +1546,25 @@ void Synth::process(const float* inL, const float* inR, float* outL, float* outR
       ++active;
     }
 
-    for (int i = 0; i < len; ++i) {
-      busL[i] *= p.volume;
-      busR[i] *= p.volume;
-    }
     // ---- the audio input ----
     // Metered whenever the target supplies one, so its level can be set
     // before it is sent anywhere. A microphone is one channel: the left.
     const float* il = inL ? inL + done : nullptr;
     const float* ir = il && inR && setting(SET_INPUT_SOURCE) != INSRC_MIC ? inR + done : il;
+
+    // ---- the vocoder: the voices' sound shaped by the voice at the input ----
+    if (p.voc.amount > 0.001f || gVocoder.on()) {
+      float voice[kCtrlBlock];
+      if (il)
+        for (int i = 0; i < len; ++i) voice[i] = 0.5f * (cleanIn(il[i]) + cleanIn(ir[i]));
+      p.voc.playing = active > 0;
+      gVocoder.process(busL, busR, il ? voice : nullptr, len, p.voc);
+    }
+
+    for (int i = 0; i < len; ++i) {
+      busL[i] *= p.volume;
+      busR[i] *= p.volume;
+    }
     float inPeak = inPeak_ * peakDecay_;
     float inClip = inClip_ > (float)len ? inClip_ - (float)len : 0.0f;
     if (il) {

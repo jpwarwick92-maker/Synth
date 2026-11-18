@@ -8,7 +8,7 @@ and the panel layout can be played before any hardware exists.
 
 | Path | What it is |
 |---|---|
-| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
+| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, vocoder, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
 | `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. It can also plug a microphone into the firmware's audio input, send it MIDI clock, and pass on what leaves by its MIDI out. |
@@ -162,7 +162,8 @@ encoder restores its default.
 | Button | Page | Encoders |
 |---|---|---|
 | FX 1 | Delay | time, tone, feedback, mix |
-| FX 2 | Compressor + reverb | compressor, reverb size, reverb tone, reverb mix |
+| FX 2 | 1: Compressor + reverb | compressor, reverb size, reverb tone, reverb mix |
+| FX 2 | 2: Vocoder | amount, formant, consonants, smooth |
 | Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, duck |
 | Engine | 1: Voice | unison detune, sub detune, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
@@ -210,8 +211,31 @@ channel and comes out on both sides. **Gain** is what the firmware asks of the p
 front of the converter, so on real hardware it is analog gain. The Input page shows the
 level against the converter's limit, and the light by the jack is dark with no signal,
 amber with one, and red for nearly half a second whenever the input reaches the limit.
-With Send To off the output is exactly what it would be with nothing connected. This is
-the path a vocoder will listen to; the vocoder itself is not built yet.
+With Send To off the output is exactly what it would be with nothing connected. The
+vocoder listens to this input whatever Send To is set to.
+
+**Vocoder** (FX 2, second page). The synth's sound, shaped by a voice at the audio
+input: play notes, speak into the microphone, and the notes take on the words. The voice
+is split into 16 bands from 140 Hz to 7 kHz and the level of each is followed; the
+synth's sound is split into the same bands and each is turned up and down by the voice's.
+It sits between the voices and the effects, on one channel (the chorus and reverb after
+it can widen it again), and its four values are stored in patches.
+
+- **Vocoder** is the amount: how much of the synth's own sound is replaced by the
+  vocoded sound. At 0 it is out of the path altogether. At 100% nothing is heard unless
+  a voice is arriving.
+- **Formant** moves the voice's shape up or down the synth's sound, up to an octave
+  either way: up sounds smaller and brighter, down larger and darker.
+- **Consonants** adds hiss to the synth's top three bands, so S, T, F and SH are heard
+  even on a dull sound. It is added only for breath sounds (a voice whose strength is
+  nearly all at the top), and only while a note is held.
+- **Smooth** sets how fast each band's level falls when the voice does, from 8 ms
+  (crisp, every syllable distinct) to about a third of a second (slurred).
+- With the vocoder on, its page shows the sixteen bands moving with the voice, and says
+  why if nothing can be heard: no signal at the input, or no note held.
+- It works best on a bright, steady sound: saw or supersaw, filter well open, sustain up.
+  Set the input's Gain so the light by the jack is amber, never red. Leave Send To off
+  unless the plain voice should be heard as well.
 
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
@@ -281,13 +305,13 @@ a beat, so the two cannot slip apart; otherwise it starts with any note played f
 hundredth of a second of each beat is let through, so a note played on the beat keeps
 its attack.
 
-The order of the effects is chorus, delay, reverb, compressor, duck, then the output
+The order is vocoder, chorus, delay, reverb, compressor, duck, then the output
 limiter.
 
 **Output** is stereo once Spread, the chorus or the reverb is in use. With Spread at
 zero and every effect off, both channels carry exactly the same signal.
 
-Not built yet: the vocoder, sending the input through the voices' filter, loading patches
+Not built yet: sending the input through the voices' filter, loading patches
 from files, and the iPad version (Safari on iPad has no Web MIDI, so it needs a small
 wrapper app).
 

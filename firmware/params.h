@@ -91,6 +91,11 @@ enum ParamId : uint8_t {
   P_COMPRESS,
   P_DUCK,
   P_SUB_DETUNE,
+  // FX 2 page 2: the vocoder
+  P_VOCODER,
+  P_VOC_FORMANT,
+  P_VOC_CONSONANTS,
+  P_VOC_SMOOTH,
 
   P_COUNT,
 };

@@ -133,6 +133,10 @@ const ParamDef kParams[P_COUNT] = {
     {"compress",      "COMPRESS",   SEC_FX2,    PK_STEP, 101,  0,         19,  U_INT_PERCENT, nullptr,      0},
     {"duck",          "DUCK",       SEC_MOD,    PK_STEP, 101,  0,         30,  U_INT_PERCENT, nullptr,      0},
     {"sub_detune",    "SUB DETUNE", SEC_ENGINE, PK_STEP, 51,   25,        31,  U_INT_CENTS,  nullptr,       -25},
+    {"vocoder",       "VOCODER",    SEC_FX2,    PK_STEP, 101,  0,         106, U_INT_PERCENT, nullptr,      0},
+    {"vocoder_formant", "FORMANT",  SEC_FX2,    PK_STEP, 25,   12,        107, U_INT_SEMI,   nullptr,       -12},
+    {"vocoder_consonants", "CONSONANTS", SEC_FX2, PK_STEP, 101, 50,       117, U_INT_PERCENT, nullptr,      0},
+    {"vocoder_smooth", "SMOOTH",    SEC_FX2,    PK_STEP, 101,  35,        118, U_INT_PERCENT, nullptr,      0},
 };
 
 Params gParams;

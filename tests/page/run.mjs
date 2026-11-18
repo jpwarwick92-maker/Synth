@@ -704,6 +704,24 @@ try {
     await sleep(2200);
     check(await lcdCount(page, LINE, 40, 208) <= quietScope + 20 && await page.evaluate(() => window.__synth.inputLight) === 0,
       'with the tone unplugged the output and the light go quiet', String(await lcdCount(page, LINE, 40, 208)));
+    // the vocoder: the held chord is heard only while something arrives at the input
+    await page.evaluate(() => window.__synth.midi([0xb0, 106, 127]));   // vocoder amount to full
+    await page.click('#test-note');
+    await sleep(1900);
+    check(await lcdCount(page, LINE, 40, 208) <= quietScope + 20, 'vocoder on, nothing at the input: the held chord is silent', String(await lcdCount(page, LINE, 40, 208)));
+    await page.evaluate(() => window.__synth.inputTone(0.3, 700));
+    await sleep(600);
+    const spoken = await lcdCount(page, LINE, 40, 208);
+    check(spoken > quietScope + 150, 'a tone at the input opens it: the chord sounds', `${quietScope} -> ${spoken}`);
+    await press(page, 'btn_fx2');
+    await press(page, 'btn_fx2');                                   // the Vocoder page: the bands, live
+    await sleep(300);
+    check(await lcdCount(page, LINE, 96, 152) > 300, 'the Vocoder page shows the bands the tone falls in', String(await lcdCount(page, LINE, 96, 152)));
+    await page.screenshot({ path: path.join(shotDir, 'page_vocoder.png') });
+    await press(page, 'btn_fx2');
+    await page.evaluate(() => { window.__synth.inputTone(0); window.__synth.midi([0xb0, 106, 0]); });
+    await page.click('#test-note');
+    await sleep(2200);
     // the Mic button plugs in the browser's microphone (a made-up one here)
     await page.click('#mic');
     await page.waitForFunction(() => document.getElementById('mic').getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {});

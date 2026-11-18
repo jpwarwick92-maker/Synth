@@ -15,6 +15,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <chrono>
 #include <limits>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "synth.h"
 #include "tables.h"
 #include "ui.h"
+#include "vocoder.h"
 
 // ---------------------------------------------------------------- harness
 
@@ -839,6 +841,12 @@ static void testSoftPages() {
     fw::tick(33);
     saveFrame(c.shot);
     press(c.button);
+    if (!std::strcmp(c.button, "btn_fx2")) {  // FX 2 has a second page, the vocoder
+      CHECK(fw::gUi.mode() == fw::MB_FX2 && fw::gUi.page() == 1, "btn_fx2: a second press should show the Vocoder page");
+      fw::tick(33);
+      saveFrame("mode_vocoder_off");
+      press(c.button);
+    }
     CHECK(fw::gUi.mode() == fw::MB_NONE, "%s: pressing the lit button should return home", c.button);
   }
 
@@ -1455,6 +1463,8 @@ static void testEverySoftParameter() {
   render(base, 0.4);
   for (int id = 0; id < fw::P_COUNT; ++id) {
     if (fw::isPanelParam(id)) continue;  // those are covered control by control above
+    // the vocoder's other three do nothing without a voice at the input: they are tested with one, further down
+    if (id == fw::P_VOC_FORMANT || id == fw::P_VOC_CONSONANTS || id == fw::P_VOC_SMOOTH) continue;
     boot(48000);
     softBaseline();
     int steps = fw::kParams[id].steps;
@@ -2682,7 +2692,7 @@ static void testPictures() {
       }
     }
   }
-  CHECK(shown == 19, "expected 19 values across the encoder pages, found %d", shown);
+  CHECK(shown == 23, "expected 23 values across the encoder pages, found %d", shown);
   CHECK(blind == 0, "%d encoder-page values have no picture of their own", blind);
   boot(48000);
   press("btn_fx1");
@@ -4127,6 +4137,266 @@ static void testAudioInput() {
   CHECK(rmsOf(after, 1.9, 2.0) < 0.02, "and die away afterwards (%.5f)", rmsOf(after, 1.9, 2.0));
 }
 
+// ------------------------------------------------- the vocoder
+
+// A made-up voice: a buzz at `f0` Hz whose harmonics are strongest round
+// three formants, which is what makes one vowel differ from another.
+struct Vowel {
+  double f0, formant[3];
+  std::vector<double> amp;
+  Vowel(double pitch, double f1, double f2, double f3, double peak = 0.3) : f0(pitch), formant{f1, f2, f3} {
+    double sum = 0;
+    for (int h = 1; h * f0 < 5000; ++h) {
+      double a = 0;
+      // (a real voice's formants get weaker as they get higher)
+      for (double f : formant) a += formant[0] / f * std::exp(-std::pow((h * f0 - f) / (0.12 * f + 60.0), 2.0));
+      amp.push_back(a + 0.002);
+      sum += a + 0.002;
+    }
+    for (double& a : amp) a *= peak / sum * 1.6;
+  }
+  std::pair<float, float> operator()(long i) const {
+    double x = 0, t = (double)i / gSr;
+    for (size_t h = 0; h < amp.size(); ++h) x += amp[h] * std::sin(2.0 * M_PI * (double)(h + 1) * f0 * t);
+    return std::make_pair((float)x, (float)x);
+  }
+};
+
+// The energy of `x` between two frequencies, from `from` on.
+static double bandEnergy(const std::vector<float>& x, size_t from, double loHz, double hiHz) {
+  const size_t n = 16384;
+  std::vector<double> m = spectrum(x, from, n);
+  double e = 0;
+  for (size_t i = (size_t)(loHz * n / gSr); i <= (size_t)(hiHz * n / gSr) && i < m.size(); ++i) e += m[i] * m[i];
+  return e;
+}
+
+// A bright, steady sound for the vocoder to shape: saws with the filter wide open.
+static void vocoderCarrier() {
+  setSel("osc1_wave", fw::WAVE_SAW);
+  setSel("osc2_wave", fw::WAVE_SAW);
+  setPot("mix_osc2", 0.0);  // one oscillator: two would beat, and the level would come and go
+  setPot("filter_cutoff", 1.0);
+  setPot("filter_env_amount", 0.5);
+  setPot("filter_resonance", 0.0);
+  setPot("aenv_attack", 0.0);
+  setPot("aenv_sustain", 1.0);
+  setPot("aenv_release", 0.1);
+  renderNew(0.05);
+}
+
+static void testVocoder() {
+  const Vowel ah(120, 700, 1200, 2600), ee(120, 300, 2300, 3000);
+  auto silence = [](long) { return std::make_pair(0.0f, 0.0f); };
+  // an "s": hiss with nothing below about 4 kHz in it
+  auto ess = [](long i) {
+    static uint32_t rng = 1;
+    static float last = 0, last2 = 0;
+    if (i == 0) rng = 1, last = last2 = 0;
+    rng = rng * 1664525u + 1013904223u;
+    float white = (float)(int32_t)rng / 2147483648.0f;
+    float high = white - 2.0f * last + last2;  // two differences: a steep high-pass
+    last2 = last;
+    last = white;
+    return std::make_pair(0.08f * high, 0.08f * high);
+  };
+
+  section("vocoder: off, it changes nothing, whatever its other controls are set to");
+  boot(48000);
+  vocoderCarrier();
+  midi({0x90, 57, 100});
+  auto plain = renderIn(0.5, ah);
+  boot(48000);
+  vocoderCarrier();
+  setStep(fw::P_VOC_FORMANT, 20);
+  setStep(fw::P_VOC_CONSONANTS, 100);
+  setStep(fw::P_VOC_SMOOTH, 90);
+  midi({0x90, 57, 100});
+  auto same = renderIn(0.5, ah);
+  CHECK(plain == same, "with the amount at 0 the sound should be bit for bit what it is without a vocoder");
+
+  section("vocoder: the notes are the synth's, the vowel is the voice's");
+  setStep(fw::P_VOC_CONSONANTS, 0);
+  setStep(fw::P_VOC_FORMANT, 12);
+  setStep(fw::P_VOC_SMOOTH, 35);
+  setStep(fw::P_VOCODER, 100);
+  auto outAh = renderIn(1.0, ah);
+  // the synth plays A3 (220 Hz), the voice buzzes at 120 Hz
+  double synthPitch = bandEnergy(outAh, 20000, 652, 668) + bandEnergy(outAh, 20000, 872, 888);    // 3 x 220, 4 x 220
+  double voicePitch = bandEnergy(outAh, 20000, 712, 728) + bandEnergy(outAh, 20000, 832, 848);    // 6 x 120, 7 x 120
+  CHECK(synthPitch > 100 * voicePitch, "the pitch should be the synth's 220 Hz, not the voice's 120 (%.1f dB apart)", 10 * std::log10(synthPitch / voicePitch));
+  auto outEe = renderIn(1.0, ee);
+  // "ah" is strong round 700 to 1200 Hz and weak round 2300; "ee" is the other way about
+  double ahMid = bandEnergy(outAh, 20000, 600, 1400), ahHigh = bandEnergy(outAh, 20000, 2000, 3400);
+  double eeMid = bandEnergy(outEe, 20000, 600, 1400), eeHigh = bandEnergy(outEe, 20000, 2000, 3400);
+  CHECK(ahMid > 4 * ahHigh && eeHigh > 4 * eeMid, "\"ah\" and \"ee\" should come out with their own shapes (ah %.1f dB, ee %.1f dB mid over high)",
+        10 * std::log10(ahMid / ahHigh), 10 * std::log10(eeMid / eeHigh));
+  double eeLow = bandEnergy(outEe, 20000, 180, 420), ahLow = bandEnergy(outAh, 20000, 180, 420);
+  CHECK(eeLow > 4 * ahLow, "\"ee\" has its low formant near 300 Hz, \"ah\" has not (%.1f dB)", 10 * std::log10(eeLow / ahLow));
+  std::printf("    ah: mid %.1f dB over high; ee: high %.1f dB over mid\n", 10 * std::log10(ahMid / ahHigh), 10 * std::log10(eeHigh / eeMid));
+
+  section("vocoder: a voice at a healthy level gives about the synth's own loudness; no voice, no sound");
+  double vocoded = rmsOf(outAh, 0.4, 1.0), dry = rmsOf(plain, 0.2, 0.5);
+  CHECK(vocoded > dry * 0.25 && vocoded < dry * 2.5, "vocoded level %.4f against the plain synth's %.4f (%.1f dB)", vocoded, dry, 20 * std::log10(vocoded / dry));
+  std::printf("    vocoded level is %.1f dB against the plain synth\n", 20 * std::log10(vocoded / dry));
+  auto quiet = renderIn(1.0, silence);
+  CHECK(rmsOf(quiet, 0.6, 1.0) < dry * 0.003, "with the voice silent the vocoded synth is silent (%.6f)", rmsOf(quiet, 0.6, 1.0));
+  setStep(fw::P_VOCODER, 50);
+  quiet = renderIn(0.5, silence);
+  CHECK(std::fabs(rmsOf(quiet, 0.3, 0.5) / dry - 0.5) < 0.05, "at 50%% half of the plain synth is left (%.3f of it)", rmsOf(quiet, 0.3, 0.5) / dry);
+  setStep(fw::P_VOCODER, 0);
+  renderIn(0.3, ah);
+  auto back = renderIn(0.2, ah);
+  CHECK(rmsOf(back, 0.0, 0.2) > dry * 0.9 && !fw::gVocoder.on(), "back at 0 the plain synth returns and the vocoder is out of the path");
+  boot(48000);
+  vocoderCarrier();
+  setStep(fw::P_VOCODER, 100);
+  midi({0x90, 57, 100});
+  auto noInput = renderNew(0.5);  // a target with no audio input at all
+  CHECK(peakOf(noInput, 12000) < 1e-5, "with no input connected the vocoded synth is silent, not broken");
+
+  section("vocoder: Smooth sets how fast a band's level falls when the voice stops");
+  double fallMs[2];
+  for (int c = 0; c < 2; ++c) {
+    boot(48000);
+    vocoderCarrier();
+    setStep(fw::P_VOCODER, 100);
+    setStep(fw::P_VOC_SMOOTH, c == 0 ? 0 : 100);
+    midi({0x90, 57, 100});
+    auto out = renderIn(1.5, [&](long i) { return i < 24000 ? ah(i) : std::make_pair(0.0f, 0.0f); });
+    std::vector<double> lv = levels(out, 5.0);
+    double full = lv[90];  // at 0.45 s, with the voice steady
+    size_t i = 100;
+    while (i < lv.size() && lv[i] > 0.1 * full) ++i;
+    fallMs[c] = ((double)i - 100.0) * 5.0;
+  }
+  CHECK(fallMs[0] < 60 && fallMs[1] > 300 && fallMs[1] < 1200, "crisp at 0 (%.0f ms to fall to a tenth), slurred at 100 (%.0f ms)", fallMs[0], fallMs[1]);
+  std::printf("    time to fall to a tenth after the voice stops: %.0f ms at Smooth 0, %.0f ms at 100\n", fallMs[0], fallMs[1]);
+
+  section("vocoder: Formant moves the voice's shape up or down the synth's sound");
+  double centre[3];
+  for (int c = 0; c < 3; ++c) {
+    boot(48000);
+    vocoderCarrier();
+    setStep(fw::P_VOCODER, 100);
+    setStep(fw::P_VOC_CONSONANTS, 0);
+    setStep(fw::P_VOC_FORMANT, c == 0 ? 0 : c == 1 ? 12 : 24);  // an octave down, none, an octave up
+    midi({0x90, 45, 100});
+    auto out = renderIn(1.0, ah);
+    std::vector<double> m = spectrum(out, 20000, 16384);
+    double num = 0, den = 0;
+    for (size_t i = 4; i < m.size(); ++i) {
+      double hz = (double)i * gSr / 16384.0;
+      num += std::log2(hz) * m[i] * m[i];
+      den += m[i] * m[i];
+    }
+    centre[c] = num / den;  // the middle of the sound, in octaves
+  }
+  CHECK(centre[1] - centre[0] > 0.6 && centre[2] - centre[1] > 0.6, "each octave of Formant should move the sound's middle most of an octave (%.2f, %.2f)",
+        centre[1] - centre[0], centre[2] - centre[1]);
+
+  section("vocoder: Consonants lets an S through a dull sound, but only while a note is held");
+  double hiss[3];
+  for (int c = 0; c < 3; ++c) {
+    boot(48000);
+    vocoderCarrier();
+    setPot("filter_cutoff", 0.35);  // a dull sound: almost nothing up where an S lives
+    setPot("filter_env_amount", 0.5);
+    setStep(fw::P_VOCODER, 100);
+    setStep(fw::P_VOC_CONSONANTS, c == 0 ? 0 : 100);
+    if (c != 2) midi({0x90, 45, 100});
+    auto out = renderIn(1.0, ess);
+    hiss[c] = std::sqrt(bandEnergy(out, 20000, 3500, 9000));
+  }
+  CHECK(hiss[1] > 8 * hiss[0], "at 100%% the S should be far stronger than at 0 (%.1f dB)", 20 * std::log10(hiss[1] / (hiss[0] + 1e-12)));
+  CHECK(hiss[2] < 0.02 * hiss[1], "with no note held there is no hiss on its own (%.1f dB down)", 20 * std::log10(hiss[1] / (hiss[2] + 1e-12)));
+  boot(48000);
+  vocoderCarrier();
+  setStep(fw::P_VOCODER, 100);
+  setStep(fw::P_VOC_CONSONANTS, 100);
+  midi({0x90, 45, 100});
+  auto vowelOnly = renderIn(1.0, ah);
+  double lows = bandEnergy(vowelOnly, 20000, 200, 3000), highs = bandEnergy(vowelOnly, 20000, 4000, 9000);
+  CHECK(highs < 0.05 * lows, "a vowel does not bring the hiss up with it (%.1f dB below the vowel)", 10 * std::log10(lows / highs));
+
+  section("vocoder: a loud voice on a full chord stays in bounds; high sample rates are safe");
+  for (double sr : {48000.0, 96000.0}) {
+    boot(sr);
+    vocoderCarrier();
+    setStep(fw::P_VOCODER, 100);
+    setStep(fw::P_VOC_CONSONANTS, 100);
+    setStep(fw::P_VOC_FORMANT, 24);
+    midi({0x90, 36, 127, 0x90, 43, 127, 0x90, 48, 127, 0x90, 52, 127, 0x90, 55, 127, 0x90, 60, 127, 0x90, 64, 127, 0x90, 67, 127});
+    const Vowel loud(140, 700, 1200, 2600, 1.0);
+    auto out = renderIn(2.0, loud);
+    bool fine = true;
+    for (float x : out) fine = fine && std::isfinite(x) && std::fabs(x) <= 1.0f;
+    CHECK(fine && peakOf(out) > 0.05, "at %.0f Hz the output should stay finite, in range and audible (peak %.3f)", sr, peakOf(out));
+  }
+
+  section("vocoder: its page shows the voice's bands live, and says why when nothing can be heard");
+  boot(48000);
+  vocoderCarrier();
+  press("btn_fx2");
+  press("btn_fx2");
+  fw::tick(33);
+  auto offPage = pictureRows(76, 154);
+  fw::encoderTurn(ctl("enc1"), 60);
+  fw::tick(2000);
+  fw::tick(33);
+  auto noSignal = pictureRows(76, 154);
+  CHECK(noSignal != offPage, "turned up, the page shows the bands in place of the scope");
+  renderIn(0.5, ah);
+  fw::tick(33);
+  auto noNote = pictureRows(76, 154);
+  CHECK(noNote != noSignal, "with a voice arriving the bands move");
+  saveFrame("mode_vocoder_voice");
+  midi({0x90, 57, 100});
+  renderIn(0.5, ee);
+  fw::tick(33);
+  auto playing = pictureRows(76, 154);
+  CHECK(playing != noNote, "and a different vowel gives a different picture");
+  saveFrame("mode_vocoder_playing");
+  double low = 0, high = 0;
+  for (int k = 0; k < 6; ++k) low += fw::gVocoder.band(k);
+  for (int k = 10; k < 14; ++k) high += fw::gVocoder.band(k);
+  CHECK(low > 0.3 && high > 0.3 && fw::gVocoder.band(8) < 0.5 * fw::gVocoder.band(12), "\"ee\" lights the low bands and the high ones, with a gap between");
+  for (int e = 1; e < 4; ++e) {
+    fw::encoderTurn(ctl(e == 1 ? "enc2" : e == 2 ? "enc3" : "enc4"), 3);
+    fw::tick(33);
+    saveFrame(e == 1 ? "soft_vocoder_formant" : e == 2 ? "soft_vocoder_consonants" : "soft_vocoder_smooth");
+    fw::tick(2000);
+  }
+
+  section("vocoder: its four values are part of a patch");
+  boot(48000);
+  setStep(fw::P_VOCODER, 80);
+  setStep(fw::P_VOC_FORMANT, 17);
+  setStep(fw::P_VOC_CONSONANTS, 70);
+  setStep(fw::P_VOC_SMOOTH, 10);
+  savePatchTo(2);
+  setStep(fw::P_VOCODER, 0);
+  setStep(fw::P_VOC_FORMANT, 12);
+  setStep(fw::P_VOC_CONSONANTS, 50);
+  setStep(fw::P_VOC_SMOOTH, 35);
+  CHECK(fw::patchLoad(2), "the patch should load");
+  CHECK(fw::gParams.step(fw::P_VOCODER) == 80 && fw::gParams.step(fw::P_VOC_FORMANT) == 17 && fw::gParams.step(fw::P_VOC_CONSONANTS) == 70 &&
+            fw::gParams.step(fw::P_VOC_SMOOTH) == 10,
+        "loading the patch should bring the vocoder's settings back");
+
+  section("vocoder: what it costs on this machine (information only)");
+  for (int on = 0; on < 2; ++on) {
+    boot(48000);
+    vocoderCarrier();
+    setStep(fw::P_VOCODER, on ? 100 : 0);
+    midi({0x90, 57, 100});
+    auto t0 = std::chrono::steady_clock::now();
+    renderIn(10.0, ah);
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("    ten seconds, one note, vocoder %s: %.0f ms\n", on ? "on " : "off", ms);
+  }
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -4253,6 +4523,7 @@ int main(int argc, char** argv) {
   testClock();
   testMidiOutAndChannel();
   testAudioInput();
+  testVocoder();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();
