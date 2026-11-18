@@ -29,11 +29,11 @@ float vocBandHz(int k) {
 float mapVocRelease(float smooth) { return 0.008f * exp2f_(5.3f * clampf(smooth, 0.0f, 1.0f)); }  // 8 ms .. 315 ms
 
 // Coefficients for every band, with the centres moved by `shiftSemis`.
-void Vocoder::setBands(float* b0, float* a1, float* a2, float shiftSemis) const {
+void Vocoder::setBands(float* b0, float* a1, float* a2, float shiftSemis, float rate) const {
   float shift = exp2f_(shiftSemis * (1.0f / 12.0f));
   for (int k = 0; k < kVocBands; ++k) {
-    float hz = minf(vocBandHz(k) * shift, 0.45f * sr_);  // never past what the sample rate can carry
-    float w = kTwoPi * hz / sr_;
+    float hz = minf(vocBandHz(k) * shift, 0.45f * rate);  // never past what the sample rate can carry
+    float w = kTwoPi * hz / rate;
     float alpha = sinf_(w) / (2.0f * kSectionQ);
     float norm = 1.0f / (1.0f + alpha);
     b0[k] = alpha * norm;
@@ -48,15 +48,18 @@ void Vocoder::init(float sampleRate) {
   amount_ = 0.0f;
   formant_ = 0.0f;
   smooth_ = -1.0f;
-  attack_ = 1.0f - exp2f_(-1.4427f / (0.003f * sr_));  // a band's level rises in about 3 ms
+  attack_ = 1.0f - exp2f_(-1.4427f / (0.003f * 0.5f * sr_));  // a band's level rises in about 3 ms
+  half_ = false;
+  held_ = 0.0f;
   gate_ = 0.0f;
   gateCoef_ = 1.0f - exp2f_(-1.4427f * (float)kCtrlBlock / (0.02f * sr_));
   rng_ = 0x51ED270Bu;
-  setBands(vb0_, va1_, va2_, 0.0f);
-  setBands(cb0_, ca1_, ca2_, 0.0f);
+  setBands(vb0_, va1_, va2_, 0.0f, 0.5f * sr_);
+  setBands(cb0_, ca1_, ca2_, 0.0f, sr_);
   for (int k = 0; k < kVocBands; ++k) {
     for (int i = 0; i < 4; ++i) vz_[k][i] = cz_[k][i] = 0.0f;
     env_[k] = 0.0f;
+    gain_[k] = 0.0f;
     fall_[k] = 0.0f;
     shown_[k] = 0.0f;
     // A voice is weaker the higher it goes; the upper bands are turned up to
@@ -79,13 +82,14 @@ void Vocoder::process(float* busL, float* busR, const float* voice, int n, const
     on_ = true;
     for (int k = 0; k < kVocBands; ++k) {
       for (int i = 0; i < 4; ++i) vz_[k][i] = cz_[k][i] = 0.0f;
-      env_[k] = 0.0f;
+      env_[k] = gain_[k] = 0.0f;
     }
     gate_ = 0.0f;
+    half_ = false;
   }
   if (s.formant != formant_) {
     formant_ = s.formant;
-    setBands(cb0_, ca1_, ca2_, formant_);
+    setBands(cb0_, ca1_, ca2_, formant_, sr_);
   }
   if (s.smooth != smooth_) {
     smooth_ = s.smooth;
@@ -93,7 +97,7 @@ void Vocoder::process(float* busL, float* busR, const float* voice, int n, const
     for (int k = 0; k < kVocBands; ++k) {
       // a low band must not fall faster than two of its own cycles, or its level would shake
       float bandSec = maxf(sec, 2.0f / vocBandHz(k));
-      fall_[k] = 1.0f - exp2f_(-1.4427f / (bandSec * sr_));
+      fall_[k] = 1.0f - exp2f_(-1.4427f / (bandSec * 0.5f * sr_));
     }
   }
   gate_ += ((s.playing ? 1.0f : 0.0f) - gate_) * gateCoef_;
@@ -113,36 +117,46 @@ void Vocoder::process(float* busL, float* busR, const float* voice, int n, const
     float carrier = 0.5f * (busL[i] + busR[i]);
     rng_ = rng_ * 1664525u + 1013904223u;
     float bright = carrier + hiss * ((float)(int32_t)rng_ * (1.0f / 2147483648.0f));
+    // The voice's bands and their levels, on every second sample: the
+    // two samples of a pair are averaged, which also keeps what lies above
+    // the half rate's reach from folding back into the bands.
+    if (!half_) {
+      held_ = v;
+      half_ = true;
+    } else {
+      half_ = false;
+      float m = 0.5f * (held_ + v);
+      for (int k = 0; k < kVocBands; ++k) {
+        float* z = vz_[k];
+        float b0 = vb0_[k], a1 = va1_[k], a2 = va2_[k];
+        float y = b0 * m + z[0];
+        z[0] = z[1] - a1 * y;
+        z[1] = -b0 * m - a2 * y;
+        float y2 = b0 * y + z[2];
+        z[2] = z[3] - a1 * y2;
+        z[3] = -b0 * y - a2 * y2;
+        float level = absf(y2), e = env_[k];
+        e += (level - e) * (level > e ? attack_ : fall_[k]);
+        env_[k] = e;
+        // neighbouring bands are added with opposite signs: where two meet
+        // they would otherwise partly cancel and leave a dip between every pair
+        float g = minf(e * weight_[k], kMaxBandGain);
+        gain_[k] = (k & 1) ? -g : g;
+      }
+    }
+    // the synth's bands, each turned up and down by the voice's
     float wet = 0.0f;
     for (int k = 0; k < kVocBands; ++k) {
-      // the voice's band, and its level
-      float* z = vz_[k];
-      float b0 = vb0_[k], a1 = va1_[k], a2 = va2_[k];
-      float y = b0 * v + z[0];
+      float x = k >= kVocBands - kVocHissBands ? bright : carrier;
+      float* z = cz_[k];
+      float b0 = cb0_[k], a1 = ca1_[k], a2 = ca2_[k];
+      float y = b0 * x + z[0];
       z[0] = z[1] - a1 * y;
-      z[1] = -b0 * v - a2 * y;
+      z[1] = -b0 * x - a2 * y;
       float y2 = b0 * y + z[2];
       z[2] = z[3] - a1 * y2;
       z[3] = -b0 * y - a2 * y2;
-      float level = absf(y2), e = env_[k];
-      e += (level - e) * (level > e ? attack_ : fall_[k]);
-      env_[k] = e;
-      // the synth's band, turned up and down by it
-      float x = k >= kVocBands - kVocHissBands ? bright : carrier;
-      z = cz_[k];
-      b0 = cb0_[k];
-      a1 = ca1_[k];
-      a2 = ca2_[k];
-      y = b0 * x + z[0];
-      z[0] = z[1] - a1 * y;
-      z[1] = -b0 * x - a2 * y;
-      y2 = b0 * y + z[2];
-      z[2] = z[3] - a1 * y2;
-      z[3] = -b0 * y - a2 * y2;
-      float g = minf(e * weight_[k], kMaxBandGain);
-      // neighbouring bands are added with opposite signs: where two meet
-      // they would otherwise partly cancel and leave a dip between every pair
-      wet += (k & 1) ? -y2 * g : y2 * g;
+      wet += y2 * gain_[k];
     }
     amount_ += step;
     float keep = 1.0f - amount_;

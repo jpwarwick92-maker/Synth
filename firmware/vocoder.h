@@ -10,6 +10,10 @@
 // out of the path altogether. It works on one channel: the two sides of the
 // synth's sound are added before it, and the effects after it can widen
 // the result again.
+//
+// The voice's side runs at half the sample rate: its bands stop at 7 kHz
+// and only their levels are wanted, so nothing is lost, and it takes about
+// a quarter off the processor time. The synth's side runs at the full rate.
 #pragma once
 
 #include "fw_config.h"
@@ -44,7 +48,7 @@ class Vocoder {
   float band(int k) const { return shown_[k]; }  // the level of the voice's band k, 0..1
 
  private:
-  void setBands(float* b0, float* a1, float* a2, float shiftSemis) const;
+  void setBands(float* b0, float* a1, float* a2, float shiftSemis, float rate) const;
 
   float sr_;
   bool on_;
@@ -54,6 +58,8 @@ class Vocoder {
   float attack_;
   float gate_;           // 0..1, follows `playing`
   float gateCoef_;
+  bool half_;            // the voice's side has the first of a pair of samples waiting
+  float held_;
   uint32_t rng_;
   // one two-pole band-pass section's coefficients for each band: the voice's, then the synth's
   float vb0_[kVocBands], va1_[kVocBands], va2_[kVocBands];
@@ -62,6 +68,7 @@ class Vocoder {
   float vz_[kVocBands][4];
   float cz_[kVocBands][4];
   float env_[kVocBands];
+  float gain_[kVocBands];  // what each of the synth's bands is multiplied by now
   float fall_[kVocBands];
   float weight_[kVocBands];
   volatile float shown_[kVocBands];
