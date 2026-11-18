@@ -2,6 +2,9 @@
 //
 // It moves bytes and numbers between the page and the firmware. It does
 // not know what any control means, what a note is, or what is on the display.
+// It also stands in for the hardware round the firmware that the page
+// cannot be: rough pots, the audio input's preamp and converter, and a
+// clock sender for testing.
 
 class SynthProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -29,8 +32,21 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.maxBlock = x.fw_max_block();
     this.outL = new Float32Array(mem, x.fw_out_left_ptr(), this.maxBlock);
     this.outR = new Float32Array(mem, x.fw_out_right_ptr(), this.maxBlock);
+    this.inL = new Float32Array(mem, x.fw_in_left_ptr(), this.maxBlock);
+    this.inR = new Float32Array(mem, x.fw_in_right_ptr(), this.maxBlock);
     this.midiCap = x.fw_midi_capacity();
     this.midi = new Uint8Array(mem, x.fw_midi_ptr(), this.midiCap);
+    this.midiOut = new Uint8Array(mem, x.fw_midi_out_ptr(), 256);
+    // The audio input's hardware, which the worklet stands in for: a preamp
+    // set to the gain the firmware asks for, then a converter that cannot
+    // go past full scale. A test tone can take the place of a microphone.
+    this.preampDb = -1;
+    this.preamp = 1;
+    this.tone = { level: 0, step: 0, phase: 0 };
+    this.inLight = 0;
+    // A stand-in for a clock sender (a DAW, or the clock hub): MIDI clock
+    // at a set tempo into one of the MIDI inputs, timed by the sample.
+    this.clock = { bpm: 0, port: 0, phase: 0 };
     this.width = x.fw_display_width();
     this.height = x.fw_display_height();
     this.frameBuf = new Uint16Array(mem, x.fw_display_ptr(), this.width * this.height);
@@ -83,26 +99,93 @@ class SynthProcessor extends AudioWorkletProcessor {
         if (this.rough) for (const i of this.pots) this.truePos[i] = x.fw_control_get(i);
         break;
       case 'enc': x.fw_encoder_turn(m.i, m.d); break;      // encoder clicks
-      case 'midi':
+      case 'midi':                                         // bytes arriving at a MIDI input (0 = the jack, 1 = USB)
         for (let i = 0; i < m.bytes.length; i += this.midiCap) {
           const n = Math.min(this.midiCap, m.bytes.length - i);
           for (let k = 0; k < n; k++) this.midi[k] = m.bytes[i + k];
-          x.fw_midi(n);
+          x.fw_midi_port(n, m.port | 0);
+        }
+        break;
+      case 'tone':                                         // a sine wave plugged into the audio input (level 0 = unplugged)
+        this.tone.level = m.level || 0;
+        this.tone.step = (2 * Math.PI * (m.hz || 440)) / sampleRate;
+        break;
+      case 'clock':                                        // the clock sender: start (bpm), continue, or stop
+        this.clock.port = m.port | 0;
+        if (m.bpm > 0 && this.clock.bpm > 0) {
+          this.clock.bpm = m.bpm;                          // already running: a change of tempo
+        } else if (m.bpm > 0) {
+          this.midiByte(m.resume ? 0xfb : 0xfa, this.clock.port);
+          if (!m.resume || !(this.clock.phase > 0)) this.clock.phase = 1;   // the first tick follows at once
+          this.clock.bpm = m.bpm;
+        } else if (this.clock.bpm > 0) {
+          this.clock.bpm = 0;
+          this.midiByte(0xfc, this.clock.port);
         }
         break;
       case 'buf': this.pool.push(m.buf); break;
     }
   }
 
+  midiByte(b, port) {
+    this.midi[0] = b;
+    this.x.fw_midi_port(1, port);
+  }
+
+  // The audio input for the next `len` samples, as the converter delivers
+  // it. Returns false when nothing is plugged in.
+  readInput(input, done, len) {
+    const tone = this.tone, mic = input && input.length > 0 ? input : null;
+    if (!mic && !(tone.level > 0)) return false;
+    const db = this.x.fw_input_gain_db();
+    if (db !== this.preampDb) {
+      this.preampDb = db;
+      this.preamp = Math.pow(10, db / 20);
+    }
+    const g = this.preamp, l = mic ? mic[0] : null, r = mic ? mic[mic.length > 1 ? 1 : 0] : null;
+    for (let i = 0; i < len; i++) {
+      let a = l ? l[done + i] : 0, b = r ? r[done + i] : 0;
+      if (tone.level > 0) {
+        const t = tone.level * Math.sin(tone.phase);
+        tone.phase += tone.step;
+        if (tone.phase > 2 * Math.PI) tone.phase -= 2 * Math.PI;
+        a += t;
+        b += t;
+      }
+      this.inL[i] = Math.max(-1, Math.min(1, a * g));
+      this.inR[i] = Math.max(-1, Math.min(1, b * g));
+    }
+    return true;
+  }
+
   process(inputs, outputs) {
     const out = outputs[0];
     const n = out[0].length;
+    const clock = this.clock;
     for (let done = 0; done < n; done += this.maxBlock) {
       const len = Math.min(this.maxBlock, n - done);
-      this.x.fw_process(len);
+      if (clock.bpm > 0) {
+        while (clock.phase >= 1) {
+          clock.phase -= 1;
+          this.midiByte(0xf8, clock.port);
+        }
+        clock.phase += (len * clock.bpm * 24) / (60 * sampleRate);
+      }
+      if (this.readInput(inputs[0], done, len)) this.x.fw_process_in(len);
+      else this.x.fw_process(len);
       const whole = len === this.maxBlock;
       out[0].set(whole ? this.outL : this.outL.subarray(0, len), done);
       if (out.length > 1) out[1].set(whole ? this.outR : this.outR.subarray(0, len), done);
+    }
+
+    // Whatever is waiting to leave by the MIDI outputs goes to the page.
+    for (let port = 0; port < 2; port++) {
+      let bytes = null;
+      for (let k = this.x.fw_midi_out(port); k > 0; k = this.x.fw_midi_out(port)) {
+        if (!bytes) bytes = [];
+        for (let i = 0; i < k; i++) bytes.push(this.midiOut[i]);
+      }
+      if (bytes) this.port.postMessage({ t: 'midiout', port, bytes });
     }
 
     if (this.rough) this.scanPots(8);
@@ -170,6 +253,12 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
     }
     if (lit) msg.led = this.leds.slice();
+
+    const inLight = x.fw_input_light();                    // the light by the input jack
+    if (inLight !== this.inLight || this.first) {
+      this.inLight = inLight;
+      msg.inLight = inLight;
+    }
     this.first = false;
 
     const saves = x.fw_storage_save_count();
@@ -188,7 +277,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
     }
 
-    if (msg.fb || msg.pos || msg.led || msg.state || msg.patches) this.port.postMessage(msg, transfer);
+    if (msg.fb || msg.pos || msg.led || msg.state || msg.patches || msg.inLight !== undefined) this.port.postMessage(msg, transfer);
   }
 }
 

@@ -8,10 +8,10 @@ and the panel layout can be played before any hardware exists.
 
 | Path | What it is |
 |---|---|
-| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
+| `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, vocoder, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
-| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. |
+| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. It can also plug a microphone into the firmware's audio input, send it MIDI clock, and pass on what leaves by its MIDI out. |
 | `layouts/a3.json` | The panel layout in millimetres. The page draws whatever this file says. |
 | `tests/native/` | Engine and display tests that render audio and display frames with no browser. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
@@ -80,6 +80,12 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
   smooths them, so nothing should look or sound different with it on.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
   and mod wheels, a Test note button that holds a chord, a sustain-pedal switch and Panic.
+- **Mic in** plugs this computer's microphone into the synth's audio input (use
+  headphones, or the speakers feed back). The dot beside it is the light by the input
+  jack. **Test clock** sends MIDI clock into the synth's MIDI in at the tempo in the box
+  beside it, as a DAW or a clock hub would; pressing it again sends stop.
+- **MIDI out** in the top bar picks the device the synth's MIDI out jack is plugged
+  into. A MIDI keyboard, or a DAW sending notes and clock, arrives at the synth's MIDI in.
 
 ## What the prototype covers
 
@@ -100,6 +106,16 @@ scope and a visual for each control as it moves.
 - **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
   fader down.
 - **Arp** has its own section: Mode, Octaves, Tempo, Gate, Hold and Chord.
+- **LFO Sync** is a three-stop selector in the LFO section. FREE: one LFO that takes no
+  notice of the keys. KEY: it starts again when a note begins from silence. VOICE:
+  every voice has its own LFO, each a little out of step and a little off the others'
+  pace, so a held chord shimmers instead of moving as one.
+- **Chorus** is a knob in the Voice section, with a Type switch beside it. CHORUS is two
+  slowly swept copies, one per side. ENSEMBLE is three, a third of a cycle apart, swept
+  by a slow and a fast wave at once: a swirl with no one wobble to be heard in it.
+- **Sub pitch** is a selector beside the Sub fader: two octaves below oscillator 1, one
+  below, a fifth above, or an octave above. Sub detune (up to 25 cents either way) is
+  on the Engine page.
 - **Chord** remembers the shape of a chord. Hold a chord and press Chord; after that
   each single key plays that chord, moved to the key. With the arp running, one key
   arpeggiates it. Press Chord again to forget it.
@@ -111,7 +127,7 @@ The layout keeps knob, selector and encoder centres at least 22 mm apart and fad
 centres at least 17 mm apart, and the page tests fail if any label overlaps another
 label, a control, or its section's outline. The sections sit on a grid: two rows of
 equal height on five shared columns, with the same gap between every pair of
-neighbours. The panel is 490 x 152 mm.
+neighbours. The panel is 530 x 152 mm.
 
 **The display.** Every control has a picture that follows it: turn a control and its
 picture changes, or says in words why there is nothing to show (Macro on a saw wave,
@@ -146,13 +162,80 @@ encoder restores its default.
 | Button | Page | Encoders |
 |---|---|---|
 | FX 1 | Delay | time, tone, feedback, mix |
-| FX 2 | Chorus + reverb | chorus, reverb size, reverb tone, reverb mix |
-| Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
-| Engine | 1: Voice | unison detune, sub octave, bend range, filter slope (12 dB, 24 dB, ladder) |
+| FX 2 | 1: Compressor + reverb | compressor, reverb size, reverb tone, reverb mix |
+| FX 2 | 2: Vocoder | amount, formant, consonants, smooth |
+| Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, duck |
+| Engine | 1: Voice | unison detune, sub detune, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
 | Patch | 3: Setup | display colours (amber, or white for behind amber acrylic); label lights (steady or dance) |
+| Patch | 4: MIDI | clock (internal, MIDI jack, USB), channel (all, 1 to 16), thru, clock out |
+| Patch | 5: Input | source (line, mic), gain (0 to 60 dB), send to (off, mix, effects), (empty) |
+
+**Settings.** The MIDI and Input pages hold settings about the instrument, not the
+sound: they are kept over a restart and a patch never changes them.
+
+**Clock.** With Clock on INT the arp and the duck run at the Tempo knob's setting. On
+MIDI or USB they follow the MIDI clock arriving at that input, and the Tempo knob is not
+used (its picture says so, and shows the clock's tempo).
+
+- The arp's sixteenth notes fall on the clock's grid. The tempo is the average spacing
+  of the last beat's ticks, and the arp steps on a position that runs on smoothly at that
+  tempo and is nudged towards each tick, so ticks that arrive a few milliseconds early
+  or late (as they do from a computer) still give even steps.
+- **Start** begins the pattern again on the next tick. **Stop** holds the arp silent
+  until start or continue; notes latched by Hold stay latched. **Continue** carries on
+  from where it stopped. A **song position** message moves the beat to the sender's
+  playhead.
+- A key pressed up to a quarter of a step late still gets that step; later than that it
+  waits for the next one.
+- If no clock is arriving (none yet, or it has stopped coming for half a second) the
+  Tempo knob is used meanwhile, so the synth is never silent for want of a cable.
+- Clock at the input that is not selected is ignored.
+
+**MIDI in and out.** There are two connections, the MIDI jacks and USB. Notes and
+controllers are played from either, on the Channel set (or on every channel).
+With **Thru** on, every note and controller message that arrives is passed on, whatever
+its channel: both inputs to the MIDI out jack, and the MIDI jack's input to USB (never
+USB back to USB). With **Clock Out** on, the clock the synth is running on is sent too:
+its own, 24 ticks to a beat at the Tempo knob's setting, when it keeps time itself; the
+incoming clock with its start, stop and continue when it is following. System-exclusive
+messages are not passed on. The synth's own clock is made in the audio blocks, so on
+the Teensy each tick can leave up to 2.9 ms late; the tempo it carries is exact.
+
+**Audio input.** The firmware takes a stereo input beside its output. **Send To**
+chooses where it goes: nowhere, straight to the output beside the synth's own sound
+(Mix), or into the effects with it (FX). A line input is stereo; a microphone is one
+channel and comes out on both sides. **Gain** is what the firmware asks of the preamp in
+front of the converter, so on real hardware it is analog gain. The Input page shows the
+level against the converter's limit, and the light by the jack is dark with no signal,
+amber with one, and red for nearly half a second whenever the input reaches the limit.
+With Send To off the output is exactly what it would be with nothing connected. The
+vocoder listens to this input whatever Send To is set to.
+
+**Vocoder** (FX 2, second page). The synth's sound, shaped by a voice at the audio
+input: play notes, speak into the microphone, and the notes take on the words. The voice
+is split into 16 bands from 140 Hz to 7 kHz and the level of each is followed; the
+synth's sound is split into the same bands and each is turned up and down by the voice's.
+It sits between the voices and the effects, on one channel (the chorus and reverb after
+it can widen it again), and its four values are stored in patches.
+
+- **Vocoder** is the amount: how much of the synth's own sound is replaced by the
+  vocoded sound. At 0 it is out of the path altogether. At 100% nothing is heard unless
+  a voice is arriving.
+- **Formant** moves the voice's shape up or down the synth's sound, up to an octave
+  either way: up sounds smaller and brighter, down larger and darker.
+- **Consonants** adds hiss to the synth's top three bands, so S, T, F and SH are heard
+  even on a dull sound. It is added only for breath sounds (a voice whose strength is
+  nearly all at the top), and only while a note is held.
+- **Smooth** sets how fast each band's level falls when the voice does, from 8 ms
+  (crisp, every syllable distinct) to about a third of a second (slurred).
+- With the vocoder on, its page shows the sixteen bands moving with the voice, and says
+  why if nothing can be heard: no signal at the input, or no note held.
+- It works best on a bright, steady sound: saw or supersaw, filter well open, sustain up.
+  Set the input's Gain so the light by the jack is amber, never red. Leave Send To off
+  unless the plain voice should be heard as well.
 
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
@@ -209,11 +292,28 @@ engine drops voices one at a time, down to two at the fewest, and gives them bac
 after a calm spell, instead of falling behind. Saving to storage waits for silence
 (for up to half a minute), because on real hardware a save can interrupt the sound.
 
+**Compressor** (FX 2 page) turns the loud parts down and everything back up, so one
+note and a full chord come out nearer the same level and soft notes and tails are
+lifted. Its one control lowers the threshold, raises the ratio (to 4:1) and adds
+make-up gain together. At zero it is out of the path altogether.
+
+**Duck** (Mod page) dips the level just after every beat and lets it come back before
+the next, as a compressor keyed from a kick drum does. The beat is the arp's Tempo, or
+the MIDI clock's when one is being followed (the dips then fall on that clock's beats).
+On the synth's own clock, while the arp runs the beat is counted from its steps, four to
+a beat, so the two cannot slip apart; otherwise it starts with any note played from silence. The first
+hundredth of a second of each beat is let through, so a note played on the beat keeps
+its attack.
+
+The order is vocoder, chorus, delay, reverb, compressor, duck, then the output
+limiter.
+
 **Output** is stereo once Spread, the chorus or the reverb is in use. With Spread at
 zero and every effect off, both channels carry exactly the same signal.
 
-Not built yet: MIDI clock sync for the arp, loading patches from files, and the iPad version
-(Safari on iPad has no Web MIDI, so it needs a small wrapper app).
+Not built yet: sending the input through the voices' filter, loading patches
+from files, and the iPad version (Safari on iPad has no Web MIDI, so it needs a small
+wrapper app).
 
 ## Publishing
 

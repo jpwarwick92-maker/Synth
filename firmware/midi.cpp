@@ -1,52 +1,123 @@
 #include "midi.h"
 
+#include "firmware.h"
 #include "params.h"
 #include "synth.h"
-#include "firmware.h"
 
 namespace fw {
 
-MidiIn gMidi;
+Midi gMidi;
 
-void MidiIn::init() {
-  status_ = 0;
-  have_ = 0;
-  need_ = 0;
-  inSysex_ = false;
+void Midi::init() {
+  for (int p = 0; p < PORT_COUNT; ++p) {
+    in_[p].status = 0;
+    in_[p].have = 0;
+    in_[p].need = 0;
+    in_[p].inSysex = false;
+    thru_[p].w = thru_[p].r = 0;
+    clock_[p].w = clock_[p].r = 0;
+  }
   idleMs_ = 100000;
 }
 
-void MidiIn::tick(uint32_t dtMs) {
+void Midi::tick(uint32_t dtMs) {
   if (idleMs_ < 100000) idleMs_ += dtMs;
 }
 
-void MidiIn::byte(uint8_t b) {
-  if (b >= 0xF8) return;  // real-time bytes can appear anywhere; ignore them
-  if (b & 0x80) {
-    if (b == 0xF0) {
-      inSysex_ = true;
-      status_ = 0;
-      return;
-    }
-    inSysex_ = false;
-    if (b >= 0xF0) {  // other system messages: not used, and they cancel running status
-      status_ = 0;
-      return;
-    }
-    status_ = b;
-    have_ = 0;
-    uint8_t type = b & 0xF0;
-    need_ = (type == 0xC0 || type == 0xD0) ? 1 : 2;
-    return;
-  }
-  if (inSysex_ || status_ == 0) return;
-  data_[have_++] = b;
-  if (have_ < need_) return;
-  have_ = 0;  // running status: the next data bytes start a new message
-  message(status_, data_[0], need_ == 2 ? data_[1] : 0);
+// All of the bytes or none: half a message must never go out.
+bool Midi::put(Ring& ring, const uint8_t* bytes, int n) {
+  uint32_t w = ring.w;
+  if (kRingLen - (w - ring.r) < (uint32_t)n) return false;
+  for (int i = 0; i < n; ++i) ring.buf[(w + (uint32_t)i) & (kRingLen - 1)] = bytes[i];
+  ring.w = w + (uint32_t)n;
+  return true;
 }
 
-void MidiIn::message(uint8_t status, uint8_t d1, uint8_t d2) {
+// Sends something that arrived at an input on to the outputs. The MIDI out
+// jack takes it from either input. USB takes it from the MIDI jack only:
+// sending a computer its own messages back would have them going round in circles.
+void Midi::pass(int fromPort, const uint8_t* bytes, int n, bool clock) {
+  if (!setting(clock ? SET_CLOCK_OUT : SET_THRU)) return;
+  put(thru_[PORT_MIDI], bytes, n);
+  if (fromPort != PORT_USB) put(thru_[PORT_USB], bytes, n);
+}
+
+uint32_t Midi::outRead(int port, uint8_t* dst, uint32_t max) {
+  if (port < 0 || port >= PORT_COUNT) return 0;
+  uint32_t n = 0;
+  // Clock first: a clock byte may sit anywhere in the stream, and it is the one that must not wait.
+  Ring* rings[2] = {&clock_[port], &thru_[port]};
+  for (Ring* ring : rings) {
+    uint32_t r = ring->r, w = ring->w;
+    while (r != w && n < max) dst[n++] = ring->buf[r++ & (kRingLen - 1)];
+    ring->r = r;
+  }
+  return n;
+}
+
+void Midi::clockTick() {
+  const uint8_t b = 0xF8;
+  for (int p = 0; p < PORT_COUNT; ++p) put(clock_[p], &b, 1);
+}
+
+// Clock, start, continue and stop. Only the input the Clock setting names
+// is listened to; clock arriving anywhere else is dropped, so that two
+// clocks can never reach the outputs at once.
+void Midi::realTime(int port, uint8_t b) {
+  int source = setting(SET_CLOCK);
+  if (!((source == CLOCK_MIDI && port == PORT_MIDI) || (source == CLOCK_USB && port == PORT_USB))) return;
+  switch (b) {
+    case 0xF8: gSynth.post(EV_CLOCK); break;
+    case 0xFA: gSynth.post(EV_START); break;
+    case 0xFB: gSynth.post(EV_CONTINUE); break;
+    case 0xFC: gSynth.post(EV_STOP); break;
+    default: return;  // active sensing, reset: not used
+  }
+  pass(port, &b, 1, true);
+}
+
+void Midi::byte(int port, uint8_t b) {
+  if (port < 0 || port >= PORT_COUNT) return;
+  if (b >= 0xF8) {  // real-time bytes can appear anywhere, even inside another message
+    realTime(port, b);
+    return;
+  }
+  Parser& in = in_[port];
+  if (b & 0x80) {
+    in.inSysex = b == 0xF0;
+    in.status = 0;  // system messages cancel running status
+    in.have = 0;
+    if (b == 0xF2) {  // song position: two data bytes
+      in.status = b;
+      in.need = 2;
+    } else if (b < 0xF0) {
+      in.status = b;
+      uint8_t type = b & 0xF0;
+      in.need = (type == 0xC0 || type == 0xD0) ? 1 : 2;
+    }
+    return;
+  }
+  if (in.inSysex || in.status == 0) return;
+  in.data[in.have++] = b;
+  if (in.have < in.need) return;
+  in.have = 0;  // running status: the next data bytes start a new message
+  uint8_t status = in.status;
+  if (status == 0xF2) in.status = 0;  // which system messages do not have
+  message(port, status, in.data[0], in.need == 2 ? in.data[1] : 0, 1 + in.need);
+}
+
+void Midi::message(int port, uint8_t status, uint8_t d1, uint8_t d2, int len) {
+  const uint8_t bytes[3] = {status, d1, d2};
+  if (status == 0xF2) {  // song position, counted in sixteenth notes
+    int source = setting(SET_CLOCK);
+    if (!((source == CLOCK_MIDI && port == PORT_MIDI) || (source == CLOCK_USB && port == PORT_USB))) return;
+    gSynth.post(EV_SONG_POS, d1, d2);
+    pass(port, bytes, len, true);
+    return;
+  }
+  pass(port, bytes, len, false);  // every channel is passed on, whichever one the synth plays
+  int channel = setting(SET_CHANNEL);
+  if (channel != 0 && (status & 0x0F) != channel - 1) return;
   idleMs_ = 0;
   switch (status & 0xF0) {
     case 0x90:
@@ -61,7 +132,7 @@ void MidiIn::message(uint8_t status, uint8_t d1, uint8_t d2) {
   }
 }
 
-void MidiIn::controlChange(uint8_t cc, uint8_t value) {
+void Midi::controlChange(uint8_t cc, uint8_t value) {
   switch (cc) {
     case 1: gSynth.setModWheel((float)value * (1.0f / 127.0f)); return;
     case 64: gSynth.post(EV_SUSTAIN, value); return;

@@ -12,6 +12,7 @@
 
 #include "fw_config.h"
 #include "params.h"
+#include "settings.h"
 
 namespace fw {
 
@@ -68,6 +69,8 @@ struct Voice {
   uint8_t wave1, wave2;
   uint8_t eng1, eng2;
   float lfoAmt;     // 0..1, fades the LFO in after the note starts
+  float lfoPhase;   // this voice's own LFO, used when the LFO runs one per voice
+  float lfoRandom;  // and its held value for the random shape
   float drift1, drift2, driftCut;  // slow random wander of each oscillator's pitch and of the cutoff
   uint32_t driftRng;
   Svf f1, f2;
@@ -84,6 +87,19 @@ enum EventType : uint8_t {
   EV_ALL_NOTES_OFF,
   EV_ALL_SOUND_OFF,
   EV_CHORD,         // the Chord button was pressed
+  EV_CLOCK,         // MIDI clock from the input being followed: one tick, 24 to a beat
+  EV_START,
+  EV_CONTINUE,
+  EV_STOP,
+  EV_SONG_POS,      // a = LSB, b = MSB (14-bit), in sixteenth notes
+};
+
+// What is keeping time.
+enum ClockState : uint8_t {
+  CLK_INTERNAL,  // the synth itself, at the Tempo knob's setting
+  CLK_WAITING,   // set to follow a clock, but none is arriving: the Tempo knob is used meanwhile
+  CLK_LOCKED,    // following the clock
+  CLK_STOPPED,   // the clock's sender said stop: the arp waits for start or continue
 };
 
 struct OscRun;  // one oscillator's settings for one control block (synth.cpp)
@@ -105,8 +121,11 @@ class Synth {
   // high the engine sheds voices rather than fall behind.
   void reportLoad(float fraction) { load_ = fraction; }
 
-  // Audio context. Stereo output, n <= kMaxBlock.
-  void process(float* outL, float* outR, int n);
+  // Audio context. Stereo output, n <= kMaxBlock. inL and inR are the audio
+  // input, as it comes from the converter (-1..1); nullptr when the target
+  // has none. A mono input passes the same buffer for both.
+  void process(const float* inL, const float* inR, float* outL, float* outR, int n);
+  void process(float* outL, float* outR, int n) { process(nullptr, nullptr, outL, outR, n); }
 
   // ---- read by the display (control context) ----
   int activeVoices() const { return activeCount_; }
@@ -115,6 +134,11 @@ class Synth {
   float sampleRate() const { return sr_; }
   bool chordOn() const { return chordOn_; }
   int voiceLimit() const { return voiceLimit_; }
+  int clockState() const { return clkState_; }
+  float tempoBpm() const { return tempoBpm_; }      // the tempo the arp and the duck are running at
+  float beatNow() const { return beatShown_; }      // where in the beat they are, 0..1
+  float inputLevel() const { return inPeak_; }      // the audio input's peak level, 0..1
+  bool inputClipped() const { return inClip_ > 0.0f; }  // it reached the converter's limit in the last moment
 
   // ---- read by the label lights (control context) ----
   float lfoNow() const { return lfoValue_; }                  // -1..1
@@ -142,6 +166,10 @@ class Synth {
   void removeKey(int i);
   bool latching() const { return hold_ || (arpMode_ != ARP_OFF && pedal_); }
   void arpAdvance(int len);
+  void arpStep(float stepLen);
+  void clockEvent(uint8_t type, uint8_t a, uint8_t b);
+  void clockReset();
+  void clockAdvance(int len);
   int arpPick(uint8_t& velocity);
   // notes as the voices get them
   void noteOn(uint8_t note, uint8_t velocity);
@@ -192,6 +220,37 @@ class Synth {
   bool arpRestart_;
   uint32_t arpRng_;
   volatile uint32_t arpSteps_;
+  uint32_t arpBeatStep_;      // steps since the arp last started: four to a beat, for the duck
+
+  // Following a clock from outside. The position is counted in ticks (24
+  // to a beat). Ticks arrive a little early or late, so the arp does not
+  // step on the ticks themselves: it steps on a position that runs on
+  // smoothly at the measured tempo and is nudged towards each tick.
+  static constexpr int kClockWindow = 25;  // ticks kept for measuring the tempo: one beat's worth of gaps
+  uint8_t clkSource_;         // the Clock setting, as last seen
+  bool extLocked_;            // ticks are arriving
+  bool extRun_;               // false between stop and the next start or continue
+  bool extArmed_;             // the next tick sets the position (after start, continue or a song position)
+  uint32_t extTick_;          // the position of the latest tick
+  uint32_t extNext_;          // the position the next tick takes, when armed
+  float extLead_;             // how far past the latest tick the smooth position has run, in ticks
+  int32_t extStep_;           // the latest sixteenth-note step the position has reached
+  bool extStepFire_;          // ...and it reached it in this control block
+  float extPeriod_;           // samples between ticks, averaged
+  float extSince_;            // samples since the latest tick
+  uint32_t sampleNow_;        // samples processed so far
+  uint32_t extStamp_[kClockWindow];  // when each of the latest ticks arrived
+  int extStampN_, extStampPos_;
+  float clkOutPhase_;         // the synth's own clock, for sending
+  volatile uint8_t clkState_;
+  volatile float tempoBpm_;
+  volatile float beatShown_;
+
+  // the audio input
+  float inGainMix_, inGainFx_;  // how much of it is reaching the output and the effects now (they fade)
+  float inCoef_;
+  volatile float inPeak_;
+  volatile float inClip_;     // samples the clip light still has to stay on
 
   bool sustain_;
   volatile float bend_;       // -1..1 target
@@ -205,6 +264,8 @@ class Synth {
   float calmSamples_;         // time spent comfortably under it
   void shedVoice();
 
+  float beatPhase_;           // where in the beat the duck is, when the arp is not keeping time
+  bool beatReset_;            // a note has started from silence: the beat starts with it
   float lfoPhase_;
   float lfoValue_;
   float lfoRandom_;

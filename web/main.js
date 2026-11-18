@@ -37,8 +37,32 @@ function send(id, kind, value) {
   node.port.postMessage(kind === 'enc' ? { t: 'enc', i, d: value } : { t: 'set', i, v: value });
 }
 
-function sendMidi(bytes) {
-  if (node) node.port.postMessage({ t: 'midi', bytes: Array.from(bytes) });
+// Bytes arriving at one of the synth's MIDI inputs: 0 = the MIDI jack, 1 = USB.
+function sendMidi(bytes, port = 0) {
+  if (node) node.port.postMessage({ t: 'midi', bytes: Array.from(bytes), port });
+}
+
+// Bytes leaving by the synth's MIDI outputs. The MIDI out jack (port 0)
+// goes to whichever device is picked in the bar at the top; the tests read the log.
+let midiOutDevice = null;
+let outDotTimer = 0;
+function onMidiOut(port, bytes) {
+  const log = window.__synth.midiOut;
+  log.push({ port, bytes });
+  if (log.length > 4000) log.splice(0, log.length - 4000);
+  if (port !== 0) return;
+  $('out-dot').classList.add('on');
+  clearTimeout(outDotTimer);
+  outDotTimer = setTimeout(() => $('out-dot').classList.remove('on'), 120);
+  if (midiOutDevice) {
+    try { midiOutDevice.send(bytes); } catch (_) { /* the device went away */ }
+  }
+}
+
+// The light beside the input jack, in the colour the firmware gives it.
+function showInputLight(rgb) {
+  window.__synth.inputLight = rgb;
+  $('in-light').style.background = rgb ? `#${rgb.toString(16).padStart(6, '0')}` : '';
 }
 
 // ---------------------------------------------------------------- firmware -> screen
@@ -52,7 +76,9 @@ function onFirmwareMessage(e) {
     window.__synth.sampleRate = m.sampleRate;
     return;
   }
+  if (m.t === 'midiout') return onMidiOut(m.port, m.bytes);
   if (m.t !== 'frame') return;
+  if (m.inLight !== undefined) showInputLight(m.inLight);
 
   if (m.fb) {
     drawDisplay(new Uint16Array(m.fb));
@@ -348,6 +374,41 @@ function setupAids() {
   window.__synth.applyRough = applyRough;
   applyRough();
 
+  // A microphone into the audio input. The browser's own echo and noise
+  // processing is switched off: the firmware should get what a real input would.
+  let micStream = null, micNode = null;
+  const micOff = () => {
+    if (micNode) micNode.disconnect();
+    if (micStream) micStream.getTracks().forEach((t) => t.stop());
+    micNode = micStream = null;
+    $('mic').setAttribute('aria-pressed', 'false');
+  };
+  $('mic').addEventListener('click', async () => {
+    if (micStream) return micOff();
+    if (!ctx || !node) return;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      micNode = ctx.createMediaStreamSource(micStream);
+      micNode.connect(node);
+      $('mic').setAttribute('aria-pressed', 'true');
+    } catch (_) {
+      micOff();
+      $('mic').title = 'The microphone was not allowed for this page.';
+    }
+  });
+
+  // A clock sender: MIDI clock into the MIDI in jack, with start and stop.
+  const clockBpm = () => Math.min(300, Math.max(30, parseFloat($('clock-bpm').value) || 96));
+  const sendClock = (bpm, resume = false, port = 0) => { if (node) node.port.postMessage({ t: 'clock', bpm, resume, port }); };
+  toggle($('clock'), () => sendClock(clockBpm()), () => sendClock(0));
+  $('clock-bpm').addEventListener('change', () => {
+    if ($('clock').getAttribute('aria-pressed') === 'true') sendClock(clockBpm());
+  });
+  window.__synth.clock = sendClock;
+  window.__synth.inputTone = (level, hz = 440) => { if (node) node.port.postMessage({ t: 'tone', level, hz }); };
+
   $('panic').addEventListener('click', () => {
     sendMidi([0xb0, 120, 0, 0xb0, 123, 0]);          // all sound off, all notes off
     $('test-note').setAttribute('aria-pressed', 'false');
@@ -371,11 +432,20 @@ async function setupMidi() {
     const refresh = () => {
       const names = [];
       for (const input of access.inputs.values()) {
-        input.onmidimessage = (e) => sendMidi(e.data);
+        input.onmidimessage = (e) => sendMidi(e.data);   // notes, controllers and clock alike
         if (input.state === 'connected') names.push(input.name || 'MIDI input');
       }
       show(names.length ? `Keyboard: ${names.join(', ')}` : 'Keyboard: none connected', names.length > 0);
+      // the devices the MIDI out jack could be plugged into
+      const pick = $('midi-out'), chosen = pick.value;
+      while (pick.options.length > 1) pick.remove(1);
+      for (const output of access.outputs.values()) {
+        if (output.state === 'connected') pick.add(new Option(`MIDI out: ${output.name || 'MIDI output'}`, output.id));
+      }
+      pick.value = [...pick.options].some((o) => o.value === chosen) ? chosen : '';
+      midiOutDevice = pick.value ? access.outputs.get(pick.value) : null;
     };
+    $('midi-out').addEventListener('change', refresh);
     access.onstatechange = refresh;                  // fires when a keyboard is plugged in or pulled out
     refresh();
   } catch (_) {
@@ -426,7 +496,7 @@ async function start() {
     }
     await ctx.audioWorklet.addModule('worklet.js');
     node = new AudioWorkletNode(ctx, 'synth', {
-      numberOfInputs: 0,
+      numberOfInputs: 1,                               // the audio input: nothing is plugged in until Mic in is pressed
       numberOfOutputs: 1,
       outputChannelCount: [2],
       processorOptions: { wasm, state: savedState(), patches: savedPatches() },
@@ -452,6 +522,8 @@ window.__synth = {
   frames: 0,
   saves: 0,
   patchSaves: 0,
+  midiOut: [],                  // what has left by the MIDI outputs: [{port, bytes}]
+  inputLight: 0,
   problems,
   midi: sendMidi,
   position: (id) => controls.get(id)?.value,

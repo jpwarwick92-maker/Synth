@@ -1,8 +1,8 @@
 // Browser target: exposes the firmware to the page as a WebAssembly module.
 //
 // The module imports nothing. The page reaches the firmware only through
-// the functions exported here, and through shared buffers (audio out,
-// MIDI in, saved state, patch slots) whose addresses it asks for.
+// the functions exported here, and through shared buffers (audio in and
+// out, MIDI in and out, saved state, patch slots) whose addresses it asks for.
 #include "../../firmware/firmware.h"
 
 #define FW_EXPORT(name) __attribute__((export_name(#name))) name
@@ -10,7 +10,10 @@
 namespace {
 float gOutL[fw::kMaxBlock];
 float gOutR[fw::kMaxBlock];
+float gInL[fw::kMaxBlock];
+float gInR[fw::kMaxBlock];
 uint8_t gMidiBuf[256];
+uint8_t gMidiOut[256];
 // The page is handed the frame already expanded to the display's 16-bit
 // format, as the real display would receive it line by line.
 uint16_t gDisplay[fw::kDisplayW * fw::kDisplayH];
@@ -81,13 +84,33 @@ void FW_EXPORT(fw_process)(int n) {
   fw::process(gOutL, gOutR, n);
 }
 
-// ---- MIDI in: write bytes to the buffer, then call fw_midi(count) ----
+// ---- audio in: write the input's samples to the two buffers, as the
+// converter would deliver them, then call fw_process_in(n) in place of fw_process(n) ----
+float* FW_EXPORT(fw_in_left_ptr)() { return gInL; }
+float* FW_EXPORT(fw_in_right_ptr)() { return gInR; }
+void FW_EXPORT(fw_process_in)(int n) {
+  if (n > fw::kMaxBlock) n = fw::kMaxBlock;
+  fw::process(gInL, gInR, gOutL, gOutR, n);
+}
+// What the firmware asks of the hardware in front of the converter, and the light by the jack.
+int FW_EXPORT(fw_input_gain_db)() { return fw::inputGainDb(); }
+int FW_EXPORT(fw_input_source)() { return fw::inputSource(); }
+uint32_t FW_EXPORT(fw_input_light)() { return fw::inputLight(); }
+
+// ---- MIDI in: write bytes to the buffer, then call fw_midi(count), or
+// fw_midi_port(count, port) to say which input they arrived at (0 = the MIDI jack, 1 = USB) ----
 uint8_t* FW_EXPORT(fw_midi_ptr)() { return gMidiBuf; }
 int FW_EXPORT(fw_midi_capacity)() { return sizeof gMidiBuf; }
-void FW_EXPORT(fw_midi)(int count) {
+void FW_EXPORT(fw_midi_port)(int count, int port) {
   if (count > (int)sizeof gMidiBuf) count = sizeof gMidiBuf;
-  for (int i = 0; i < count; ++i) fw::midiByte(gMidiBuf[i]);
+  for (int i = 0; i < count; ++i) fw::midiByte(gMidiBuf[i], port);
 }
+void FW_EXPORT(fw_midi)(int count) { fw_midi_port(count, fw::PORT_MIDI); }
+
+// ---- MIDI out: fw_midi_out(port) copies the bytes waiting to leave by
+// that output into the buffer and returns how many (0 = nothing more) ----
+uint8_t* FW_EXPORT(fw_midi_out_ptr)() { return gMidiOut; }
+int FW_EXPORT(fw_midi_out)(int port) { return (int)fw::midiOutRead(port, gMidiOut, sizeof gMidiOut); }
 
 // ---- panel hardware ----
 int FW_EXPORT(fw_control_count)() { return fw::kNumControls; }

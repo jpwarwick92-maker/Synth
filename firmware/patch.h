@@ -20,6 +20,7 @@
 
 #include "fw_config.h"
 #include "params.h"
+#include "settings.h"
 
 namespace fw {
 
@@ -50,9 +51,10 @@ constexpr uint32_t kLedDownNear = 0x8CC4FF;  // nearly there from above: pale co
 constexpr int kLedFarGap = 1638;             // 40% of a pot's travel, or more, counts as a long way
 
 // The part of the saved state this module owns.
-// (The last two bytes, the display palette and what the label lights do,
-// were added later, one at a time: state without them still loads.)
-constexpr uint32_t kPanelStateSize = 1 + kPanelCount * 5 + 3 + kPatchNameLen + 2;
+// (The bytes at the end, the display palette, what the label lights do and
+// then the settings in settings.h, were added later, one at a time: state
+// without them still loads.)
+constexpr uint32_t kPanelStateSize = 1 + kPanelCount * 5 + 3 + kPatchNameLen + 2 + SET_COUNT;
 
 class PatchPanel {
  public:
@@ -120,6 +122,10 @@ class PatchPanel {
 };
 
 extern PatchPanel gPatch;
+
+// A value saved before Chorus became a pot and the sub gained its four
+// pitches, brought up to date (used for old saved state and old patches alike).
+int upgradeOldValue(int id, int value);
 
 // The characters a patch name can hold, in the order the encoder steps through them.
 extern const char kNameChars[];

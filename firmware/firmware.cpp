@@ -26,7 +26,9 @@ constexpr uint32_t kSaveWaitMaxMs = 30000;
 // stored it as a pot position; that is converted on loading.
 // Version 3: arp Tempo and Gate became panel pots (they were stepped encoder values).
 // Version 4: the panel's positions and the loaded patch follow the parameters.
-constexpr uint8_t kStateVersion = 4;
+// Version 5: Chorus became a panel pot (it was a stepped encoder value), and
+// the sub's two octave settings became four pitches in a different order.
+constexpr uint8_t kStateVersion = 5;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
@@ -83,6 +85,7 @@ bool stateRead(const uint8_t* src, uint32_t len) {
     if (version == 1 && i == P_LFO_SHAPE) v = mapLfoShape((float)v * (1.0f / (float)kPotMax));
     if (version < 3 && i == P_ARP_TEMPO) v = v * kPotMax / 200;  // was 0..200 for 40..240 BPM
     if (version < 3 && i == P_ARP_GATE) v = v * kPotMax / 19;    // was 0..19 for 5..100%
+    if (version < 5) v = upgradeOldValue(i, v);
     gParams.set(i, v);
     p += 2;
   }
@@ -95,6 +98,7 @@ void init(float sampleRate) {
   tablesInit();
   gParams.reset();
   gfxSetPalette(PALETTE_AMBER);
+  settingsReset();
   lightsReset();
   gPatch.init();
   gPatch.scanSlots();
@@ -113,9 +117,27 @@ void init(float sampleRate) {
 
 void process(float* outL, float* outR, int n) { gSynth.process(outL, outR, n); }
 
+void process(const float* inL, const float* inR, float* outL, float* outR, int n) {
+  gSynth.process(inL, inR, outL, outR, n);
+}
+
+int inputGainDb() { return setting(SET_INPUT_GAIN); }
+
+int inputSource() { return setting(SET_INPUT_SOURCE); }
+
+uint32_t inputLight() {
+  if (gSynth.inputClipped()) return 0xE00000;  // red: turn the gain down
+  float level = gSynth.inputLevel();
+  if (level >= 0.25f) return 0xFF9A00;         // a healthy level: amber
+  if (level >= 0.01f) return 0x5A3A0C;         // something is arriving: dim amber
+  return 0;
+}
+
 void reportLoad(float fraction) { gSynth.reportLoad(fraction); }
 
-void midiByte(uint8_t b) { gMidi.byte(b); }
+void midiByte(uint8_t b, int port) { gMidi.byte(port, b); }
+
+uint32_t midiOutRead(int port, uint8_t* dst, uint32_t max) { return gMidi.outRead(port, dst, max); }
 
 void onParamChanged(int id) {
   if (id != P_VOLUME && id != P_HOLD) gPatch.markEdited();

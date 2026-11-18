@@ -7,6 +7,7 @@
 #include "params.h"
 #include "synth.h"
 #include "tables.h"
+#include "vocoder.h"
 
 namespace fw {
 
@@ -21,16 +22,25 @@ struct Page {
   const char* title;
   uint8_t param[4];
 };
-constexpr int kMaxPages = 3;
+constexpr int kMaxPages = 5;
 const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
-    /* FX 2   */ {{"CHORUS + REVERB", {P_CHORUS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
-    /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
-    /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
+    /* FX 2   */ {{"COMPRESSOR + REVERB", {P_COMPRESS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}},
+                  {"VOCODER", {P_VOCODER, P_VOC_FORMANT, P_VOC_CONSONANTS, P_VOC_SMOOTH}}},
+    /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_DUCK}}, {nullptr, {}}},
+    /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_DETUNE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
     // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
     /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}},
-                  {"SETUP", {kNone, kNone, kNone, kNone}}},
+                  {"SETUP", {kNone, kNone, kNone, kNone}}, {"MIDI", {kNone, kNone, kNone, kNone}},
+                  {"INPUT", {kNone, kNone, kNone, kNone}}},
+};
+
+// The last two Patch pages hold settings (settings.h), one per encoder.
+constexpr int kFirstSettingsPage = 3;
+const uint8_t kSettingPages[2][4] = {
+    {SET_CLOCK, SET_CHANNEL, SET_THRU, SET_CLOCK_OUT},
+    {SET_INPUT_SOURCE, SET_INPUT_GAIN, SET_INPUT_TO, kNone},
 };
 
 constexpr uint16_t kArmMs = 3000, kNoteMs = 2000;
@@ -436,8 +446,7 @@ void drawMacroIdle(int osc, const Box& b) {
 
 // Detune: two oscillators a little apart beat against each other. The
 // picture is one second of the pair at A3: the swell and fade of the beats.
-void drawDetune(const Box& b = kPic) {
-  float cents = mapDetuneCents(gParams.norm(P_OSC2_DETUNE));
+void drawBeats(float cents, const char* inTune, const Box& b = kPic) {
   float beats = absf(220.0f * (exp2f_(cents * (1.0f / 1200.0f)) - 1.0f));
   int mid = b.y + b.h / 2 + 6, amp = b.h / 2 - 22;
   int pyT = 0, pyB = 0;
@@ -453,13 +462,15 @@ void drawDetune(const Box& b = kPic) {
   }
   Str s;
   if (beats < 0.05f) {
-    s.add("IN TUNE WITH OSC 1");
+    s.add(inTune);
   } else {
     s.addFixed(beats, 1);
     s.add(" BEATS A SECOND");
   }
   hint(b.y + 2, s.b);
 }
+
+void drawDetune() { drawBeats(mapDetuneCents(gParams.norm(P_OSC2_DETUNE)), "IN TUNE WITH OSC 1"); }
 
 // X-Mod: oscillator 1 as it is (dim) and as oscillator 2 bends it (bright).
 void drawXmod(const Box& b = kPic) {
@@ -512,7 +523,7 @@ void drawMixer(int selected) {
   }
   const Box wave = {8, 130, 304, 84};
   midLine(wave);
-  float ratio = oscRatio(), sub = gParams.step(P_SUB_OCTAVE) ? 0.25f : 0.5f;
+  float ratio = oscRatio(), sub = mapSubRatio(gParams.step(P_SUB_OCTAVE), 0.0f);
   float span = 2.0f * exp2f_(octaveOf(0));
   plotWave(wave, span, kLine, [&](float t) {
     uint32_t h = (uint32_t)(t * 4096.0f) * 2654435761u;  // the same "noise" every time, so the picture holds still
@@ -840,9 +851,12 @@ void drawLevelWave(float level, const Box& b = kPic) {
 // The arpeggiator: two seconds of what it plays from a three-note chord.
 // Mode sets the order, Octaves the height, Tempo how many steps fit, Gate
 // how long each one lasts. With the arp off the pattern is drawn dim.
-void drawArp(const Box& b = kPic) {
+void drawArp(int id, const Box& b = kPic) {
   int mode = gParams.step(P_ARP_MODE), octs = gParams.step(P_ARP_OCTAVES) + 1;
-  float bpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO)), gate = mapArpGate(gParams.norm(P_ARP_GATE));
+  int clock = gSynth.clockState();
+  // following a clock from outside, the steps are as wide as that clock makes them
+  float bpm = clock == CLK_LOCKED ? gSynth.tempoBpm() : mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  float gate = mapArpGate(gParams.norm(P_ARP_GATE));
   static const int kChord[3] = {0, 4, 7}, kPlayed[3] = {4, 0, 7};
   int shown = mode == ARP_OFF ? ARP_UP : mode;
   int seq[24], n = 0;
@@ -871,6 +885,9 @@ void drawArp(const Box& b = kPic) {
     gfxFill(x, y, w, 4, c);
   }
   if (mode == ARP_OFF) hint(b.y + 2, "ARP IS OFF");
+  else if (clock == CLK_STOPPED) hint(b.y + 2, "CLOCK STOPPED: ARP WAITS");
+  else if (id == P_ARP_TEMPO && clock == CLK_LOCKED) hint(b.y + 2, "THE CLOCK SETS THE TEMPO");
+  else if (id == P_ARP_TEMPO && clock == CLK_WAITING) hint(b.y + 2, "NO CLOCK: THE KNOB IS USED");
 }
 
 // ---- pictures for the values on the encoder pages ----
@@ -884,12 +901,56 @@ void drawUnison(const Box& b) {
     gfxPlotLine(b.x + 20, mid, b.x + b.w - 4, mid - (int)(kOff[v] * spread * (float)(b.h / 2 - 4)), v < 2 ? kLine : kLineDim);
 }
 
-// Sub octave: oscillator 1 (dim) and the square one or two octaves under it.
+// Sub pitch: oscillator 1 (dim) and the sub's square against it: two
+// octaves or one below, a fifth above, or an octave above.
 void drawSub(const Box& b) {
   midLine(b);
-  float sub = gParams.step(P_SUB_OCTAVE) ? 0.25f : 0.5f;
+  float sub = mapSubRatio(gParams.step(P_SUB_OCTAVE), 0.0f);
   plotWave(b, 4.0f, kLineDim, [](float t) { return oscShape(0, t) * 0.6f; });
   plotWave(b, 4.0f, kLine, [sub](float t) { return frac01(t * sub) < 0.5f ? 0.9f : -0.9f; });
+}
+
+// Sub detune: the beating it makes against oscillator 1.
+void drawSubDetune(const Box& b) {
+  drawBeats((float)(gParams.step(P_SUB_DETUNE) + kParams[P_SUB_DETUNE].intMin), "SUB IS IN TUNE", b);
+}
+
+// Compressor: what comes out (up) against what goes in (across). The dim
+// line is no compression; the bright one bends over above the threshold
+// and sits higher at low levels, where the quiet parts are being lifted.
+void drawCompress(const Box& b) {
+  float amount = gParams.frac(P_COMPRESS);
+  CompSettings c = mapCompress(amount);
+  int base = b.y + b.h - 2, top = b.y + 4, x0 = b.x + 40, w = b.w - 80;
+  gfxHLine(b.x, base, b.w, kGrid);
+  gfxLine(x0, base, x0 + w, top, kLineDim);
+  int py = base;
+  for (int px = 0; px <= w; ++px) {
+    float in = (float)px / (float)w;
+    float out = minf(in * compressGain(c, in), 1.0f);
+    int yy = base - (int)(out * (float)(base - top));
+    plotColumn(x0 + px, py, yy, kLine);
+    py = yy;
+  }
+  if (amount < 0.005f) hint(b.y + 2, "COMPRESSOR IS OFF");
+}
+
+// Duck: the level over two beats at the arp's Tempo. It dips just after
+// each beat (the marks) and comes back before the next.
+void drawDuck(const Box& b) {
+  float depth = gParams.frac(P_DUCK);
+  float beatSec = 60.0f / gSynth.tempoBpm();  // the Tempo knob's, or the clock's when one is followed
+  int base = b.y + b.h - 2, top = b.y + 14;
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (int k = 0; k < 2; ++k) gfxFill(b.x + k * b.w / 2, b.y, 3, 10, kAccent);
+  int py = top;
+  for (int px = 0; px < b.w; ++px) {
+    float level = 1.0f - 0.92f * depth * duckShape(frac01((float)px * 2.0f / (float)b.w), beatSec);
+    int yy = base - (int)(level * (float)(base - top));
+    plotColumn(b.x + px, px > 0 ? py : yy, yy, kLine);
+    py = yy;
+  }
+  if (depth < 0.005f) hint(b.y + 2, "DUCK IS OFF");
 }
 
 // Bend range: how far the pitch goes with the wheel pushed right up, and pulled right down.
@@ -928,12 +989,23 @@ void drawDelay(const Box& b) {
   if (mix < 0.005f) hint(b.y + 2, "DELAY IS OFF: MIX IS 0");
 }
 
-// Chorus: the two sides wobbling against each other.
+// Chorus: the two copies wobbling against each other. Ensemble: three,
+// each a third of a cycle apart, with a quick shiver on top of the slow sweep.
 void drawChorus(const Box& b) {
-  float amount = gParams.frac(P_CHORUS);
+  float amount = gParams.norm(P_CHORUS);
   midLine(b);
-  plotWave(b, 2.0f, kLine, [amount](float t) { return 0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t)); });
-  plotWave(b, 2.0f, kLineDim, [amount](float t) { return -0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t + 0.25f)); });
+  if (gParams.step(P_CHORUS_TYPE) == CHORUS_ENSEMBLE) {
+    for (int k = 2; k >= 0; --k) {
+      float third = (float)k * (1.0f / 3.0f);
+      plotWave(b, 2.0f, k == 0 ? kLine : kLineDim, [amount, third, k](float t) {
+        return 0.3f * amount * (float)(1 - k) +
+               amount * (0.5f * tabRead(gSine, frac01(t + third)) + 0.14f * tabRead(gSine, frac01(t * 10.0f + third)));
+      });
+    }
+  } else {
+    plotWave(b, 2.0f, kLine, [amount](float t) { return 0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t)); });
+    plotWave(b, 2.0f, kLineDim, [amount](float t) { return -0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t + 0.25f)); });
+  }
   if (amount < 0.005f) hint(b.y + 2, "CHORUS IS OFF");
 }
 
@@ -980,13 +1052,24 @@ void drawEnvPitch(const Box& b) {
   }
 }
 
-// LFO key sync. Three keys, drawn as bars along the top: the second is
-// played while the first is still down, the third after a silence. With KEY
-// the LFO starts again when a note begins from silence (the first and the
-// third), not for a note that joins others already sounding.
+// LFO sync. Three keys, drawn as bars along the top: the second is played
+// while the first is still down, the third after a silence. FREE: one LFO
+// that takes no notice of the keys. KEY: it starts again when a note begins
+// from silence (the first and the third), not for a note that joins others
+// already sounding. VOICE: every voice has its own LFO, each a little out
+// of step and a little off the others' pace, so a chord shimmers instead
+// of moving as one.
 void drawLfoSync(const Box& b) {
   midLine(b);
-  bool key = gParams.step(P_LFO_SYNC) != 0;
+  int mode = gParams.step(P_LFO_SYNC);
+  if (mode == LFOSYNC_VOICE) {
+    static const float kRate[4] = {1.0f, 0.94f, 1.07f, 0.97f};
+    for (int v = 3; v >= 0; --v)
+      plotWave(b, 1.0f, v == 0 ? kLine : kLineDim, [v](float t) { return 0.75f * tabRead(gSine, frac01(t * 5.3f * kRate[v] + 0.27f * (float)v)); });
+    hint(b.y + 2, "ONE LFO FOR EACH VOICE");
+    return;
+  }
+  bool key = mode == LFOSYNC_KEY;
   static const float kDown[3] = {0.08f, 0.30f, 0.70f}, kUp[3] = {0.46f, 0.56f, 0.94f};
   for (int k = 0; k < 3; ++k) {
     int x0 = b.x + (int)(kDown[k] * (float)b.w), x1 = b.x + (int)(kUp[k] * (float)b.w);
@@ -1008,15 +1091,110 @@ void drawFilterIn(const Box& b) {
   gF = keep;
 }
 
+// ---- the vocoder's pictures ----
+
+// Says why the vocoder cannot be heard, if it cannot. True if it said something.
+bool vocoderSilent(const Box& b) {
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+  else if (gSynth.inputLevel() < 0.003f) hint(b.y + 2, "NO SIGNAL AT THE INPUT");
+  else if (gSynth.activeVoices() == 0) hint(b.y + 2, "PLAY A NOTE TO HEAR IT");
+  else return false;
+  return true;
+}
+
+// The level of each of the voice's sixteen bands, live: low on the left.
+// The column at the right is the amount: how much of the synth's sound the
+// vocoded sound has replaced.
+void drawVocoder(const Box& b) {
+  int base = b.y + b.h - 2, top = b.y + 20, w = (b.w - 20) / kVocBands;
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (int k = 0; k < kVocBands; ++k) {
+    int h = (int)(gVocoder.band(k) * (float)(base - top));
+    gfxFill(b.x + k * w + 2, base - (h > 2 ? h : 2), w - 4, h > 2 ? h : 2, h > 2 ? kLine : kDarkGrey);
+  }
+  int amount = (int)(gParams.frac(P_VOCODER) * (float)(base - top - 2));
+  gfxFrame(b.x + b.w - 12, top, 12, base - top, kDarkGrey);
+  gfxFill(b.x + b.w - 11, base - 1 - amount, 10, amount, kAccent);
+  vocoderSilent(b);
+}
+
+// Formant: where each band of the voice (top row) lands in the synth's sound (bottom row).
+void drawFormant(const Box& b) {
+  float shift = exp2f_((float)(gParams.step(P_VOC_FORMANT) + kParams[P_VOC_FORMANT].intMin) * (1.0f / 12.0f));
+  int x0 = b.x + 70, w = b.w - 74, yTop = b.y + 26, yBot = b.y + b.h - 8;
+  auto xOf = [&](float hz) { return x0 + (int)(clampf(log2f_(hz * (1.0f / 60.0f)) * (1.0f / 8.2f), 0.0f, 1.0f) * (float)w); };
+  gfxText(b.x, yTop - 6, "VOICE", kLineDim, 2);
+  gfxText(b.x, yBot - 8, "SYNTH", kAccent, 2);
+  for (int k = 0; k < kVocBands; ++k) {
+    int xv = xOf(vocBandHz(k)), xs = xOf(minf(vocBandHz(k) * shift, 0.45f * gSynth.sampleRate()));
+    gfxLine(xv, yTop + 4, xs, yBot - 4, kDarkGrey);
+    gfxFill(xv - 1, yTop - 4, 3, 8, kLine);
+    gfxFill(xs - 1, yBot - 4, 3, 8, kAccent);
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+}
+
+// Consonants: the sixteen bands, with hiss in the top three as tall as the setting.
+void drawConsonants(const Box& b) {
+  float amount = gParams.frac(P_VOC_CONSONANTS);
+  int base = b.y + b.h - 2, top = b.y + 22, w = b.w / kVocBands;
+  gfxHLine(b.x, base, b.w, kGrid);
+  uint32_t rng = 0x3C6EF35Fu;
+  for (int k = 0; k < kVocBands; ++k) {
+    int x = b.x + k * w + 2;
+    if (k < kVocBands - kVocHissBands) {
+      gfxFill(x, base - 3, w - 4, 3, kDarkGrey);
+      continue;
+    }
+    for (int px = 0; px < w - 4; px += 2) {
+      rng = rng * 1664525u + 1013904223u;
+      int h = (int)(amount * (float)(base - top) * (0.45f + 0.55f * (float)(rng >> 24) * (1.0f / 255.0f)));
+      gfxFill(x + px, base - (h > 3 ? h : 3), 2, h > 3 ? h : 3, h > 3 ? kLine : kDarkGrey);
+    }
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+  else if (amount < 0.005f) hint(b.y + 2, "NO HISS: S AND T ARE LOST");
+}
+
+// Smooth: three short sounds from the voice (blocks) and how a band's level follows them.
+void drawSmooth(const Box& b) {
+  float fallSec = mapVocRelease(gParams.frac(P_VOC_SMOOTH));
+  int base = b.y + b.h - 2, top = b.y + 22;
+  const float window = 0.8f;
+  static const float kSound[3][2] = {{0.04f, 0.14f}, {0.30f, 0.40f}, {0.56f, 0.62f}};
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (const float* sound : kSound)
+    gfxFill(b.x + (int)(sound[0] / window * (float)b.w), top, (int)((sound[1] - sound[0]) / window * (float)b.w), base - top, kDarkGrey);
+  float dt = window / (float)b.w, keep = exp2f_(-1.4427f * dt / fallSec), level = 0.0f;
+  int py = base;
+  for (int px = 0; px < b.w; ++px) {
+    float t = (float)px * dt;
+    bool sounding = false;
+    for (const float* sound : kSound) sounding = sounding || (t >= sound[0] && t < sound[1]);
+    level = sounding ? 1.0f : level * keep;
+    int yy = base - (int)(level * (float)(base - top));
+    plotColumn(b.x + px, px > 0 ? py : yy, yy, kLine);
+    py = yy;
+  }
+  if (gParams.step(P_VOCODER) == 0) hint(b.y + 2, "VOCODER IS OFF");
+}
+
 // The picture for a value that lives on an encoder page. False if it has none.
 bool drawSoftPicture(int id, const Box& b) {
   switch (id) {
+    case P_VOCODER: drawVocoder(b); return true;
+    case P_VOC_FORMANT: drawFormant(b); return true;
+    case P_VOC_CONSONANTS: drawConsonants(b); return true;
+    case P_VOC_SMOOTH: drawSmooth(b); return true;
     case P_UNI_DETUNE: drawUnison(b); return true;
     case P_SUB_OCTAVE: drawSub(b); return true;
+    case P_SUB_DETUNE: drawSubDetune(b); return true;
+    case P_COMPRESS: drawCompress(b); return true;
+    case P_DUCK: drawDuck(b); return true;
     case P_BEND_RANGE: drawBend(b); return true;
     case P_FILT_SLOPE: drawFilterIn(b); return true;
     case P_DLY_TIME: case P_DLY_TONE: case P_DLY_FDBK: case P_DLY_MIX: drawDelay(b); return true;
-    case P_CHORUS: drawChorus(b); return true;
+    case P_CHORUS: case P_CHORUS_TYPE: drawChorus(b); return true;
     case P_RVB_SIZE: case P_RVB_TONE: case P_RVB_MIX: drawReverb(b); return true;
     case P_LFO_FADE: drawLfoFade(b); return true;
     case P_VEL_CUTOFF: drawVelocityLine(0.0f, gParams.frac(P_VEL_CUTOFF), b); return true;
@@ -1102,6 +1280,16 @@ void Ui::patchTurn(int enc, int delta) {
       int i = (nameCharIndex(gPatch.name()[cursor_]) + delta) % count;
       gPatch.setNameChar(cursor_, kNameChars[i < 0 ? i + count : i]);
     }
+  } else if (page_ >= kFirstSettingsPage) {  // MIDI and Input: one setting to an encoder
+    int id = kSettingPages[page_ - kFirstSettingsPage][enc];
+    if (id != kNone) {
+      if (kSettings[id].count > 30) {  // a long range: a fast spin moves in bigger steps
+        int n = burst_[enc] < 250 ? ++burst_[enc] : 250;
+        if (n >= 4) delta *= 5;
+        else if (n >= 2) delta *= 2;
+      }
+      settingSet(id, setting(id) + delta);
+    }
   } else if (enc == 0) {  // Setup: the display's colours
     int now = gfxPalette(), next = clampi(now + delta, 0, PALETTE_COUNT - 1);
     if (next != now) {
@@ -1139,6 +1327,12 @@ void Ui::patchPush(int enc) {
     }
   } else if (page_ == 1) {
     if (enc == 0) cursor_ = (uint8_t)((cursor_ + 1) % kPatchNameLen);  // push steps along the name
+  } else if (page_ >= kFirstSettingsPage) {
+    int id = kSettingPages[page_ - kFirstSettingsPage][enc];
+    if (id != kNone) {  // a short list steps round; a long one goes back to where it started
+      int count = kSettings[id].count;
+      settingSet(id, count <= 3 ? (setting(id) + 1) % count : kSettings[id].def);
+    }
   } else if (enc == 0) {
     gfxSetPalette((gfxPalette() + 1) % PALETTE_COUNT);
     stateTouched();
@@ -1291,7 +1485,7 @@ static void drawCorners(const char* const label[4], const char* const value[4]) 
 }
 
 void Ui::drawPatchPage() {
-  gfxTextCentre(160, 6, "PATCH 1/3", kAccent, 2);
+  gfxTextCentre(160, 6, "PATCH 1/5", kAccent, 2);
   Str slotNo;
   if (browse_ + 1 < 10) slotNo.add('0');
   slotNo.addInt(browse_ + 1);
@@ -1324,7 +1518,7 @@ void Ui::drawPatchPage() {
 }
 
 void Ui::drawNamePage() {
-  gfxTextCentre(160, 6, "NAME 2/3", kAccent, 2);
+  gfxTextCentre(160, 6, "NAME 2/5", kAccent, 2);
   Str pos;
   pos.addInt(cursor_ + 1);
   char c = gPatch.name()[cursor_];
@@ -1345,7 +1539,7 @@ void Ui::drawNamePage() {
 
 // Setup: things about the instrument itself, not the sound.
 void Ui::drawSetupPage() {
-  gfxTextCentre(160, 6, "SETUP 3/3", kAccent, 2);
+  gfxTextCentre(160, 6, "SETUP 3/5", kAccent, 2);
   const char* const label[4] = {"DISPLAY", "--", "LIGHTS", "--"};
   const char* const value[4] = {kPaletteNames[gfxPalette()], "", kLightsNames[lightsMode()], ""};
   drawCorners(label, value);
@@ -1354,6 +1548,58 @@ void Ui::drawSetupPage() {
   static const Colour kSwatch[6] = {kInk, kAccent, kLine, kLineDim, kGrey, kDarkGrey};
   for (int i = 0; i < 6; ++i) gfxFill(40 + i * 41, 86, 35, 22, kSwatch[i]);
   gfxTextCentre(160, 118, gfxPalette() == PALETTE_WHITE ? "FOR BEHIND AMBER ACRYLIC" : "FOR A BARE DISPLAY", kGrey, 2);
+  drawStatus();
+}
+
+// The four settings of a settings page, at the corners.
+static void drawSettingCorners(int page) {
+  const char* label[4];
+  const char* value[4];
+  char text[4][8];
+  for (int e = 0; e < 4; ++e) {
+    int id = kSettingPages[page][e];
+    label[e] = id == kNone ? "--" : kSettings[id].name;
+    value[e] = id == kNone ? "" : settingText(id, text[e]);
+  }
+  drawCorners(label, value);
+}
+
+// MIDI: how the synth connects to other gear, and what is keeping time now.
+void Ui::drawMidiPage() {
+  gfxTextCentre(160, 6, "MIDI 4/5", kAccent, 2);
+  drawSettingCorners(0);
+  int clock = gSynth.clockState();
+  Str bpm;
+  bpm.addInt((int)(gSynth.tempoBpm() + 0.5f));
+  bpm.add(" BPM");
+  gfxTextCentre(160, 78, bpm.b, clock == CLK_STOPPED ? kGrey : kInk, 3);
+  static const char* const kSays[4] = {"THE SYNTH KEEPS TIME", "", "NO CLOCK: TEMPO KNOB USED", "STOPPED: WAITS FOR START"};
+  const char* says = clock == CLK_LOCKED ? (setting(SET_CLOCK) == CLOCK_USB ? "FOLLOWING USB CLOCK" : "FOLLOWING MIDI CLOCK")
+                     : kSays[clock == CLK_INTERNAL ? 0 : clock == CLK_WAITING ? 2 : 3];
+  gfxTextCentre(160, 108, says, clock == CLK_LOCKED ? kAccent : kGrey, 2);
+  // the beat, a quarter at a time
+  int quarter = clock == CLK_STOPPED ? -1 : clampi((int)(gSynth.beatNow() * 4.0f), 0, 3);
+  for (int i = 0; i < 4; ++i) gfxFill(88 + i * 38, 132, 30, 10, i == quarter ? (i == 0 ? kAccent : kLine) : kDarkGrey);
+  drawStatus();
+}
+
+// Input: the audio input's level against the converter's limit, and where it is sent.
+void Ui::drawInputPage() {
+  gfxTextCentre(160, 6, "INPUT 5/5", kAccent, 2);
+  drawSettingCorners(1);
+  const int x0 = 20, w = 280, y = 98;
+  float level = gSynth.inputLevel();
+  bool clipped = gSynth.inputClipped();
+  // 48 dB of range, so a quiet microphone still shows
+  float shown = level > 0.0f ? clampf(1.0f + log2f_(level) * (6.0206f / 48.0f), 0.0f, 1.0f) : 0.0f;
+  gfxFrame(x0 - 2, y - 2, w + 4, 20, kDarkGrey);
+  gfxFill(x0, y, (int)(shown * (float)w), 16, clipped ? kAccent : kLine);
+  gfxFill(x0 + w - 3, y - 6, 3, 28, clipped ? kAccent : kGrey);  // the converter's limit
+  gfxText(x0, y - 21, "LEVEL", kLineDim, 2);
+  gfxTextRight(x0 + w, y - 21, clipped ? "CLIP" : "", kAccent, 2);
+  static const char* const kSays[INPUT_COUNT] = {"THE INPUT IS NOT IN USE", "JOINS AFTER THE EFFECTS", "GOES THROUGH THE EFFECTS"};
+  gfxTextCentre(160, 126, clipped ? "TOO LOUD: TURN GAIN DOWN" : kSays[setting(SET_INPUT_TO)], clipped ? kAccent : kGrey, 2);
+  gfxTextCentre(160, 144, setting(SET_INPUT_SOURCE) == INSRC_MIC ? "MICROPHONE: ONE CHANNEL" : "LINE: STEREO", kGrey, 2);
   drawStatus();
 }
 
@@ -1384,7 +1630,9 @@ void Ui::drawModePage() {
   if (mode_ == MB_PATCH) {
     if (page_ == 0) drawPatchPage();
     else if (page_ == 1) drawNamePage();
-    else drawSetupPage();
+    else if (page_ == 2) drawSetupPage();
+    else if (page_ == 3) drawMidiPage();
+    else drawInputPage();
     return;
   }
   int pages = pageCount(mode_);
@@ -1422,7 +1670,13 @@ void Ui::drawModePage() {
   }
   // The middle band is the live scope, except just after an encoder is
   // turned, when it shows what that value does.
-  if (!(softMs_ > 0 && softParam_ >= 0 && drawSoftPicture(softParam_, kMini))) drawScope(8, 74, 304, 82);
+  if (softMs_ > 0 && softParam_ >= 0 && drawSoftPicture(softParam_, kMini)) {
+    // the picture of the value just turned
+  } else if (pageParam(0) == P_VOCODER && gParams.step(P_VOCODER) > 0) {
+    drawVocoder(kMini);  // the Vocoder page, with the vocoder on: the voice's bands, live
+  } else {
+    drawScope(8, 74, 304, 82);
+  }
   drawStatus();
 }
 
@@ -1430,6 +1684,11 @@ void Ui::drawParamPopup(int id) {
   const ParamDef& d = kParams[id];
   Str v;
   formatParam(id, v);
+  if (id == P_ARP_TEMPO && gSynth.clockState() == CLK_LOCKED && !popupPickup_) {  // the knob is not what sets it
+    v = Str();
+    v.add("EXT ");
+    v.addInt((int)(gSynth.tempoBpm() + 0.5f));
+  }
   const char* name = paramName(id);
   drawHeader(kSectionNames[d.section], name[0] ? name : d.name, v.b);
   if (popupPickup_) {
@@ -1448,6 +1707,10 @@ void Ui::drawParamPopup(int id) {
       if (id == P_OSC2_MACRO && macroIdle(1)) drawMacroIdle(1, kPic);
       return;
     case P_OSC2_DETUNE: drawDetune(); return;
+    // ---- panel controls whose section would otherwise give them another control's picture ----
+    case P_SUB_OCTAVE: drawSub(kPic); return;
+    case P_LFO_SYNC: drawLfoSync(kPic); return;
+    case P_CHORUS: case P_CHORUS_TYPE: drawChorus(kPic); return;
     case P_XMOD: drawXmod(); return;
     case P_SYNC: drawSync(); return;
     // ---- voice ----
@@ -1466,7 +1729,7 @@ void Ui::drawParamPopup(int id) {
     // ---- the rest of the panel ----
     case P_VELOCITY: drawVelocityLine(1.0f - gParams.norm(P_VELOCITY), 1.0f); return;
     case P_VOLUME: drawLevelWave(gParams.norm(P_VOLUME) * gParams.norm(P_VOLUME)); return;
-    case P_ARP_MODE: case P_ARP_OCTAVES: case P_ARP_TEMPO: case P_ARP_GATE: drawArp(); return;
+    case P_ARP_MODE: case P_ARP_OCTAVES: case P_ARP_TEMPO: case P_ARP_GATE: drawArp(id); return;
     default: break;
   }
   switch (d.section) {

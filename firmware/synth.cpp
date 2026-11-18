@@ -2,7 +2,9 @@
 
 #include "fw_math.h"
 #include "fx.h"
+#include "midi.h"
 #include "tables.h"
+#include "vocoder.h"
 
 namespace fw {
 
@@ -25,6 +27,9 @@ constexpr float kSuperSide = 0.6f, kSuperGain = 0.42f;
 // share of mistuning at full Drift (as analog voice cards differ).
 const float kVoicePan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
 const float kVoiceTune[kNumVoices] = {0.3f, -0.7f, 1.0f, -0.2f, -1.0f, 0.6f, -0.4f, 0.8f};
+// With one LFO per voice, each runs a few percent faster or slower than the
+// knob says, so they never fall into step with each other.
+const float kVoiceLfoRate[kNumVoices] = {1.0f, 0.94f, 1.07f, 0.97f, 1.04f, 0.91f, 1.1f, 0.985f};
 const float kVoiceCut[kNumVoices] = {-0.5f, 0.9f, 0.2f, -1.0f, 0.6f, -0.3f, 1.0f, -0.8f};
 }  // namespace
 
@@ -40,8 +45,17 @@ struct Synth::Patch {
   float color1, color2;  // 0..1: its second one, where the engine has one
   float mix[4];          // osc1, osc2, sub, noise
   float cutoffOct;       // octaves above 20 Hz
-  float lfoCut;          // octaves
-  float lfoPw;           // added to pulse width, or to Macro on the other engines
+  // The LFO. `lfo` is the shared one's value now (-1..1); with one LFO per
+  // voice each voice works out its own from lfoStep and lfoShape. The four
+  // amounts say how far a full swing moves each destination.
+  float lfo;
+  bool lfoPerVoice;
+  uint8_t lfoShape;
+  float lfoStep;         // cycles per control block
+  float lfoPitchAmt;     // semitones
+  float lfoCutAmt;       // octaves
+  float lfoPwAmt;        // added to pulse width, or to Macro on the other engines
+  float lfoTremAmt;      // 0..1: how far the level is pulled down at the bottom of the swing
   float lfoFadeStep;     // how far the LFO fades in per block (1 = at once)
   float velCut;          // octaves at full velocity
   float fenvPitch;       // semitones at full envelope
@@ -53,17 +67,16 @@ struct Synth::Patch {
   float glideCoef;       // 1 = no glide
   EnvCoef aenv, fenv;
   float velAmt;
-  float lfoPitch;        // semitones
-  float tremGain;
   float bendSemis;
   float uniDetune;       // semitones, half the total spread
-  float subDiv;          // sub frequency as a fraction of osc 1
+  float subRatio;        // sub frequency as a multiple of oscillator 1's
   float volume;
   float drift, driftCoef;  // 0..1, and how fast the wander moves per block
   float spread;            // 0..1
   float xmod;              // 0..1: oscillator 2 bending oscillator 1
   bool sync;               // oscillator 2 restarts with each cycle of oscillator 1
   FxSettings fx;
+  VocSettings voc;
 };
 
 // One oscillator's settings for one control block.
@@ -90,6 +103,18 @@ inline float softClip(float x) {
 inline float wrap01(float x) {
   x -= floorf_(x);
   return x >= 1.0f ? 0.0f : x;
+}
+
+// The LFO's five shapes, -1..1, at `phase` (0..1) through its cycle.
+// `random` is the value the random shape is holding for this cycle.
+inline float lfoWave(uint8_t shape, float phase, float random) {
+  switch (shape) {
+    case LFOS_SINE: return tabRead(gSine, phase);
+    case LFOS_TRI: return 1.0f - 4.0f * absf(phase - 0.5f);
+    case LFOS_SAW: return 1.0f - 2.0f * phase;
+    case LFOS_SQUARE: return phase < 0.5f ? 1.0f : -1.0f;
+    default: return random;
+  }
 }
 
 inline float nextNoise(uint32_t& s) {
@@ -289,6 +314,12 @@ inline float svfTick(Svf& s, float v0, const SvfCoef& c, uint8_t type) {
   }
 }
 
+// The audio input as the converter gives it: never outside -1..1, never not a number.
+inline float cleanIn(float x) {
+  if (!(x == x)) return 0.0f;
+  return x > 1.0f ? 1.0f : x < -1.0f ? -1.0f : x;
+}
+
 // Removes `note` from a list of notes with matching velocities.
 inline void dropNote(uint8_t* notes, uint8_t* vels, int& n, uint8_t note) {
   int w = 0;
@@ -321,11 +352,25 @@ void Synth::init(float sampleRate) {
   arpRestart_ = true;
   arpRng_ = 0x2545F491u;
   arpSteps_ = 0;
+  arpBeatStep_ = 0;
   sustain_ = false;
   bend_ = bendSmooth_ = 0.0f;
   modWheel_ = 0.0f;
   lfoPhase_ = lfoValue_ = lfoRandom_ = 0.0f;
+  beatPhase_ = 0.0f;
+  beatReset_ = false;
   lfoRng_ = 0x1234567u;
+  clkSource_ = (uint8_t)setting(SET_CLOCK);
+  sampleNow_ = 0;
+  clkOutPhase_ = 0.0f;
+  clkState_ = clkSource_ == CLOCK_INTERNAL ? CLK_INTERNAL : CLK_WAITING;
+  tempoBpm_ = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  beatShown_ = 0.0f;
+  clockReset();
+  inGainMix_ = inGainFx_ = 0.0f;
+  inCoef_ = 1.0f - exp2f_(-1.4427f / (0.005f * sr_));  // the input fades in and out over a few milliseconds
+  inPeak_ = 0.0f;
+  inClip_ = 0.0f;
   qWrite_ = qRead_ = 0;
   overflow_ = false;
   load_ = 0.0f;
@@ -364,6 +409,8 @@ void Synth::init(float sampleRate) {
     v.wave1 = v.wave2 = WAVE_SAW;
     v.eng1 = v.eng2 = ENG_VA;
     v.lfoAmt = 1.0f;
+    v.lfoPhase = (float)i * (1.0f / (float)kNumVoices);  // spread round the cycle from the start
+    v.lfoRandom = 0.0f;
     v.f1 = Svf{0.0f, 0.0f};
     v.f2 = Svf{0.0f, 0.0f};
     v.aenv = Env{0.0f, ENV_IDLE};
@@ -373,6 +420,7 @@ void Synth::init(float sampleRate) {
       for (int k = 0; k < kKsLen; ++k) gStrings[i][o][k] = 0;
   }
   gFx.init(sampleRate);
+  gVocoder.init(sampleRate);
 }
 
 bool Synth::post(uint8_t type, uint8_t a, uint8_t b) {
@@ -408,7 +456,144 @@ void Synth::handleEvent(uint8_t type, uint8_t a, uint8_t b) {
       break;
     case EV_ALL_SOUND_OFF: killAll(); break;
     case EV_CHORD: toggleChord(); break;
+    case EV_CLOCK: case EV_START: case EV_CONTINUE: case EV_STOP: case EV_SONG_POS: clockEvent(type, a, b); break;
     default: break;
+  }
+}
+
+// ---------------------------------------------------------------- following a clock
+
+// Nothing known about the clock yet: the first tick to arrive will be position 0.
+void Synth::clockReset() {
+  extLocked_ = false;
+  extRun_ = true;
+  extArmed_ = true;
+  extTick_ = 0;
+  extNext_ = 0;
+  extLead_ = 0.0f;
+  extStep_ = -1;
+  extStepFire_ = false;
+  extPeriod_ = sr_ * 60.0f / (mapTempoBpm(gParams.norm(P_ARP_TEMPO)) * 24.0f);
+  extSince_ = 0.0f;
+  extStampN_ = extStampPos_ = 0;
+}
+
+void Synth::clockEvent(uint8_t type, uint8_t a, uint8_t b) {
+  if (clkSource_ == CLOCK_INTERNAL) return;
+  switch (type) {
+    case EV_START:  // the next tick is the first downbeat
+      extRun_ = true;
+      extArmed_ = true;
+      extNext_ = 0;
+      arpRestart_ = true;
+      return;
+    case EV_CONTINUE:  // the next tick carries on from where stop left things
+      if (!extRun_) {
+        extRun_ = true;
+        extArmed_ = true;
+      }
+      return;
+    case EV_STOP:
+      if (extRun_) {
+        extRun_ = false;
+        if (!extArmed_) extNext_ = extTick_ + 1;
+      }
+      return;
+    case EV_SONG_POS:  // the sender moved its playhead: the next tick is at this sixteenth note
+      extNext_ = 6u * ((uint32_t)a | ((uint32_t)b << 7));
+      extArmed_ = true;
+      return;
+    default: break;
+  }
+
+  // ---- a tick ----
+  // Tempo: the average gap between the ticks of the last beat. Ticks are
+  // only seen at the start of an audio block, so one gap alone is rough;
+  // a beat's worth of them is not.
+  if (!extLocked_) {
+    extLocked_ = true;
+    extStampN_ = 0;
+  }
+  bool running = extStampN_ >= 2;  // the smooth position has been moving since the last tick
+  if (extStampN_ > 0) {
+    int gaps = extStampN_ < kClockWindow ? extStampN_ : kClockWindow - 1;
+    uint32_t oldest = extStamp_[(extStampPos_ + kClockWindow - gaps) % kClockWindow];
+    float average = (float)(sampleNow_ - oldest) / (float)gaps;
+    float fastest = sr_ * 60.0f / (400.0f * 24.0f);  // nothing sends 400 beats a minute: a burst of late ticks
+    if (average < fastest) average = fastest;
+    extPeriod_ += (average - extPeriod_) * (gaps < 6 ? 1.0f : 0.3f);
+  }
+  extStamp_[extStampPos_] = sampleNow_;
+  extStampPos_ = (extStampPos_ + 1) % kClockWindow;
+  if (extStampN_ < kClockWindow) ++extStampN_;
+  extSince_ = 0.0f;
+
+  if (!extRun_) return;  // stopped: the tempo is still measured, the position stays where it is
+  if (extArmed_) {
+    extArmed_ = false;
+    extTick_ = extNext_;
+    extLead_ = 0.0f;
+    // a tick that lands exactly on a sixteenth note plays that step
+    extStep_ = (int32_t)(extTick_ / 6u) - (extTick_ % 6u == 0 ? 1 : 0);
+    return;
+  }
+  ++extTick_;
+  extLead_ -= 1.0f;  // the smooth position should be exactly on this tick now
+  if (!running || extLead_ > 1.5f || extLead_ < -1.5f) extLead_ = 0.0f;  // not moving yet, or far out: jump
+  else extLead_ *= 0.8f;                                                 // a little out: close a fifth of the gap
+}
+
+// Once per control block: works out what is keeping time, moves the smooth
+// position on, and sends the synth's own clock when it is the one in charge.
+void Synth::clockAdvance(int len) {
+  uint8_t source = clkSource_;
+  extStepFire_ = false;
+  float knobBpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  if (source == CLOCK_INTERNAL) {
+    clkState_ = CLK_INTERNAL;
+    tempoBpm_ = knobBpm;
+    if (setting(SET_CLOCK_OUT)) {
+      clkOutPhase_ += (float)len * knobBpm * 24.0f / (60.0f * sr_);
+      while (clkOutPhase_ >= 1.0f) {
+        clkOutPhase_ -= 1.0f;
+        gMidi.clockTick();
+      }
+    } else {
+      clkOutPhase_ = 0.0f;
+    }
+    return;
+  }
+  if (extLocked_) {
+    extSince_ += (float)len;
+    if (extSince_ > maxf(0.5f * sr_, 4.0f * extPeriod_)) {  // the clock has gone away
+      extLocked_ = false;
+      if (!extArmed_) {
+        extArmed_ = true;  // if it comes back, it carries on counting from here
+        extNext_ = extTick_ + 1;
+      }
+    }
+  }
+  if (!extRun_) {
+    clkState_ = CLK_STOPPED;
+    tempoBpm_ = extLocked_ ? sr_ * 2.5f / extPeriod_ : knobBpm;
+    return;
+  }
+  if (!extLocked_) {
+    clkState_ = CLK_WAITING;
+    tempoBpm_ = knobBpm;
+    return;
+  }
+  clkState_ = CLK_LOCKED;
+  tempoBpm_ = sr_ * 2.5f / extPeriod_;  // 60 seconds / 24 ticks
+  if (extArmed_) return;                // waiting for the tick that says where things are
+  if (extStampN_ >= 2) {                // (with one tick so far the tempo is not known yet: stay on that tick)
+    extLead_ += (float)len / extPeriod_;
+    if (extLead_ > 12.0f) extLead_ = 12.0f;
+  }
+  int32_t step = (int32_t)(extTick_ / 6u) + (int32_t)floorf_(((float)(extTick_ % 6u) + extLead_) * (1.0f / 6.0f));
+  if (step > extStep_) {
+    extStep_ = step;
+    extStepFire_ = true;
   }
 }
 
@@ -617,12 +802,47 @@ void Synth::arpAdvance(int len) {
     arpRestart_ = true;
     return;
   }
+  if (clkSource_ != CLOCK_INTERNAL && !extRun_) {  // the clock's sender said stop: wait for it
+    if (arpNote_ >= 0) {
+      noteOff((uint8_t)arpNote_);
+      arpNote_ = -1;
+    }
+    arpRestart_ = true;
+    return;
+  }
+  if (clkSource_ != CLOCK_INTERNAL && extLocked_) {
+    // Following a clock: sixteenth notes fall where its ticks put them (six ticks each).
+    float stepLen = 6.0f * extPeriod_;
+    bool fire = extStepFire_;
+    float into = (float)(extTick_ % 6u) + extLead_;  // ticks since the step began
+    into -= 6.0f * floorf_(into * (1.0f / 6.0f));
+    if (arpRestart_) {
+      arpIndex_ = 0;
+      arpBeatStep_ = 0;
+      arpRestart_ = false;
+      // The first key usually comes down a little after the step it was
+      // aimed at. Within a quarter of a step it still gets that step,
+      // rather than waiting for the next one.
+      if (!extArmed_ && into < 1.5f) fire = true;
+    }
+    arpClock_ = into * extPeriod_;  // kept in step, in case the clock goes away and the Tempo knob takes over
+    if (arpNote_ >= 0) {
+      arpGateLeft_ -= (float)len;
+      if (arpGateLeft_ <= 0.0f) {
+        noteOff((uint8_t)arpNote_);
+        arpNote_ = -1;
+      }
+    }
+    if (fire && !extArmed_) arpStep(stepLen);
+    return;
+  }
   // sixteenth notes at the set tempo
   float bpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
   float stepLen = sr_ * 60.0f / (bpm * 4.0f);
   if (arpRestart_) {
     arpClock_ = stepLen;
     arpIndex_ = 0;
+    arpBeatStep_ = 0;
     arpRestart_ = false;
   }
   arpClock_ += (float)len;
@@ -635,11 +855,17 @@ void Synth::arpAdvance(int len) {
   }
   if (arpClock_ < stepLen) return;
   arpClock_ -= stepLen;
+  arpStep(stepLen);
+}
+
+// Plays the arpeggiator's next note.
+void Synth::arpStep(float stepLen) {
   if (arpNote_ >= 0) noteOff((uint8_t)arpNote_);
   uint8_t vel = 100;
   arpNote_ = arpPick(vel);
   ++arpIndex_;
   ++arpSteps_;
+  ++arpBeatStep_;
   if (arpNote_ < 0) return;
   noteOn((uint8_t)arpNote_, vel);
   float gate = mapArpGate(gParams.norm(P_ARP_GATE));
@@ -753,10 +979,11 @@ void Synth::noteOn(uint8_t note, uint8_t velocity) {
   float x = (float)velocity * (1.0f / 127.0f);
   float vel = x * x;
 
-  if (gParams.step(P_LFO_SYNC) != 0) {  // key sync: the LFO starts over when a note starts from silence
-    bool any = false;
-    for (int i = 0; i < kNumVoices; ++i) any = any || voices_[i].active;
-    if (!any) lfoPhase_ = 0.0f;
+  bool any = false;
+  for (int i = 0; i < kNumVoices; ++i) any = any || voices_[i].active;
+  if (!any) {  // a note starting from silence
+    if (gParams.step(P_LFO_SYNC) == LFOSYNC_KEY) lfoPhase_ = 0.0f;  // key sync: the LFO starts over
+    beatReset_ = true;                                              // and the duck's beat starts with it
   }
 
   if (mode_ == MODE_POLY) {
@@ -883,25 +1110,18 @@ void Synth::derive(Patch& p, int len) {
     lfoPhase_ -= floorf_(lfoPhase_);
     lfoRandom_ = nextNoise(lfoRng_);
   }
-  float lfo;
-  switch (gParams.step(P_LFO_SHAPE)) {
-    case LFOS_SINE: lfo = tabRead(gSine, lfoPhase_); break;
-    case LFOS_TRI: lfo = 1.0f - 4.0f * absf(lfoPhase_ - 0.5f); break;
-    case LFOS_SAW: lfo = 1.0f - 2.0f * lfoPhase_; break;
-    case LFOS_SQUARE: lfo = lfoPhase_ < 0.5f ? 1.0f : -1.0f; break;
-    default: lfo = lfoRandom_; break;
-  }
-  lfoValue_ = lfo;
+  p.lfoShape = (uint8_t)gParams.step(P_LFO_SHAPE);
+  p.lfoStep = mapLfoHz(sm[P_LFO_RATE]) * blockSec;
+  p.lfoPerVoice = gParams.step(P_LFO_SYNC) == LFOSYNC_VOICE;
+  p.lfo = lfoWave(p.lfoShape, lfoPhase_, lfoRandom_);
+  lfoValue_ = p.lfo;
   float depth = clampf(sm[P_LFO_DEPTH] + modWheel_, 0.0f, 1.0f);  // mod wheel adds depth
-  p.lfoPitch = 0.0f;
-  p.lfoCut = 0.0f;
-  p.lfoPw = 0.0f;
-  p.tremGain = 1.0f;
+  p.lfoPitchAmt = p.lfoCutAmt = p.lfoPwAmt = p.lfoTremAmt = 0.0f;
   switch (gParams.step(P_LFO_DEST)) {
-    case LFO_PITCH: p.lfoPitch = lfo * depth * depth * 12.0f; break;
-    case LFO_CUTOFF: p.lfoCut = lfo * depth * 4.0f; break;
-    case LFO_AMP: p.tremGain = 1.0f - depth * (0.5f - 0.5f * lfo); break;
-    default: p.lfoPw = lfo * depth * 0.4f; break;
+    case LFO_PITCH: p.lfoPitchAmt = depth * depth * 12.0f; break;
+    case LFO_CUTOFF: p.lfoCutAmt = depth * 4.0f; break;
+    case LFO_AMP: p.lfoTremAmt = depth; break;
+    default: p.lfoPwAmt = depth * 0.4f; break;
   }
   float fade = mapFadeTime(gParams.frac(P_LFO_FADE));
   p.lfoFadeStep = fade <= 0.0f ? 1.0f : blockSec / fade;
@@ -934,7 +1154,7 @@ void Synth::derive(Patch& p, int len) {
   bendSmooth_ += (bend_ - bendSmooth_) * 0.25f;
   p.bendSemis = bendSmooth_ * (float)(gParams.step(P_BEND_RANGE) + kParams[P_BEND_RANGE].intMin);
   p.uniDetune = (float)gParams.step(P_UNI_DETUNE) * 0.01f;
-  p.subDiv = gParams.step(P_SUB_OCTAVE) == 0 ? 0.5f : 0.25f;
+  p.subRatio = mapSubRatio(gParams.step(P_SUB_OCTAVE), (float)(gParams.step(P_SUB_DETUNE) + kParams[P_SUB_DETUNE].intMin));
   p.fenvPitch = (float)gParams.step(P_FENV_PITCH);
 
   // ---- envelopes: per-sample one-pole coefficients ----
@@ -957,8 +1177,48 @@ void Synth::derive(Patch& p, int len) {
   p.xmod = sm[P_XMOD];
   p.sync = gParams.step(P_SYNC) != 0;
 
+  // ---- vocoder ----
+  p.voc.amount = gParams.frac(P_VOCODER);
+  p.voc.formant = (float)(gParams.step(P_VOC_FORMANT) + kParams[P_VOC_FORMANT].intMin);
+  p.voc.consonants = gParams.frac(P_VOC_CONSONANTS);
+  p.voc.smooth = gParams.frac(P_VOC_SMOOTH);
+  p.voc.playing = false;  // filled in once the voices have been counted
+
   // ---- effects ----
-  p.fx.chorus = gParams.frac(P_CHORUS);
+  p.fx.chorus = sm[P_CHORUS];
+  p.fx.ensemble = gParams.step(P_CHORUS_TYPE) == CHORUS_ENSEMBLE;
+  p.fx.compress = gParams.frac(P_COMPRESS);
+  p.fx.duck = gParams.frac(P_DUCK);
+  // The duck keeps time with the arp's Tempo, one dip to a beat. While the
+  // arp runs, the beat is counted from its steps (four to a beat), so the
+  // two can never slip apart; otherwise it runs free from the last note
+  // that started out of silence.
+  float bpm = mapTempoBpm(sm[P_ARP_TEMPO]);
+  p.fx.beatSec = 60.0f / bpm;
+  p.fx.beatStep = 1.0f / (p.fx.beatSec * sr_);
+  bool following = clkState_ == CLK_LOCKED && !extArmed_;
+  if (following) {  // a clock from outside sets the beat, for the duck as for the arp
+    p.fx.beatSec = 24.0f * extPeriod_ / sr_;
+    p.fx.beatStep = 1.0f / (24.0f * extPeriod_);
+    beatReset_ = false;
+    float beats = ((float)(extTick_ % 24u) + extLead_) * (1.0f / 24.0f);
+    beatPhase_ = beats - floorf_(beats);
+    if (beatPhase_ >= 1.0f) beatPhase_ = 0.0f;
+  }
+  if (beatReset_) {
+    beatReset_ = false;
+    beatPhase_ = 0.0f;
+  }
+  if (arpMode_ != ARP_OFF && !following) {
+    float stepLen = sr_ * 15.0f / bpm;
+    beatPhase_ = ((float)((arpBeatStep_ + 3u) & 3u) + clampf(arpClock_ / stepLen, 0.0f, 1.0f)) * 0.25f;
+  }
+  p.fx.beatPhase = beatPhase_;
+  beatShown_ = beatPhase_;
+  if (arpMode_ == ARP_OFF && !following) {
+    beatPhase_ += p.fx.beatStep * (float)len;
+    if (beatPhase_ >= 1.0f) beatPhase_ -= floorf_(beatPhase_);
+  }
   p.fx.dlyTime = mapDelayTime(gParams.frac(P_DLY_TIME));
   p.fx.dlyTone = gParams.frac(P_DLY_TONE);
   p.fx.dlyFdbk = gParams.frac(P_DLY_FDBK);
@@ -1040,7 +1300,17 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
 void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float* outR, int n) {
   // ---- modulation that belongs to this voice ----
   v.lfoAmt = minf(v.lfoAmt + p.lfoFadeStep, 1.0f);
-  float lfoPw = p.lfoPw * v.lfoAmt;
+  float lfo = p.lfo;
+  if (p.lfoPerVoice) {  // this voice's own LFO, a little off the others' pace
+    v.lfoPhase += p.lfoStep * kVoiceLfoRate[index] * ((float)n * (1.0f / (float)kCtrlBlock));
+    if (v.lfoPhase >= 1.0f) {
+      v.lfoPhase -= floorf_(v.lfoPhase);
+      v.lfoRandom = nextNoise(v.rng);
+    }
+    lfo = lfoWave(p.lfoShape, v.lfoPhase, v.lfoRandom);
+  }
+  float lfoNow = lfo * v.lfoAmt;
+  float lfoPw = p.lfoPwAmt * lfoNow;
 
   // Drift: each voice is a little out of tune with the others, by a fixed
   // amount plus a slow wander, as the voices of an analog poly are.
@@ -1057,7 +1327,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   // ---- pitch ----
   v.pitch += (v.target - v.pitch) * p.glideCoef;
   float detune = mode_ == MODE_UNI ? p.uniDetune * ((float)index * (2.0f / (float)(kNumVoices - 1)) - 1.0f) : 0.0f;
-  float base = v.pitch + p.bendSemis + p.lfoPitch * v.lfoAmt + detune - 69.0f;
+  float base = v.pitch + p.bendSemis + p.lfoPitchAmt * lfoNow + detune - 69.0f;
   // Env>Pitch moves both oscillators. With Sync on it moves only oscillator
   // 2, the one being reset, which is what makes the classic sync sweep.
   float sweep = p.fenvPitch * v.fenv.level;
@@ -1066,7 +1336,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float invSr = 1.0f / sr_;
   float inc1 = minf(440.0f * exp2f_((base1 + p.oct1) * (1.0f / 12.0f)) * invSr, 0.45f);
   float inc2 = minf(440.0f * exp2f_((base2 + p.oct2 + p.detune2) * (1.0f / 12.0f)) * invSr, 0.45f);
-  float incSub = inc1 * p.subDiv;
+  float incSub = minf(inc1 * p.subRatio, 0.45f);
 
   OscRun r1, r2;
   // Pulse width for the VA engine; on the others the LFO's "PW" destination sweeps Macro instead.
@@ -1083,7 +1353,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   bool sync = p.sync && p.eng2 != ENG_PLUCK;   // a string has no cycle to restart
 
   // ---- filter coefficients for this block ----
-  float oct = p.cutoffOct + p.lfoCut * v.lfoAmt + p.envAmt * v.fenv.level + p.velCut * v.vel + driftCut +
+  float oct = p.cutoffOct + p.lfoCutAmt * lfoNow + p.envAmt * v.fenv.level + p.velCut * v.vel + driftCut +
               p.keytrack * (v.pitch - 60.0f) * (1.0f / 12.0f);
   float fc = clampf(20.0f * exp2f_(oct), 20.0f, 0.45f * sr_);
   float g = tanf_(kPi * fc * invSr);
@@ -1096,7 +1366,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float lDen = 1.0f / (1.0f + p.ladderK * lG2 * lG2);
 
   float velGain = 1.0f - p.velAmt * (1.0f - v.vel);
-  float trem = 1.0f - (1.0f - p.tremGain) * v.lfoAmt;
+  float trem = 1.0f - p.lfoTremAmt * (0.5f - 0.5f * lfo) * v.lfoAmt;
   float amp = velGain * trem * (mode_ == MODE_UNI ? 0.45f : 1.0f);
 
   // Spread: where this voice sits between the speakers. A lone mono voice stays in the middle.
@@ -1190,7 +1460,12 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   }
 }
 
-void Synth::process(float* outL, float* outR, int n) {
+void Synth::process(const float* inL, const float* inR, float* outL, float* outR, int n) {
+  uint8_t source = (uint8_t)setting(SET_CLOCK);
+  if (source != clkSource_) {  // before the events: a start sent just after the setting changed must count
+    clkSource_ = source;
+    clockReset();
+  }
   while (qRead_ != qWrite_) {
     Event e = queue_[qRead_];
     qRead_ = (qRead_ + 1) % kQueueLen;
@@ -1260,6 +1535,7 @@ void Synth::process(float* outL, float* outR, int n) {
     for (int i = 0; i < len; ++i) busL[i] = busR[i] = 0.0f;
 
     Patch p;
+    clockAdvance(len);
     derive(p, len);
     arpAdvance(len);
 
@@ -1270,13 +1546,63 @@ void Synth::process(float* outL, float* outR, int n) {
       ++active;
     }
 
+    // ---- the audio input ----
+    // Metered whenever the target supplies one, so its level can be set
+    // before it is sent anywhere. A microphone is one channel: the left.
+    const float* il = inL ? inL + done : nullptr;
+    const float* ir = il && inR && setting(SET_INPUT_SOURCE) != INSRC_MIC ? inR + done : il;
+
+    // ---- the vocoder: the voices' sound shaped by the voice at the input ----
+    if (p.voc.amount > 0.001f || gVocoder.on()) {
+      float voice[kCtrlBlock];
+      if (il)
+        for (int i = 0; i < len; ++i) voice[i] = 0.5f * (cleanIn(il[i]) + cleanIn(ir[i]));
+      p.voc.playing = active > 0;
+      gVocoder.process(busL, busR, il ? voice : nullptr, len, p.voc);
+    }
+
     for (int i = 0; i < len; ++i) {
       busL[i] *= p.volume;
       busR[i] *= p.volume;
     }
+    float inPeak = inPeak_ * peakDecay_;
+    float inClip = inClip_ > (float)len ? inClip_ - (float)len : 0.0f;
+    if (il) {
+      for (int i = 0; i < len; ++i) {
+        float a = maxf(absf(cleanIn(il[i])), absf(cleanIn(ir[i])));
+        if (a > inPeak) inPeak = a;
+      }
+      if (inPeak >= 0.98f) inClip = 0.4f * sr_;  // at the converter's limit: the light stays on long enough to see
+    }
+    inPeak_ = inPeak < 1e-6f ? 0.0f : inPeak;
+    inClip_ = inClip;
+    int inTo = il ? setting(SET_INPUT_TO) : INPUT_OFF;
+    if (!il) inGainMix_ = inGainFx_ = 0.0f;
+    float fxTarget = inTo == INPUT_FX ? 1.0f : 0.0f;
+    if (fxTarget > 0.0f || inGainFx_ > 0.0f) {  // into the effects, beside the synth's own sound
+      float g = inGainFx_;
+      for (int i = 0; i < len; ++i) {
+        g += (fxTarget - g) * inCoef_;
+        busL[i] += g * cleanIn(il[i]);
+        busR[i] += g * cleanIn(ir[i]);
+      }
+      inGainFx_ = fxTarget == 0.0f && g < 1e-4f ? 0.0f : g;
+    }
+
     float* l = outL + done;
     float* r = outR + done;
     gFx.process(busL, busR, l, r, len, p.fx);
+
+    float mixTarget = inTo == INPUT_MIX ? 1.0f : 0.0f;
+    if (mixTarget > 0.0f || inGainMix_ > 0.0f) {  // straight to the output, after the effects
+      float g = inGainMix_;
+      for (int i = 0; i < len; ++i) {
+        g += (mixTarget - g) * inCoef_;
+        l[i] += g * cleanIn(il[i]);
+        r[i] += g * cleanIn(ir[i]);
+      }
+      inGainMix_ = mixTarget == 0.0f && g < 1e-4f ? 0.0f : g;
+    }
 
     float peak = peak_ * peakDecay_;
     uint32_t pos = scopePos_;
@@ -1294,6 +1620,7 @@ void Synth::process(float* outL, float* outR, int n) {
     done += len;
   }
   activeCount_ = active;
+  sampleNow_ += (uint32_t)n;
 
   // Notes that began in this block have now sounded: any that were let go
   // before they had can be released.

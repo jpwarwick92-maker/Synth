@@ -9,6 +9,12 @@ namespace fw {
 
 PatchPanel gPatch;
 
+int upgradeOldValue(int id, int value) {
+  if (id == P_CHORUS) return value * kPotMax / 100;                                      // was 0..100 on an encoder
+  if (id == P_SUB_OCTAVE) return value == 0 ? SUB_1_OCT_DOWN : SUB_2_OCT_DOWN;            // was 0 = one octave down, 1 = two
+  return value;
+}
+
 const char kNameChars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
 
 int nameCharIndex(char c) {
@@ -19,7 +25,8 @@ int nameCharIndex(char c) {
 
 namespace {
 
-constexpr uint8_t kPatchVersion = 1;
+// Version 2: Chorus is a pot and the sub has four pitches (see upgradeOldValue).
+constexpr uint8_t kPatchVersion = 2;
 constexpr int kTolerance = 102;      // 2.5% of a pot's travel counts as "at the patch"
 constexpr int kToleranceFine = 41;   // 1% for pitch
 
@@ -44,7 +51,7 @@ uint16_t rolling(uint16_t sum, uint16_t v) { return (uint16_t)(sum * 31u + v + 1
 // lacks come back as their defaults.
 bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
   if (len < 5u + kPatchNameLen + 2u + 2u || len > kPatchSize) return false;
-  if (src[0] != 'P' || src[1] != 'A' || src[2] != 'T' || src[3] != kPatchVersion) return false;
+  if (src[0] != 'P' || src[1] != 'A' || src[2] != 'T' || src[3] < 1 || src[3] > kPatchVersion) return false;
   int count = src[4];
   if (count < 1 || count > P_COUNT || len != 5u + kPatchNameLen + (uint32_t)count * 2u + 2u) return false;
   uint16_t sum = 0;
@@ -65,7 +72,8 @@ bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
     p = src + 5 + kPatchNameLen;
     for (int i = 0; i < P_COUNT; ++i) {
       if (i < count) {
-        vals[i] = (uint16_t)(p[0] | (p[1] << 8));
+        int v = p[0] | (p[1] << 8);
+        vals[i] = (uint16_t)(src[3] < 2 ? upgradeOldValue(i, v) : v);
         p += 2;
       } else {
         vals[i] = kParams[i].def;
@@ -313,6 +321,7 @@ uint32_t PatchPanel::stateWrite(uint8_t* dst) const {
   for (int i = 0; i < kPatchNameLen; ++i) *p++ = (uint8_t)name_[i];
   *p++ = (uint8_t)gfxPalette();
   *p++ = (uint8_t)lightsMode();
+  for (int i = 0; i < SET_COUNT; ++i) *p++ = (uint8_t)setting(i);
   return (uint32_t)(p - dst);
 }
 
@@ -320,7 +329,7 @@ bool PatchPanel::stateValid(const uint8_t* src, uint32_t len) {
   if (len < 1) return false;
   uint32_t n = src[0];
   uint32_t base = 1u + n * 5u + 3u + kPatchNameLen;
-  return n >= 1 && n <= (uint32_t)kPanelCount && len >= base && len <= base + 2u;  // the two settings bytes came later
+  return n >= 1 && n <= (uint32_t)kPanelCount && len >= base && len <= base + 2u + SET_COUNT;  // the bytes after the name came later
 }
 
 void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
@@ -348,6 +357,7 @@ void PatchPanel::stateRead(const uint8_t* src, uint32_t len) {
   uint32_t extra = len - (1u + (uint32_t)n * 5u + 3u + kPatchNameLen);
   if (extra >= 1) gfxSetPalette(p[3 + kPatchNameLen]);
   if (extra >= 2) lightsSetMode(p[4 + kPatchNameLen]);
+  for (uint32_t i = 0; i < (uint32_t)SET_COUNT && extra >= 3 + i; ++i) settingSet((int)i, p[5 + kPatchNameLen + i]);
 }
 
 }  // namespace fw

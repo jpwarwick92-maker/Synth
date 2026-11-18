@@ -47,7 +47,10 @@ function check(ok, what, detail = '') {
 const section = (s) => console.log(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+// (the last two flags give the browser a made-up microphone and let the page use it without asking)
+const browser = await chromium.launch({
+  args: ['--autoplay-policy=no-user-gesture-required', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+});
 
 async function open(context, { start = true, tweak } = {}) {
   const page = await context.newPage();
@@ -151,9 +154,9 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 16, '16 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 10, '10 rotary selectors', String(await count('#panel .ctl.selector')));
-    check(await count('#panel .ctl.toggle') === 1, '1 toggle switch', String(await count('#panel .ctl.toggle')));
+    check(await count('#panel .ctl.knob') === 17, '17 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 12, '12 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.toggle') === 2, '2 lever switches', String(await count('#panel .ctl.toggle')));
     check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
@@ -251,7 +254,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 53, '53 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 57, '57 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -334,6 +337,21 @@ try {
     const sw = await centre(page, 'osc_sync');
     await page.mouse.click(sw.x, sw.y);
     check(await pos(page, 'osc_sync') === 1, 'Sync switch: a tap flips it on', String(await pos(page, 'osc_sync')));
+    {
+      // the LFO's Sync selector: Free, Key, Voice
+      const stop3 = async (name) => {
+        const box = await page.locator('[data-id="lfo_sync"] text.stop', { hasText: new RegExp(`^${name}$`) }).boundingBox();
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await sleep(200);
+      };
+      await stop3('VOICE');
+      check(await pos(page, 'lfo_sync') === 2, 'LFO Sync selector: three stops, turned to VOICE', String(await pos(page, 'lfo_sync')));
+      check(await lcdCount(page, INK, 0, 44) > 60, 'and the display names the setting');
+      await stop3('KEY');
+      check(await pos(page, 'lfo_sync') === 1, 'then to KEY', String(await pos(page, 'lfo_sync')));
+      await stop3('FREE');
+      check(await pos(page, 'lfo_sync') === 0, 'and back to FREE', String(await pos(page, 'lfo_sync')));
+    }
     check(await page.locator('[data-id="osc_sync"]').evaluate((e) => e.classList.contains('lit')), 'Sync switch shows it is on');
     await page.mouse.click(sw.x, sw.y);
     check(await pos(page, 'osc_sync') === 0, 'Sync switch: a second tap flips it off', String(await pos(page, 'osc_sync')));
@@ -538,7 +556,7 @@ try {
     const labelled = layout.controls.filter((d) => ['knob', 'fader', 'selector', 'toggle'].includes(d.type)).map((d) => d.id);
     const offs = [];
     for (const id of labelled) if (await led(page, id) !== IDLE) offs.push(id);
-    check(labelled.length === 39 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
+    check(labelled.length === 43 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
 
     const saves = await page.evaluate(() => window.__synth.patchSaves);
     await drag(page, 'enc1', -24);                      // two clicks: slot 3
@@ -581,9 +599,9 @@ try {
     check(await shown() < blueBare * 0.5, 'Amber acrylic takes most of the blue out of the display as shown', `${blueBare} -> ${await shown()}`);
     check(await page.evaluate(() => window.__synth.lcdHash()) === frame, 'and leaves the firmware\'s own frame alone');
     await page.click('#acrylic-toggle');
-    await press(page, 'btn_patch');                     // home
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');     // MIDI, Input, home
     await sleep(200);
-    check(!(await lit('btn_patch')), 'three more presses return home');
+    check(!(await lit('btn_patch')), 'five more presses return home');
   }
 
   section('lights: Dance, chosen on the Setup page, moves the labels with the sound');
@@ -593,7 +611,7 @@ try {
     await drag(page, 'enc3', -12);                                  // one click: Lights to Dance
     await sleep(200);
     await page.screenshot({ path: path.join(shotDir, 'page_setup_dance.png') });
-    await press(page, 'btn_patch');                                 // home
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');     // MIDI, Input, home
     await sleep(600);
     const fills = async (id, ms) => {
       const seen = new Set();
@@ -615,9 +633,103 @@ try {
     await sleep(300);
     for (let i = 0; i < 3; i++) await press(page, 'btn_patch');
     await drag(page, 'enc3', 12);                                   // back to Steady
-    await press(page, 'btn_patch');
+    for (let i = 0; i < 3; i++) await press(page, 'btn_patch');
     await sleep(500);
     check(await led(page, 'filter_cutoff') === IDLE && await led(page, 'lfo_rate') === IDLE, 'Steady puts every label back to plain');
+  }
+
+  section('connections: MIDI thru, clock in and out, and the audio input, set on the MIDI and Input pages');
+  {
+    await sleep(1700);
+    const sent = (port, match) => page.evaluate(([p, m]) => window.__synth.midiOut.filter((e) => e.port === p).flatMap((e) => e.bytes).filter((b) => m.includes(b)).length, [port, match]);
+    const clear = () => page.evaluate(() => { window.__synth.midiOut.length = 0; });
+    const quietScope = await lcdCount(page, LINE, 40, 208);         // the home page's scope with nothing sounding
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x80, 60, 0]));
+    await sleep(300);
+    check(await sent(0, [0x90, 0x80]) === 0, 'with Thru off, notes are not passed to MIDI out');
+    for (let i = 0; i < 4; i++) await press(page, 'btn_patch');     // Patch, Name, Setup, MIDI
+    await sleep(200);
+    check(await lcdCount(page, ACCENT, 106, 124) === 0, 'the MIDI page starts out on the synth\'s own clock');
+    await drag(page, 'enc1', -12);                                  // Clock: MIDI
+    await drag(page, 'enc3', -12);                                  // Thru: on
+    await drag(page, 'enc4', -12);                                  // Clock Out: on
+    await page.evaluate(() => window.__synth.midi([0x90, 60, 100, 0x80, 60, 0]));
+    await sleep(300);
+    check(await sent(0, [0x90, 0x80]) === 2 && await sent(1, [0x90, 0x80]) === 2, 'with Thru on, they leave by MIDI out and by USB');
+    await page.evaluate(() => window.__synth.midi([0x91, 60, 100, 0x81, 60, 0], 1));
+    await sleep(300);
+    check(await sent(0, [0x91, 0x81]) === 2 && await sent(1, [0x91, 0x81]) === 0, 'what arrives by USB goes to MIDI out but not back to USB');
+    check(await page.locator('#midi-out option').count() >= 1, 'the bar offers somewhere to plug MIDI out into');
+    await clear();
+    await page.click('#clock');                                     // the test clock: 96 BPM into MIDI in
+    await sleep(2500);
+    check(await lcdCount(page, ACCENT, 106, 124) > 200, 'Test clock: the page says the synth is following MIDI clock', String(await lcdCount(page, ACCENT, 106, 124)));
+    await page.screenshot({ path: path.join(shotDir, 'page_midi.png') });
+    await clear();
+    await sleep(2000);
+    const ticks = await sent(0, [0xf8]);
+    check(ticks >= 66 && ticks <= 88, 'Clock Out passes the clock on: two seconds at 96 BPM is about 77 ticks', String(ticks));
+    await page.click('#clock');
+    await sleep(400);
+    check(await sent(0, [0xfc]) === 1, 'stopping the test clock sends stop, and that is passed on too');
+    check(await lcdCount(page, ACCENT, 106, 124) === 0, 'and the page no longer says it is following', String(await lcdCount(page, ACCENT, 106, 124)));
+    await drag(page, 'enc1', 12);                                   // everything back as it was
+    await drag(page, 'enc3', 12);
+    await drag(page, 'enc4', 12);
+
+    await press(page, 'btn_patch');                                 // the Input page
+    await sleep(300);
+    check(await page.evaluate(() => window.__synth.inputLight) === 0, 'nothing plugged into the input: its light is dark');
+    await page.evaluate(() => window.__synth.inputTone(0.3));       // a test tone into the audio input
+    await sleep(500);
+    check(await page.evaluate(() => window.__synth.inputLight) === 0xff9a00, 'a signal at a healthy level: the light is amber',
+      (await page.evaluate(() => window.__synth.inputLight)).toString(16));
+    check(await lcdCount(page, LINE, 98, 114) > 1500, 'and the Input page shows its level', String(await lcdCount(page, LINE, 98, 114)));
+    await page.screenshot({ path: path.join(shotDir, 'page_input.png') });
+    await drag(page, 'enc2', -150);                                 // gain up: the stand-in preamp overloads its converter
+    await sleep(500);
+    check(await page.evaluate(() => window.__synth.inputLight) === 0xe00000, 'too much gain: the light goes red',
+      (await page.evaluate(() => window.__synth.inputLight)).toString(16));
+    check(await lcdCount(page, ACCENT, 98, 114) > 1500, 'and the page shows the clip', String(await lcdCount(page, ACCENT, 98, 114)));
+    for (let i = 0; i < 6; i++) await drag(page, 'enc2', 150);      // gain back to 0 dB
+    await drag(page, 'enc3', -12);                                  // Send To: MIX
+    await press(page, 'btn_patch');                                 // home
+    await sleep(1700);
+    const heardScope = await lcdCount(page, LINE, 40, 208);
+    check(heardScope > quietScope + 150, 'sent to MIX, the input is heard: the scope shows it', `${quietScope} -> ${heardScope}`);
+    await page.evaluate(() => window.__synth.inputTone(0));
+    for (let i = 0; i < 5; i++) await press(page, 'btn_patch');
+    await drag(page, 'enc3', 12);                                   // Send To: off
+    await press(page, 'btn_patch');
+    await sleep(2200);
+    check(await lcdCount(page, LINE, 40, 208) <= quietScope + 20 && await page.evaluate(() => window.__synth.inputLight) === 0,
+      'with the tone unplugged the output and the light go quiet', String(await lcdCount(page, LINE, 40, 208)));
+    // the vocoder: the held chord is heard only while something arrives at the input
+    await page.evaluate(() => window.__synth.midi([0xb0, 106, 127]));   // vocoder amount to full
+    await page.click('#test-note');
+    await sleep(1900);
+    check(await lcdCount(page, LINE, 40, 208) <= quietScope + 20, 'vocoder on, nothing at the input: the held chord is silent', String(await lcdCount(page, LINE, 40, 208)));
+    await page.evaluate(() => window.__synth.inputTone(0.3, 700));
+    await sleep(600);
+    const spoken = await lcdCount(page, LINE, 40, 208);
+    check(spoken > quietScope + 150, 'a tone at the input opens it: the chord sounds', `${quietScope} -> ${spoken}`);
+    await press(page, 'btn_fx2');
+    await press(page, 'btn_fx2');                                   // the Vocoder page: the bands, live
+    await sleep(300);
+    check(await lcdCount(page, LINE, 96, 152) > 300, 'the Vocoder page shows the bands the tone falls in', String(await lcdCount(page, LINE, 96, 152)));
+    await page.screenshot({ path: path.join(shotDir, 'page_vocoder.png') });
+    await press(page, 'btn_fx2');
+    await page.evaluate(() => { window.__synth.inputTone(0); window.__synth.midi([0xb0, 106, 0]); });
+    await page.click('#test-note');
+    await sleep(2200);
+    // the Mic button plugs in the browser's microphone (a made-up one here)
+    await page.click('#mic');
+    await page.waitForFunction(() => document.getElementById('mic').getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {});
+    check(await page.locator('#mic').getAttribute('aria-pressed') === 'true', 'Mic in: the microphone is plugged in');
+    const heard = await page.waitForFunction(() => window.__synth.inputLight !== 0, null, { timeout: 6000 }).then(() => true, () => false);
+    check(heard, 'and its signal reaches the firmware\'s input');
+    await page.click('#mic');
+    check(await page.locator('#mic').getAttribute('aria-pressed') === 'false', 'pressing again unplugs it');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');
@@ -663,13 +775,13 @@ try {
     const want = {};
     for (const id of ids) want[id] = await pos(page, id);
     const blob = await page.evaluate(() => localStorage.getItem('synth.state.v1'));
-    check(ids.length === 40 && blob && blob.length > 50, 'state is stored for the next visit');
+    check(ids.length === 44 && blob && blob.length > 50, 'state is stored for the next visit');
     await page.close();
 
     const again = await open(context);
     let wrong = [];
     for (const id of ids) if (await pos(again.page, id) !== want[id]) wrong.push(id);
-    check(wrong.length === 0, 'all 40 controls are where they were left', wrong.join(', '));
+    check(wrong.length === 0, 'all 44 controls are where they were left', wrong.join(', '));
     check(want.filter_cutoff > 3000 && want.osc1_wave === 3, 'and those are the moved positions, not defaults');
     check(await again.page.evaluate(() => localStorage.getItem('synth.state.v1')) === blob, 'saved state is unchanged by the reload');
     check(again.errors.length === 0, 'no page errors', again.errors.join(' | '));
@@ -678,9 +790,7 @@ try {
     await press(again.page, 'btn_patch');
     await sleep(300);
     check(await lcdCount(again.page, ACCENT, 78, 104) > 300, 'after a reload the Patch page still shows the stored patch as loaded', String(await lcdCount(again.page, ACCENT, 78, 104)));
-    await press(again.page, 'btn_patch');
-    await press(again.page, 'btn_patch');
-    await press(again.page, 'btn_patch');
+    for (let i = 0; i < 5; i++) await press(again.page, 'btn_patch');
     await sleep(200);
 
     // ---------------------------------------------------------------- AC2
