@@ -1,6 +1,6 @@
 {
   "name": "A3",
-  "description": "Condensed layout on a grid: five columns shared by both rows of sections, every section either a row of faders or two rows of knobs and selectors. 17 knobs, 11 rotary selectors, 3 lever switches, 12 faders, 4 push-encoders, 9 buttons, 2.4 inch display.",
+  "description": "Condensed layout on a grid: five columns shared by both rows of sections, every section either a row of faders or two rows of knobs and selectors. 17 knobs, 12 rotary selectors, 2 lever switches, 12 faders, 4 push-encoders, 9 buttons, 2.4 inch display.",
   "units": "mm",
   "panel": { "width": 530, "height": 152 },
 
@@ -62,11 +62,11 @@
     { "id": "filter_drive", "type": "knob", "x": 371, "y": 59, "label": "Drive" },
     { "id": "filter_type", "type": "selector", "x": 395, "y": 47, "label": "Type", "stops": ["LP", "BP", "HP"] },
 
-    { "id": "lfo_rate", "type": "knob", "x": 444, "y": 32, "label": "Rate" },
-    { "id": "lfo_depth", "type": "knob", "x": 480, "y": 32, "label": "Depth" },
-    { "id": "lfo_shape", "type": "selector", "x": 444, "y": 60, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"] },
-    { "id": "lfo_destination", "type": "selector", "x": 480, "y": 60, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
-    { "id": "lfo_sync", "type": "toggle", "x": 504, "y": 44, "label": "Sync", "stops": ["FREE", "KEY", "VOICE"] },
+    { "id": "lfo_rate", "type": "knob", "x": 438, "y": 32, "label": "Rate" },
+    { "id": "lfo_depth", "type": "knob", "x": 474, "y": 32, "label": "Depth" },
+    { "id": "lfo_shape", "type": "selector", "x": 438, "y": 60, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"] },
+    { "id": "lfo_destination", "type": "selector", "x": 474, "y": 60, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
+    { "id": "lfo_sync", "type": "selector", "x": 500, "y": 47, "label": "Sync", "stops": ["FREE", "KEY", "VOICE"] },
 
     { "id": "fenv_attack", "type": "fader", "x": 22, "y": 109, "travel": 34, "label": "Attack" },
     { "id": "fenv_decay", "type": "fader", "x": 39, "y": 109, "travel": 34, "label": "Decay" },
@@ -113,6 +113,6 @@
     { "x": 10, "y": 9.5, "text": "POLY-8", "size": 5, "style": "title" },
     { "x": 520, "y": 9, "text": "8-VOICE · LAYOUT A3", "size": 2.6, "anchor": "end", "style": "note" },
     { "x": 10, "y": 147, "text": "VOLUME KNOB, MIDI IN, USB HOST, LINE IN, LINE OUT, PHONES ON REAR PANEL", "size": 2.6, "style": "note" },
-    { "x": 520, "y": 147, "text": "17 KNOBS · 11 ROTARY SELECTORS · 3 LEVER SWITCHES · 12 FADERS · 4 PUSH-ENCODERS · 9 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
+    { "x": 520, "y": 147, "text": "17 KNOBS · 12 ROTARY SELECTORS · 2 LEVER SWITCHES · 12 FADERS · 4 PUSH-ENCODERS · 9 BUTTONS", "size": 2.6, "anchor": "end", "style": "note" }
   ]
 }

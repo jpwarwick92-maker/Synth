@@ -100,7 +100,7 @@ scope and a visual for each control as it moves.
 - **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
   fader down.
 - **Arp** has its own section: Mode, Octaves, Tempo, Gate, Hold and Chord.
-- **LFO Sync** is a three-way lever in the LFO section. FREE: one LFO that takes no
+- **LFO Sync** is a three-stop selector in the LFO section. FREE: one LFO that takes no
   notice of the keys. KEY: it starts again when a note begins from silence. VOICE:
   every voice has its own LFO, each a little out of step and a little off the others'
   pace, so a held chord shimmers instead of moving as one.

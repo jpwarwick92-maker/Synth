@@ -152,8 +152,8 @@ try {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
     check(await count('#panel .ctl.knob') === 17, '17 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 11, '11 rotary selectors', String(await count('#panel .ctl.selector')));
-    check(await count('#panel .ctl.toggle') === 3, '3 lever switches', String(await count('#panel .ctl.toggle')));
+    check(await count('#panel .ctl.selector') === 12, '12 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.toggle') === 2, '2 lever switches', String(await count('#panel .ctl.toggle')));
     check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
@@ -335,29 +335,19 @@ try {
     await page.mouse.click(sw.x, sw.y);
     check(await pos(page, 'osc_sync') === 1, 'Sync switch: a tap flips it on', String(await pos(page, 'osc_sync')));
     {
-      const c3 = await centre(page, 'lfo_sync');          // the LFO's three-way lever: Free, Key, Voice
-      await page.mouse.click(c3.x, c3.y);
-      await sleep(150);
-      check(await pos(page, 'lfo_sync') === 1, 'three-way lever: a tap moves it up one position, to KEY', String(await pos(page, 'lfo_sync')));
-      await page.mouse.click(c3.x, c3.y);
-      await sleep(150);
-      check(await pos(page, 'lfo_sync') === 2, 'and again, to VOICE', String(await pos(page, 'lfo_sync')));
+      // the LFO's Sync selector: Free, Key, Voice
+      const stop3 = async (name) => {
+        const box = await page.locator('[data-id="lfo_sync"] text.stop', { hasText: new RegExp(`^${name}$`) }).boundingBox();
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await sleep(200);
+      };
+      await stop3('VOICE');
+      check(await pos(page, 'lfo_sync') === 2, 'LFO Sync selector: three stops, turned to VOICE', String(await pos(page, 'lfo_sync')));
       check(await lcdCount(page, INK, 0, 44) > 60, 'and the display names the setting');
-      await page.mouse.click(c3.x, c3.y);
-      await sleep(150);
-      check(await pos(page, 'lfo_sync') === 0, 'a third tap brings it round to FREE', String(await pos(page, 'lfo_sync')));
-      await page.mouse.move(c3.x, c3.y);
-      await page.mouse.down();
-      await page.mouse.move(c3.x, c3.y - 30, { steps: 4 });   // a flick up goes to the top
-      await page.mouse.up();
-      await sleep(150);
-      check(await pos(page, 'lfo_sync') === 2, 'a flick up takes it to the top position', String(await pos(page, 'lfo_sync')));
-      await page.mouse.move(c3.x, c3.y);
-      await page.mouse.down();
-      await page.mouse.move(c3.x, c3.y + 30, { steps: 4 });
-      await page.mouse.up();
-      await sleep(150);
-      check(await pos(page, 'lfo_sync') === 0, 'and a flick down back to the bottom', String(await pos(page, 'lfo_sync')));
+      await stop3('KEY');
+      check(await pos(page, 'lfo_sync') === 1, 'then to KEY', String(await pos(page, 'lfo_sync')));
+      await stop3('FREE');
+      check(await pos(page, 'lfo_sync') === 0, 'and back to FREE', String(await pos(page, 'lfo_sync')));
     }
     check(await page.locator('[data-id="osc_sync"]').evaluate((e) => e.classList.contains('lit')), 'Sync switch shows it is on');
     await page.mouse.click(sw.x, sw.y);
