@@ -21,7 +21,7 @@ struct Page {
   const char* title;
   uint8_t param[4];
 };
-constexpr int kMaxPages = 3;
+constexpr int kMaxPages = 5;
 const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
     /* FX 2   */ {{"COMPRESSOR + REVERB", {P_COMPRESS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
@@ -30,7 +30,15 @@ const Page kPages[MB_COUNT][kMaxPages] = {
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
     // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
     /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}},
-                  {"SETUP", {kNone, kNone, kNone, kNone}}},
+                  {"SETUP", {kNone, kNone, kNone, kNone}}, {"MIDI", {kNone, kNone, kNone, kNone}},
+                  {"INPUT", {kNone, kNone, kNone, kNone}}},
+};
+
+// The last two Patch pages hold settings (settings.h), one per encoder.
+constexpr int kFirstSettingsPage = 3;
+const uint8_t kSettingPages[2][4] = {
+    {SET_CLOCK, SET_CHANNEL, SET_THRU, SET_CLOCK_OUT},
+    {SET_INPUT_SOURCE, SET_INPUT_GAIN, SET_INPUT_TO, kNone},
 };
 
 constexpr uint16_t kArmMs = 3000, kNoteMs = 2000;
@@ -841,9 +849,12 @@ void drawLevelWave(float level, const Box& b = kPic) {
 // The arpeggiator: two seconds of what it plays from a three-note chord.
 // Mode sets the order, Octaves the height, Tempo how many steps fit, Gate
 // how long each one lasts. With the arp off the pattern is drawn dim.
-void drawArp(const Box& b = kPic) {
+void drawArp(int id, const Box& b = kPic) {
   int mode = gParams.step(P_ARP_MODE), octs = gParams.step(P_ARP_OCTAVES) + 1;
-  float bpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO)), gate = mapArpGate(gParams.norm(P_ARP_GATE));
+  int clock = gSynth.clockState();
+  // following a clock from outside, the steps are as wide as that clock makes them
+  float bpm = clock == CLK_LOCKED ? gSynth.tempoBpm() : mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  float gate = mapArpGate(gParams.norm(P_ARP_GATE));
   static const int kChord[3] = {0, 4, 7}, kPlayed[3] = {4, 0, 7};
   int shown = mode == ARP_OFF ? ARP_UP : mode;
   int seq[24], n = 0;
@@ -872,6 +883,9 @@ void drawArp(const Box& b = kPic) {
     gfxFill(x, y, w, 4, c);
   }
   if (mode == ARP_OFF) hint(b.y + 2, "ARP IS OFF");
+  else if (clock == CLK_STOPPED) hint(b.y + 2, "CLOCK STOPPED: ARP WAITS");
+  else if (id == P_ARP_TEMPO && clock == CLK_LOCKED) hint(b.y + 2, "THE CLOCK SETS THE TEMPO");
+  else if (id == P_ARP_TEMPO && clock == CLK_WAITING) hint(b.y + 2, "NO CLOCK: THE KNOB IS USED");
 }
 
 // ---- pictures for the values on the encoder pages ----
@@ -923,7 +937,7 @@ void drawCompress(const Box& b) {
 // each beat (the marks) and comes back before the next.
 void drawDuck(const Box& b) {
   float depth = gParams.frac(P_DUCK);
-  float beatSec = 60.0f / mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  float beatSec = 60.0f / gSynth.tempoBpm();  // the Tempo knob's, or the clock's when one is followed
   int base = b.y + b.h - 2, top = b.y + 14;
   gfxHLine(b.x, base, b.w, kGrid);
   for (int k = 0; k < 2; ++k) gfxFill(b.x + k * b.w / 2, b.y, 3, 10, kAccent);
@@ -1172,6 +1186,16 @@ void Ui::patchTurn(int enc, int delta) {
       int i = (nameCharIndex(gPatch.name()[cursor_]) + delta) % count;
       gPatch.setNameChar(cursor_, kNameChars[i < 0 ? i + count : i]);
     }
+  } else if (page_ >= kFirstSettingsPage) {  // MIDI and Input: one setting to an encoder
+    int id = kSettingPages[page_ - kFirstSettingsPage][enc];
+    if (id != kNone) {
+      if (kSettings[id].count > 30) {  // a long range: a fast spin moves in bigger steps
+        int n = burst_[enc] < 250 ? ++burst_[enc] : 250;
+        if (n >= 4) delta *= 5;
+        else if (n >= 2) delta *= 2;
+      }
+      settingSet(id, setting(id) + delta);
+    }
   } else if (enc == 0) {  // Setup: the display's colours
     int now = gfxPalette(), next = clampi(now + delta, 0, PALETTE_COUNT - 1);
     if (next != now) {
@@ -1209,6 +1233,12 @@ void Ui::patchPush(int enc) {
     }
   } else if (page_ == 1) {
     if (enc == 0) cursor_ = (uint8_t)((cursor_ + 1) % kPatchNameLen);  // push steps along the name
+  } else if (page_ >= kFirstSettingsPage) {
+    int id = kSettingPages[page_ - kFirstSettingsPage][enc];
+    if (id != kNone) {  // a short list steps round; a long one goes back to where it started
+      int count = kSettings[id].count;
+      settingSet(id, count <= 3 ? (setting(id) + 1) % count : kSettings[id].def);
+    }
   } else if (enc == 0) {
     gfxSetPalette((gfxPalette() + 1) % PALETTE_COUNT);
     stateTouched();
@@ -1361,7 +1391,7 @@ static void drawCorners(const char* const label[4], const char* const value[4]) 
 }
 
 void Ui::drawPatchPage() {
-  gfxTextCentre(160, 6, "PATCH 1/3", kAccent, 2);
+  gfxTextCentre(160, 6, "PATCH 1/5", kAccent, 2);
   Str slotNo;
   if (browse_ + 1 < 10) slotNo.add('0');
   slotNo.addInt(browse_ + 1);
@@ -1394,7 +1424,7 @@ void Ui::drawPatchPage() {
 }
 
 void Ui::drawNamePage() {
-  gfxTextCentre(160, 6, "NAME 2/3", kAccent, 2);
+  gfxTextCentre(160, 6, "NAME 2/5", kAccent, 2);
   Str pos;
   pos.addInt(cursor_ + 1);
   char c = gPatch.name()[cursor_];
@@ -1415,7 +1445,7 @@ void Ui::drawNamePage() {
 
 // Setup: things about the instrument itself, not the sound.
 void Ui::drawSetupPage() {
-  gfxTextCentre(160, 6, "SETUP 3/3", kAccent, 2);
+  gfxTextCentre(160, 6, "SETUP 3/5", kAccent, 2);
   const char* const label[4] = {"DISPLAY", "--", "LIGHTS", "--"};
   const char* const value[4] = {kPaletteNames[gfxPalette()], "", kLightsNames[lightsMode()], ""};
   drawCorners(label, value);
@@ -1424,6 +1454,58 @@ void Ui::drawSetupPage() {
   static const Colour kSwatch[6] = {kInk, kAccent, kLine, kLineDim, kGrey, kDarkGrey};
   for (int i = 0; i < 6; ++i) gfxFill(40 + i * 41, 86, 35, 22, kSwatch[i]);
   gfxTextCentre(160, 118, gfxPalette() == PALETTE_WHITE ? "FOR BEHIND AMBER ACRYLIC" : "FOR A BARE DISPLAY", kGrey, 2);
+  drawStatus();
+}
+
+// The four settings of a settings page, at the corners.
+static void drawSettingCorners(int page) {
+  const char* label[4];
+  const char* value[4];
+  char text[4][8];
+  for (int e = 0; e < 4; ++e) {
+    int id = kSettingPages[page][e];
+    label[e] = id == kNone ? "--" : kSettings[id].name;
+    value[e] = id == kNone ? "" : settingText(id, text[e]);
+  }
+  drawCorners(label, value);
+}
+
+// MIDI: how the synth connects to other gear, and what is keeping time now.
+void Ui::drawMidiPage() {
+  gfxTextCentre(160, 6, "MIDI 4/5", kAccent, 2);
+  drawSettingCorners(0);
+  int clock = gSynth.clockState();
+  Str bpm;
+  bpm.addInt((int)(gSynth.tempoBpm() + 0.5f));
+  bpm.add(" BPM");
+  gfxTextCentre(160, 78, bpm.b, clock == CLK_STOPPED ? kGrey : kInk, 3);
+  static const char* const kSays[4] = {"THE SYNTH KEEPS TIME", "", "NO CLOCK: TEMPO KNOB USED", "STOPPED: WAITS FOR START"};
+  const char* says = clock == CLK_LOCKED ? (setting(SET_CLOCK) == CLOCK_USB ? "FOLLOWING USB CLOCK" : "FOLLOWING MIDI CLOCK")
+                     : kSays[clock == CLK_INTERNAL ? 0 : clock == CLK_WAITING ? 2 : 3];
+  gfxTextCentre(160, 108, says, clock == CLK_LOCKED ? kAccent : kGrey, 2);
+  // the beat, a quarter at a time
+  int quarter = clock == CLK_STOPPED ? -1 : clampi((int)(gSynth.beatNow() * 4.0f), 0, 3);
+  for (int i = 0; i < 4; ++i) gfxFill(88 + i * 38, 132, 30, 10, i == quarter ? (i == 0 ? kAccent : kLine) : kDarkGrey);
+  drawStatus();
+}
+
+// Input: the audio input's level against the converter's limit, and where it is sent.
+void Ui::drawInputPage() {
+  gfxTextCentre(160, 6, "INPUT 5/5", kAccent, 2);
+  drawSettingCorners(1);
+  const int x0 = 20, w = 280, y = 98;
+  float level = gSynth.inputLevel();
+  bool clipped = gSynth.inputClipped();
+  // 48 dB of range, so a quiet microphone still shows
+  float shown = level > 0.0f ? clampf(1.0f + log2f_(level) * (6.0206f / 48.0f), 0.0f, 1.0f) : 0.0f;
+  gfxFrame(x0 - 2, y - 2, w + 4, 20, kDarkGrey);
+  gfxFill(x0, y, (int)(shown * (float)w), 16, clipped ? kAccent : kLine);
+  gfxFill(x0 + w - 3, y - 6, 3, 28, clipped ? kAccent : kGrey);  // the converter's limit
+  gfxText(x0, y - 21, "LEVEL", kLineDim, 2);
+  gfxTextRight(x0 + w, y - 21, clipped ? "CLIP" : "", kAccent, 2);
+  static const char* const kSays[INPUT_COUNT] = {"THE INPUT IS NOT IN USE", "JOINS AFTER THE EFFECTS", "GOES THROUGH THE EFFECTS"};
+  gfxTextCentre(160, 126, clipped ? "TOO LOUD: TURN GAIN DOWN" : kSays[setting(SET_INPUT_TO)], clipped ? kAccent : kGrey, 2);
+  gfxTextCentre(160, 144, setting(SET_INPUT_SOURCE) == INSRC_MIC ? "MICROPHONE: ONE CHANNEL" : "LINE: STEREO", kGrey, 2);
   drawStatus();
 }
 
@@ -1454,7 +1536,9 @@ void Ui::drawModePage() {
   if (mode_ == MB_PATCH) {
     if (page_ == 0) drawPatchPage();
     else if (page_ == 1) drawNamePage();
-    else drawSetupPage();
+    else if (page_ == 2) drawSetupPage();
+    else if (page_ == 3) drawMidiPage();
+    else drawInputPage();
     return;
   }
   int pages = pageCount(mode_);
@@ -1500,6 +1584,11 @@ void Ui::drawParamPopup(int id) {
   const ParamDef& d = kParams[id];
   Str v;
   formatParam(id, v);
+  if (id == P_ARP_TEMPO && gSynth.clockState() == CLK_LOCKED && !popupPickup_) {  // the knob is not what sets it
+    v = Str();
+    v.add("EXT ");
+    v.addInt((int)(gSynth.tempoBpm() + 0.5f));
+  }
   const char* name = paramName(id);
   drawHeader(kSectionNames[d.section], name[0] ? name : d.name, v.b);
   if (popupPickup_) {
@@ -1540,7 +1629,7 @@ void Ui::drawParamPopup(int id) {
     // ---- the rest of the panel ----
     case P_VELOCITY: drawVelocityLine(1.0f - gParams.norm(P_VELOCITY), 1.0f); return;
     case P_VOLUME: drawLevelWave(gParams.norm(P_VOLUME) * gParams.norm(P_VOLUME)); return;
-    case P_ARP_MODE: case P_ARP_OCTAVES: case P_ARP_TEMPO: case P_ARP_GATE: drawArp(); return;
+    case P_ARP_MODE: case P_ARP_OCTAVES: case P_ARP_TEMPO: case P_ARP_GATE: drawArp(id); return;
     default: break;
   }
   switch (d.section) {

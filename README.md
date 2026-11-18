@@ -11,7 +11,7 @@ and the panel layout can be played before any hardware exists.
 | `firmware/` | The firmware core in portable C++: sound engine, oscillator engines, arpeggiator, effects, MIDI handling, the parameter table, control logic, patches and panel take-over, soft-control modes and display drawing. No heap, no standard library, nothing platform-specific. |
 | `targets/web/` | Thin wrapper that builds the core as a WebAssembly module for the browser. |
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
-| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. |
+| `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. It can also plug a microphone into the firmware's audio input, send it MIDI clock, and pass on what leaves by its MIDI out. |
 | `layouts/a3.json` | The panel layout in millimetres. The page draws whatever this file says. |
 | `tests/native/` | Engine and display tests that render audio and display frames with no browser. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
@@ -80,6 +80,12 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
   smooths them, so nothing should look or sound different with it on.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
   and mod wheels, a Test note button that holds a chord, a sustain-pedal switch and Panic.
+- **Mic in** plugs this computer's microphone into the synth's audio input (use
+  headphones, or the speakers feed back). The dot beside it is the light by the input
+  jack. **Test clock** sends MIDI clock into the synth's MIDI in at the tempo in the box
+  beside it, as a DAW or a clock hub would; pressing it again sends stop.
+- **MIDI out** in the top bar picks the device the synth's MIDI out jack is plugged
+  into. A MIDI keyboard, or a DAW sending notes and clock, arrives at the synth's MIDI in.
 
 ## What the prototype covers
 
@@ -163,6 +169,49 @@ encoder restores its default.
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
 | Patch | 3: Setup | display colours (amber, or white for behind amber acrylic); label lights (steady or dance) |
+| Patch | 4: MIDI | clock (internal, MIDI jack, USB), channel (all, 1 to 16), thru, clock out |
+| Patch | 5: Input | source (line, mic), gain (0 to 60 dB), send to (off, mix, effects), (empty) |
+
+**Settings.** The MIDI and Input pages hold settings about the instrument, not the
+sound: they are kept over a restart and a patch never changes them.
+
+**Clock.** With Clock on INT the arp and the duck run at the Tempo knob's setting. On
+MIDI or USB they follow the MIDI clock arriving at that input, and the Tempo knob is not
+used (its picture says so, and shows the clock's tempo).
+
+- The arp's sixteenth notes fall on the clock's grid. The tempo is the average spacing
+  of the last beat's ticks, and the arp steps on a position that runs on smoothly at that
+  tempo and is nudged towards each tick, so ticks that arrive a few milliseconds early
+  or late (as they do from a computer) still give even steps.
+- **Start** begins the pattern again on the next tick. **Stop** holds the arp silent
+  until start or continue; notes latched by Hold stay latched. **Continue** carries on
+  from where it stopped. A **song position** message moves the beat to the sender's
+  playhead.
+- A key pressed up to a quarter of a step late still gets that step; later than that it
+  waits for the next one.
+- If no clock is arriving (none yet, or it has stopped coming for half a second) the
+  Tempo knob is used meanwhile, so the synth is never silent for want of a cable.
+- Clock at the input that is not selected is ignored.
+
+**MIDI in and out.** There are two connections, the MIDI jacks and USB. Notes and
+controllers are played from either, on the Channel set (or on every channel).
+With **Thru** on, every note and controller message that arrives is passed on, whatever
+its channel: both inputs to the MIDI out jack, and the MIDI jack's input to USB (never
+USB back to USB). With **Clock Out** on, the clock the synth is running on is sent too:
+its own, 24 ticks to a beat at the Tempo knob's setting, when it keeps time itself; the
+incoming clock with its start, stop and continue when it is following. System-exclusive
+messages are not passed on. The synth's own clock is made in the audio blocks, so on
+the Teensy each tick can leave up to 2.9 ms late; the tempo it carries is exact.
+
+**Audio input.** The firmware takes a stereo input beside its output. **Send To**
+chooses where it goes: nowhere, straight to the output beside the synth's own sound
+(Mix), or into the effects with it (FX). A line input is stereo; a microphone is one
+channel and comes out on both sides. **Gain** is what the firmware asks of the preamp in
+front of the converter, so on real hardware it is analog gain. The Input page shows the
+level against the converter's limit, and the light by the jack is dark with no signal,
+amber with one, and red for nearly half a second whenever the input reaches the limit.
+With Send To off the output is exactly what it would be with nothing connected. This is
+the path a vocoder will listen to; the vocoder itself is not built yet.
 
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
@@ -225,9 +274,10 @@ lifted. Its one control lowers the threshold, raises the ratio (to 4:1) and adds
 make-up gain together. At zero it is out of the path altogether.
 
 **Duck** (Mod page) dips the level just after every beat and lets it come back before
-the next, as a compressor keyed from a kick drum does. The beat is the arp's Tempo.
-While the arp runs the beat is counted from its steps, four to a beat, so the two
-cannot slip apart; otherwise it starts with any note played from silence. The first
+the next, as a compressor keyed from a kick drum does. The beat is the arp's Tempo, or
+the MIDI clock's when one is being followed (the dips then fall on that clock's beats).
+On the synth's own clock, while the arp runs the beat is counted from its steps, four to
+a beat, so the two cannot slip apart; otherwise it starts with any note played from silence. The first
 hundredth of a second of each beat is let through, so a note played on the beat keeps
 its attack.
 
@@ -237,8 +287,9 @@ limiter.
 **Output** is stereo once Spread, the chorus or the reverb is in use. With Spread at
 zero and every effect off, both channels carry exactly the same signal.
 
-Not built yet: MIDI clock sync for the arp, loading patches from files, and the iPad version
-(Safari on iPad has no Web MIDI, so it needs a small wrapper app).
+Not built yet: the vocoder, sending the input through the voices' filter, loading patches
+from files, and the iPad version (Safari on iPad has no Web MIDI, so it needs a small
+wrapper app).
 
 ## Publishing
 

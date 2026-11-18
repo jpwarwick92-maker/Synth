@@ -98,6 +98,7 @@ void init(float sampleRate) {
   tablesInit();
   gParams.reset();
   gfxSetPalette(PALETTE_AMBER);
+  settingsReset();
   lightsReset();
   gPatch.init();
   gPatch.scanSlots();
@@ -116,9 +117,27 @@ void init(float sampleRate) {
 
 void process(float* outL, float* outR, int n) { gSynth.process(outL, outR, n); }
 
+void process(const float* inL, const float* inR, float* outL, float* outR, int n) {
+  gSynth.process(inL, inR, outL, outR, n);
+}
+
+int inputGainDb() { return setting(SET_INPUT_GAIN); }
+
+int inputSource() { return setting(SET_INPUT_SOURCE); }
+
+uint32_t inputLight() {
+  if (gSynth.inputClipped()) return 0xE00000;  // red: turn the gain down
+  float level = gSynth.inputLevel();
+  if (level >= 0.25f) return 0xFF9A00;         // a healthy level: amber
+  if (level >= 0.01f) return 0x5A3A0C;         // something is arriving: dim amber
+  return 0;
+}
+
 void reportLoad(float fraction) { gSynth.reportLoad(fraction); }
 
-void midiByte(uint8_t b) { gMidi.byte(b); }
+void midiByte(uint8_t b, int port) { gMidi.byte(port, b); }
+
+uint32_t midiOutRead(int port, uint8_t* dst, uint32_t max) { return gMidi.outRead(port, dst, max); }
 
 void onParamChanged(int id) {
   if (id != P_VOLUME && id != P_HOLD) gPatch.markEdited();

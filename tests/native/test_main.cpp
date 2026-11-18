@@ -15,6 +15,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <limits>
 #include <vector>
 
 #include "firmware.h"
@@ -868,7 +869,11 @@ static void testSoftPages() {
   press("btn_patch");
   CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::gUi.page() == 2, "third press should show the Setup page");
   press("btn_patch");
-  CHECK(fw::gUi.mode() == fw::MB_NONE, "the Patch button should return home after its third page");
+  CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::gUi.page() == 3, "fourth press should show the MIDI page");
+  press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_PATCH && fw::gUi.page() == 4, "fifth press should show the Input page");
+  press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "the Patch button should return home after its fifth page");
 
   section("oscillator engine buttons step through VA, FM, wavetable and pluck");
   boot(48000);
@@ -2707,7 +2712,7 @@ static void testPictures() {
   saveFrame("mode_setup");
   fw::encoderTurn(ctl("enc1"), 1);
   CHECK(fw::gfxPalette() == fw::PALETTE_WHITE, "encoder 1 on the Setup page should switch to the white palette");
-  press("btn_patch");
+  while (fw::gUi.mode() != fw::MB_NONE) press("btn_patch");
   fw::tick(2000);
   fw::tick(33);
   fw::frameRow565(12, whiteRow);
@@ -2718,9 +2723,9 @@ static void testPictures() {
   CHECK(gStoreLen == fw::kStateSize, "state should be saved with the palette (%u bytes)", gStoreLen);
   boot(48000, true);
   CHECK(fw::gfxPalette() == fw::PALETTE_WHITE, "the palette should survive a restart");
-  {  // state saved before the palette and the lights setting existed is two bytes shorter and must still load
+  {  // state saved before the palette, the lights setting and the settings existed is shorter and must still load
     uint8_t old[1024];
-    uint32_t n = gStoreLen - 2;
+    uint32_t n = gStoreLen - 2 - fw::SET_COUNT;
     std::memcpy(old, gStore, n - 2);
     uint16_t sum = 0;
     for (int i = 0; i < fw::P_COUNT; ++i) sum = (uint16_t)(sum * 31u + (old[6 + i * 2] | (old[7 + i * 2] << 8)) + 1u);
@@ -3633,6 +3638,495 @@ static void testNewSoundFeatures() {
   }
 }
 
+// ------------------------------------------------- connections: clock, thru, channel, audio input
+
+static std::vector<int> drainMidi(int port) {
+  std::vector<int> v;
+  uint8_t b[64];
+  for (uint32_t n = fw::midiOutRead(port, b, sizeof b); n > 0; n = fw::midiOutRead(port, b, sizeof b)) v.insert(v.end(), b, b + n);
+  return v;
+}
+
+// A clock sender. Renders `sec` seconds in small blocks while feeding MIDI
+// clock at `bpm` into `port`, each tick up to `jitterMs` early or late.
+// Returns when each arp step happened, in seconds from the first call since clockBegin().
+static double gClockT = 0, gClockIdeal = 0, gClockSend = 0;
+static uint32_t gClockRng = 1;
+static int gClockTicks = 0, gClockBeats = 0;
+static std::vector<float> gClockAudio;
+static void clockBegin() {
+  gClockT = gClockIdeal = gClockSend = 0;
+  gClockRng = 0x1234567u;
+  gClockTicks = gClockBeats = 0;
+  gClockAudio.clear();
+}
+static std::vector<double> runClock(double sec, double bpm, int port = fw::PORT_MIDI, double jitterMs = 0) {
+  const int block = 16;
+  std::vector<double> steps;
+  double period = bpm > 0 ? gSr * 60.0 / (bpm * 24.0) : 0;
+  double end = gClockT + sec * gSr;
+  float l[fw::kMaxBlock], r[fw::kMaxBlock];
+  float beatBefore = fw::gSynth.beatNow();
+  while (gClockT < end) {
+    while (bpm > 0 && gClockSend <= gClockT) {
+      fw::midiByte(0xF8, port);
+      ++gClockTicks;
+      gClockIdeal += period;
+      gClockRng = gClockRng * 1664525u + 1013904223u;
+      gClockSend = gClockIdeal + ((double)(gClockRng >> 8) / 16777216.0 * 2.0 - 1.0) * jitterMs * 0.001 * gSr;
+    }
+    uint32_t before = fw::gSynth.arpStepCount();
+    fw::process(l, r, block);
+    gClockAudio.insert(gClockAudio.end(), l, l + block);
+    if (fw::gSynth.arpStepCount() != before) steps.push_back(gClockT / gSr);
+    float beat = fw::gSynth.beatNow();
+    if (beat < beatBefore - 0.5f) ++gClockBeats;
+    beatBefore = beat;
+    gClockT += block;
+  }
+  if (bpm <= 0) gClockIdeal = gClockSend = gClockT;  // a sender switched back on starts with a tick
+  return steps;
+}
+
+// The largest and the root-mean-square difference of the gaps between steps from what they should be, in milliseconds.
+static void gapError(const std::vector<double>& steps, double expectSec, double& worstMs, double& rmsMs, size_t skip = 2) {
+  worstMs = rmsMs = 0;
+  int n = 0;
+  for (size_t i = skip + 1; i < steps.size(); ++i) {
+    double e = ((steps[i] - steps[i - 1]) - expectSec) * 1000.0;
+    worstMs = std::max(worstMs, std::fabs(e));
+    rmsMs += e * e;
+    ++n;
+  }
+  rmsMs = n ? std::sqrt(rmsMs / n) : 0;
+}
+
+static void testClock() {
+  section("clock: the arp follows MIDI clock at the MIDI jack, whatever the Tempo knob says");
+  boot(48000);
+  arpTone();
+  CHECK(fw::gSynth.clockState() == fw::CLK_INTERNAL, "out of the box the synth keeps its own time");
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setPot("arp_tempo", 0.9);  // far from the clock's tempo
+  setSel("arp_mode", fw::ARP_UP);
+  midi({0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100});
+  clockBegin();
+  midi({0xFA});
+  auto steps = runClock(6.0, 100);
+  double worst, rms;
+  gapError(steps, 0.15, worst, rms);
+  CHECK(steps.size() >= 40 && steps.size() <= 41, "six seconds at 100 BPM is 40 sixteenth notes, got %zu", steps.size());
+  CHECK(!steps.empty() && steps[0] < 0.002, "the first step should fall on the first tick after start (%.4f s)", steps.empty() ? -1 : steps[0]);
+  CHECK(worst < 0.7, "steps should be 150 ms apart; the worst was %.2f ms out", worst);
+  CHECK(fw::gSynth.clockState() == fw::CLK_LOCKED, "the clock should be locked");
+  CHECK(std::fabs(fw::gSynth.tempoBpm() - 100.0) < 0.3, "the measured tempo should be 100 BPM, got %.2f", fw::gSynth.tempoBpm());
+  std::printf("    steady clock at 100 BPM: worst step %.2f ms out, tempo read as %.2f\n", worst, fw::gSynth.tempoBpm());
+
+  section("clock: ticks that arrive early and late (as from a computer) still give even steps");
+  steps = runClock(8.0, 100, fw::PORT_MIDI, 4.0);  // every tick up to 4 ms out
+  gapError(steps, 0.15, worst, rms);
+  CHECK(steps.size() >= 53 && steps.size() <= 54, "eight more seconds is 53 steps, got %zu", steps.size());
+  CHECK(rms < 1.5 && worst < 4.0, "steps wander %.2f ms (worst %.2f) with ticks up to 4 ms out", rms, worst);
+  CHECK(std::fabs(fw::gSynth.tempoBpm() - 100.0) < 1.5, "the tempo should still read about 100, got %.2f", fw::gSynth.tempoBpm());
+  std::printf("    ticks up to 4 ms early or late: steps wander %.2f ms on average, %.2f at worst\n", rms, worst);
+
+  section("clock: a change of tempo is followed");
+  runClock(3.0, 140);
+  CHECK(std::fabs(fw::gSynth.tempoBpm() - 140.0) < 1.0, "after three seconds at 140 the tempo should read 140, got %.2f", fw::gSynth.tempoBpm());
+  steps = runClock(3.0, 140);
+  gapError(steps, 60.0 / 140.0 / 4.0, worst, rms);
+  CHECK(steps.size() >= 27 && steps.size() <= 29 && worst < 1.0, "three seconds at 140 is 28 steps (got %zu, worst %.2f ms out)", steps.size(), worst);
+
+  section("clock: stop holds the arp, continue carries on, start begins the pattern again");
+  midi({0xFC});
+  steps = runClock(1.5, 140);  // many senders keep the ticks coming while stopped
+  CHECK(steps.empty(), "no steps while stopped, got %zu", steps.size());
+  CHECK(fw::gSynth.clockState() == fw::CLK_STOPPED, "the clock should read stopped");
+  CHECK(fw::gSynth.activeVoices() == 0, "the last note should have died away (%d voices)", fw::gSynth.activeVoices());
+  midi({0xFB});
+  steps = runClock(1.5, 140);
+  CHECK(steps.size() >= 13 && steps.size() <= 15, "continue: 1.5 seconds at 140 is 14 steps, got %zu", steps.size());
+  midi({0xFC});
+  runClock(0.3, 140);
+  midi({0xFA});
+  size_t from = gClockAudio.size();
+  steps = runClock(0.1, 140);
+  CHECK(steps.size() == 1 && steps[0] - (gClockT / gSr - 0.1) < 0.02, "start: the first step falls on the first tick");
+  double hz = measureFreq(gClockAudio, from + 480, from + 4800);
+  CHECK(std::fabs(hz - 261.63) < 4.0, "start: the pattern begins again from its first note (C4), got %.1f Hz", hz);
+
+  section("clock: a song position moves the beat to where the sender's playhead is");
+  boot(48000);
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  clockBegin();
+  midi({0xFA});
+  runClock(1.0, 120);
+  midi({0xFC, 0xF2, 2, 0, 0xFB});  // stop, move to two sixteenth notes in (half a beat), continue
+  runClock(0.01, 120);
+  CHECK(std::fabs(fw::gSynth.beatNow() - 0.5) < 0.06, "after moving to half a beat in, the beat should read 0.5, got %.2f", fw::gSynth.beatNow());
+
+  section("clock: with no clock arriving, the Tempo knob is used; clock at the other input is ignored");
+  boot(48000);
+  arpTone();
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setSel("arp_mode", fw::ARP_UP);
+  midi({0x90, 60, 100});
+  clockBegin();
+  steps = runClock(2.0, 0);
+  CHECK(fw::gSynth.clockState() == fw::CLK_WAITING, "no clock yet: waiting");
+  CHECK(steps.size() >= 16 && steps.size() <= 17, "the arp runs at the knob's 120 BPM meanwhile (%zu steps in 2 s)", steps.size());
+  steps = runClock(2.0, 90, fw::PORT_USB);
+  CHECK(fw::gSynth.clockState() == fw::CLK_WAITING && steps.size() >= 15 && steps.size() <= 17,
+        "clock at USB while set to MIDI is not followed (%zu steps)", steps.size());
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_USB);
+  runClock(0.1, 0);
+  steps = runClock(3.0, 90, fw::PORT_USB);
+  CHECK(fw::gSynth.clockState() == fw::CLK_LOCKED && std::fabs(fw::gSynth.tempoBpm() - 90.0) < 0.5,
+        "set to USB, clock at USB is followed (tempo %.2f)", fw::gSynth.tempoBpm());
+  CHECK(steps.size() >= 17 && steps.size() <= 19, "three seconds at 90 is 18 steps, got %zu", steps.size());
+
+  section("clock: if the clock goes away the arp carries on from the Tempo knob");
+  steps = runClock(2.5, 0);
+  CHECK(fw::gSynth.clockState() == fw::CLK_WAITING, "half a second without a tick: waiting again");
+  CHECK(steps.size() >= 17 && steps.size() <= 21, "the arp keeps playing (%zu steps in 2.5 s)", steps.size());
+  steps = runClock(3.0, 90, fw::PORT_USB);
+  CHECK(fw::gSynth.clockState() == fw::CLK_LOCKED && steps.size() >= 17 && steps.size() <= 19, "and locks again when the clock returns (%zu steps)", steps.size());
+
+  section("clock: a key pressed a little late still gets the step it was aimed at");
+  boot(48000);
+  arpTone();
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setSel("arp_mode", fw::ARP_UP);
+  clockBegin();
+  midi({0xFA});
+  runClock(1.0 + 0.02, 120);  // 20 ms after a step (steps are 125 ms apart)
+  midi({0x90, 60, 100});
+  steps = runClock(0.5, 120);
+  CHECK(!steps.empty() && steps[0] - 1.02 < 0.003, "20 ms late: the note should sound at once, not wait for the next step");
+  CHECK(steps.size() >= 2 && std::fabs(steps[1] - 1.125) < 0.004, "and the next step is back on the clock's grid (%.4f s)", steps.size() >= 2 ? steps[1] : -1);
+  midi({0x80, 60, 0});
+  runClock(0.5 + 0.06, 120);  // now 60 ms after a step: nearer the next one
+  midi({0x90, 60, 100});
+  steps = runClock(0.5, 120);
+  CHECK(!steps.empty() && std::fabs(steps[0] - 2.125) < 0.004, "60 ms late: the note waits for the next step (%.4f s)", steps.empty() ? -1 : steps[0]);
+
+  section("clock: the duck keeps time with the clock too");
+  boot(48000);
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  clockBegin();
+  midi({0xFA});
+  runClock(8.0, 90);
+  CHECK(gClockBeats >= 11 && gClockBeats <= 12, "eight seconds at 90 BPM is 12 beats, the duck counted %d", gClockBeats);
+
+  section("clock: the Tempo knob's picture says when a clock is setting the tempo instead");
+  boot(48000);
+  setPot("arp_tempo", 0.3);
+  setSel("arp_mode", fw::ARP_UP);
+  setPot("arp_tempo", 0.31);
+  fw::tick(33);
+  auto internalPicture = grabFrame();
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  clockBegin();
+  runClock(2.0, 150);
+  setPot("arp_tempo", 0.3);
+  setPot("arp_tempo", 0.31);
+  fw::tick(33);
+  CHECK(grabFrame() != internalPicture, "the Tempo picture should differ while a clock sets the tempo");
+  saveFrame("popup_tempo_clock");
+  midi({0xFC});
+  runClock(0.2, 150);
+  setPot("arp_tempo", 0.3);
+  fw::tick(33);
+  saveFrame("popup_tempo_stopped");
+}
+
+static void testMidiOutAndChannel() {
+  section("MIDI: with Thru off nothing is passed on");
+  boot(48000);
+  midi({0x90, 60, 100, 0x80, 60, 0});
+  CHECK(drainMidi(fw::PORT_MIDI).empty() && drainMidi(fw::PORT_USB).empty(), "nothing should leave with Thru off");
+
+  section("MIDI: Thru passes whole messages on; USB is never sent its own messages back");
+  fw::settingSet(fw::SET_THRU, 1);
+  midi({0x90, 60, 100, 62, 90, 0x80, 60, 0});  // the second note uses running status
+  std::vector<int> expect = {0x90, 60, 100, 0x90, 62, 90, 0x80, 60, 0};
+  CHECK(drainMidi(fw::PORT_MIDI) == expect, "the MIDI out jack should carry what came in at the MIDI jack, every message complete");
+  CHECK(drainMidi(fw::PORT_USB) == expect, "and so should USB");
+  for (int b : {0x91, 50, 64}) fw::midiByte((uint8_t)b, fw::PORT_USB);
+  CHECK(drainMidi(fw::PORT_MIDI) == std::vector<int>({0x91, 50, 64}), "what arrives by USB goes to the MIDI out jack");
+  CHECK(drainMidi(fw::PORT_USB).empty(), "but not back to USB");
+  midi({0xF0, 1, 2, 3, 0xF7});
+  CHECK(drainMidi(fw::PORT_MIDI).empty(), "system-exclusive messages are not passed on");
+  for (int i = 0; i < 400; ++i) midi({0x90, 60, 100});  // far more than the output can hold, with nothing reading it
+  auto flood = drainMidi(fw::PORT_MIDI);
+  bool whole = flood.size() % 3 == 0 && !flood.empty();
+  for (size_t i = 0; i + 2 < flood.size(); i += 3) whole = whole && flood[i] == 0x90 && flood[i + 1] == 60 && flood[i + 2] == 100;
+  CHECK(whole, "an output that is not being read drops whole messages, never part of one (%zu bytes kept)", flood.size());
+  drainMidi(fw::PORT_USB);
+  midi({0xB0, 123, 0});
+  renderNew(0.5);
+
+  section("MIDI: the channel setting picks which channel the synth plays; every channel is still passed on");
+  boot(48000);
+  fw::settingSet(fw::SET_THRU, 1);
+  fw::settingSet(fw::SET_CHANNEL, 3);
+  midi({0x90, 60, 100});
+  renderNew(0.1);
+  CHECK(fw::gSynth.activeVoices() == 0, "a note on channel 1 should not play when the synth is on channel 3");
+  CHECK(drainMidi(fw::PORT_MIDI) == std::vector<int>({0x90, 60, 100}), "but it is passed on");
+  midi({0x92, 60, 100});
+  renderNew(0.1);
+  CHECK(fw::gSynth.activeVoices() == 1, "a note on channel 3 should play");
+  midi({0x82, 60, 0});
+  int before = fw::gParams.val[fw::P_CUTOFF];
+  midi({0xB0, fw::kParams[fw::P_CUTOFF].cc, 5});
+  CHECK(fw::gParams.val[fw::P_CUTOFF] == before, "a controller on another channel should not move the synth's parameters");
+  fw::settingSet(fw::SET_CHANNEL, 0);
+  midi({0x95, 64, 100});
+  renderNew(0.1);
+  CHECK(fw::gSynth.activeVoices() >= 1, "set to ALL, any channel plays");
+
+  section("MIDI: Clock Out sends the synth's own clock, 24 ticks to a beat at the Tempo knob's setting");
+  boot(48000);
+  renderNew(1.0);
+  CHECK(drainMidi(fw::PORT_MIDI).empty(), "no clock is sent with Clock Out off");
+  fw::settingSet(fw::SET_CLOCK_OUT, 1);
+  std::vector<int> out, outUsb;
+  for (int i = 0; i < 100; ++i) {  // ten seconds; the knob's default is 120 BPM
+    renderNew(0.1);
+    for (int b : drainMidi(fw::PORT_MIDI)) out.push_back(b);
+    for (int b : drainMidi(fw::PORT_USB)) outUsb.push_back(b);
+  }
+  bool allClock = true;
+  for (int b : out) allClock = allClock && b == 0xF8;
+  CHECK(allClock && out.size() >= 479 && out.size() <= 481, "ten seconds at 120 BPM is 480 ticks, got %zu", out.size());
+  CHECK(outUsb == out, "and the same at USB");
+
+  section("MIDI: following a clock, Clock Out passes that clock on (but never back to USB)");
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  renderNew(0.1);
+  drainMidi(fw::PORT_MIDI);
+  drainMidi(fw::PORT_USB);
+  clockBegin();
+  midi({0xFA});
+  runClock(1.0, 120);
+  midi({0xFC});
+  drainMidi(fw::PORT_MIDI).swap(out);
+  CHECK((int)out.size() == gClockTicks + 2 && out.front() == 0xFA && out.back() == 0xFC, "start, %d ticks and stop should be passed on (%zu bytes)",
+        gClockTicks, out.size());
+  CHECK(drainMidi(fw::PORT_USB).size() == out.size(), "to USB as well, when the clock came in at the MIDI jack");
+  fw::midiByte(0xF8, fw::PORT_USB);
+  CHECK(drainMidi(fw::PORT_MIDI).empty(), "clock at an input that is not being followed is dropped: two clocks never go out");
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_USB);
+  renderNew(0.1);
+  for (int i = 0; i < 5; ++i) fw::midiByte(0xF8, fw::PORT_USB);
+  CHECK(drainMidi(fw::PORT_MIDI).size() == 5 && drainMidi(fw::PORT_USB).empty(), "USB clock goes to the MIDI out jack only");
+
+  section("settings: they survive a restart, are not part of a patch, and older saved state gets the defaults");
+  boot(48000);
+  for (int i = 0; i < fw::SET_COUNT; ++i)
+    CHECK(fw::setting(i) == fw::kSettings[i].def, "setting %s should start at its default", fw::kSettings[i].name);
+  savePatchTo(0);
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_USB);
+  fw::settingSet(fw::SET_CHANNEL, 7);
+  fw::settingSet(fw::SET_THRU, 1);
+  fw::settingSet(fw::SET_CLOCK_OUT, 1);
+  fw::settingSet(fw::SET_INPUT_SOURCE, fw::INSRC_MIC);
+  fw::settingSet(fw::SET_INPUT_GAIN, 24);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_FX);
+  const int want[fw::SET_COUNT] = {fw::CLOCK_USB, 7, 1, 1, fw::INSRC_MIC, 24, fw::INPUT_FX};
+  CHECK(fw::patchLoad(0), "the patch should load");
+  bool kept = true;
+  for (int i = 0; i < fw::SET_COUNT; ++i) kept = kept && fw::setting(i) == want[i];
+  CHECK(kept, "loading a patch should not change any setting");
+  fw::tick(1200);
+  CHECK(gStoreLen == fw::kStateSize, "the settings should be saved with the state (%u bytes)", gStoreLen);
+  boot(48000, true);
+  kept = true;
+  for (int i = 0; i < fw::SET_COUNT; ++i) kept = kept && fw::setting(i) == want[i];
+  CHECK(kept, "every setting should survive a restart");
+  CHECK(fw::inputGainDb() == 24 && fw::inputSource() == fw::INSRC_MIC, "the hardware is told the gain and the source");
+  CHECK(!fw::settingSet(fw::SET_CHANNEL, 99) || fw::setting(fw::SET_CHANNEL) == 16, "a setting cannot go past its range");
+
+  section("settings: the MIDI and Input pages set them with the encoders");
+  boot(48000);
+  for (int i = 0; i < 4; ++i) press("btn_patch");
+  fw::tick(33);
+  auto midiPage = grabFrame();
+  saveFrame("mode_midi");
+  fw::encoderTurn(ctl("enc1"), 1);
+  fw::encoderTurn(ctl("enc2"), 3);
+  press("enc3");
+  press("enc4");
+  CHECK(fw::setting(fw::SET_CLOCK) == fw::CLOCK_MIDI && fw::setting(fw::SET_CHANNEL) == 3 && fw::setting(fw::SET_THRU) == 1 &&
+            fw::setting(fw::SET_CLOCK_OUT) == 1,
+        "the four encoders set Clock, Channel, Thru and Clock Out");
+  renderNew(0.05);
+  fw::tick(33);
+  CHECK(grabFrame() != midiPage, "the page should show the new values");
+  CHECK(fw::gSynth.clockState() == fw::CLK_WAITING, "set to MIDI with no clock arriving: waiting");
+  saveFrame("mode_midi_waiting");
+  clockBegin();
+  midi({0xFA});
+  runClock(2.0, 128);
+  fw::tick(33);
+  saveFrame("mode_midi_locked");
+  press("enc2");
+  CHECK(fw::setting(fw::SET_CHANNEL) == 0, "pushing the Channel encoder goes back to ALL");
+  press("btn_patch");
+  fw::tick(33);
+  saveFrame("mode_input");
+  fw::encoderTurn(ctl("enc1"), 1);
+  fw::encoderTurn(ctl("enc2"), 1);
+  fw::tick(33);
+  for (int i = 0; i < 11; ++i) {
+    fw::encoderTurn(ctl("enc2"), 1);
+    fw::tick(33);
+  }
+  fw::encoderTurn(ctl("enc3"), 2);
+  CHECK(fw::setting(fw::SET_INPUT_SOURCE) == fw::INSRC_MIC && fw::setting(fw::SET_INPUT_GAIN) == 12 && fw::setting(fw::SET_INPUT_TO) == fw::INPUT_FX,
+        "the encoders set Source, Gain and Send To (gain %d)", fw::setting(fw::SET_INPUT_GAIN));
+  uint16_t params[fw::P_COUNT];
+  for (int i = 0; i < fw::P_COUNT; ++i) params[i] = fw::gParams.val[i];
+  fw::encoderTurn(ctl("enc4"), 3);
+  press("enc4");
+  bool untouched = true;
+  for (int i = 0; i < fw::P_COUNT; ++i) untouched = untouched && params[i] == fw::gParams.val[i];
+  CHECK(untouched, "the spare encoder on the Input page does nothing");
+  press("btn_patch");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "after the Input page the Patch button goes home");
+}
+
+// Renders with an audio input: gen(i) gives the left and right input for sample i since the call began.
+template <typename Gen>
+static std::vector<float> renderIn(double sec, Gen gen) {
+  std::vector<float> out;
+  gRight.clear();
+  long n = std::lround(sec * gSr), at = 0;
+  float l[fw::kMaxBlock], r[fw::kMaxBlock], il[fw::kMaxBlock], ir[fw::kMaxBlock];
+  while (n > 0) {
+    int len = n > fw::kMaxBlock ? fw::kMaxBlock : (int)n;
+    for (int i = 0; i < len; ++i) {
+      std::pair<float, float> x = gen(at + i);
+      il[i] = x.first;
+      ir[i] = x.second;
+    }
+    fw::process(il, ir, l, r, len);
+    out.insert(out.end(), l, l + len);
+    gRight.insert(gRight.end(), r, r + len);
+    n -= len;
+    at += len;
+  }
+  return out;
+}
+
+static void testAudioInput() {
+  auto sine = [](double level, double hz) {
+    return [=](long i) {
+      float x = (float)(level * std::sin(2.0 * M_PI * hz * (double)i / gSr));
+      return std::make_pair(x, x);
+    };
+  };
+  auto leftOnly = [](long i) { return std::make_pair((float)(0.25 * std::sin(2.0 * M_PI * 330.0 * (double)i / gSr)), 0.0f); };
+
+  section("input: with Send To off, an input changes nothing at all");
+  boot(48000);
+  midi({0x90, 60, 100, 0x90, 67, 100});
+  auto plain = renderNew(1.0);
+  auto plainRight = gRight;
+  boot(48000);
+  midi({0x90, 60, 100, 0x90, 67, 100});
+  auto withInput = renderIn(1.0, sine(0.5, 440));
+  CHECK(plain == withInput && plainRight == gRight, "the output should be bit for bit the same with an unused input connected");
+  CHECK(std::fabs(fw::gSynth.inputLevel() - 0.5) < 0.02, "the input is still metered, so its gain can be set first (level %.3f)", fw::gSynth.inputLevel());
+
+  section("input: MIX puts it straight on the output, stereo for a line input, both sides for a microphone");
+  boot(48000);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_MIX);
+  auto out = renderIn(1.0, leftOnly);
+  bool same = true;
+  for (size_t i = 24000; i < out.size(); ++i) same = same && std::fabs(out[i] - leftOnly((long)i).first) < 1e-5;
+  CHECK(same, "once faded in, the left output should be the left input exactly");
+  CHECK(peakOf(gRight) < 1e-6, "a line input is stereo: nothing on the right when only the left is fed (%.5f)", peakOf(gRight));
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_OFF);
+  renderIn(0.5, leftOnly);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_MIX);
+  out = renderIn(0.1, [](long) { return std::make_pair(0.5f, 0.5f); });  // an input that is already at a high level
+  double step = std::fabs(out[0]);
+  for (size_t i = 1; i < out.size(); ++i) step = std::max(step, (double)std::fabs(out[i] - out[i - 1]));
+  CHECK(step < 0.004 && std::fabs(out.back() - 0.5) < 1e-4, "the input fades in rather than switching on (largest jump %.4f)", step);
+  fw::settingSet(fw::SET_INPUT_SOURCE, fw::INSRC_MIC);
+  out = renderIn(0.5, leftOnly);
+  CHECK(rmsDiff(out, gRight) < 1e-6 && peakOf(gRight) > 0.2, "a microphone is one channel: it should come out on both sides");
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_OFF);
+  out = renderIn(0.5, leftOnly);
+  CHECK(peakOf(out, 12000) < 1e-6, "switched off again, it fades out to nothing (%.6f)", peakOf(out, 12000));
+
+  section("input: FX sends it through the effects; MIX does not");
+  auto burst = [](long i) {
+    float x = i < 9600 ? (float)(0.4 * std::sin(2.0 * M_PI * 440.0 * (double)i / gSr)) : 0.0f;
+    return std::make_pair(x, x);
+  };
+  boot(48000);
+  setStep(fw::P_RVB_MIX, 60);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_MIX);
+  out = renderIn(1.0, burst);
+  double tailMix = rmsOf(out, 0.4, 0.9);
+  boot(48000);
+  setStep(fw::P_RVB_MIX, 60);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_FX);
+  out = renderIn(1.0, burst);
+  double tailFx = rmsOf(out, 0.4, 0.9);
+  CHECK(tailMix < 1e-5, "MIX: nothing after the input stops (%.6f)", tailMix);
+  CHECK(tailFx > 0.003, "FX: the reverb's tail carries on after the input stops (%.5f)", tailFx);
+  CHECK(rmsOf(out, 0.05, 0.19) > 0.1, "FX: the input itself is heard");
+
+  section("input: the light by the jack is dark, amber or red; red for long enough to see");
+  boot(48000);
+  renderIn(0.2, sine(0.0, 440));
+  CHECK(fw::inputLight() == 0, "no signal: dark");
+  renderIn(0.2, sine(0.05, 440));
+  uint32_t dim = fw::inputLight();
+  renderIn(0.2, sine(0.5, 440));
+  uint32_t bright = fw::inputLight();
+  CHECK(dim != 0 && bright == 0xFF9A00 && dim != bright, "a signal: dim amber when quiet, full amber at a healthy level (%06X, %06X)", dim, bright);
+  CHECK(!fw::gSynth.inputClipped(), "half scale is not clipping");
+  renderIn(0.05, sine(1.0, 440));
+  CHECK(fw::gSynth.inputClipped() && fw::inputLight() == 0xE00000, "at the converter's limit: red");
+  renderIn(0.2, sine(0.0, 440));
+  CHECK(fw::inputLight() == 0xE00000, "still red 0.2 s later");
+  renderIn(0.5, sine(0.0, 440));
+  CHECK(!fw::gSynth.inputClipped() && fw::inputLight() != 0xE00000, "the red goes out within a second");
+  renderIn(1.5, sine(0.0, 440));
+  CHECK(fw::inputLight() == 0, "and the light is dark again once the input has been quiet");
+  for (int i = 0; i < 5; ++i) press("btn_patch");
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_FX);
+  renderIn(0.3, sine(0.3, 440));
+  fw::tick(33);
+  saveFrame("mode_input_level");
+  auto level = grabFrame();
+  renderIn(0.1, sine(1.0, 440));
+  fw::tick(33);
+  CHECK(grabFrame() != level, "the Input page shows the level and the clip");
+  saveFrame("mode_input_clip");
+
+  section("input: nonsense from the converter cannot upset the sound");
+  boot(48000);
+  setStep(fw::P_RVB_MIX, 60);
+  setStep(fw::P_DLY_MIX, 60);
+  fw::settingSet(fw::SET_INPUT_TO, fw::INPUT_FX);
+  out = renderIn(0.5, [](long i) {
+    float x = i % 7 == 0 ? std::numeric_limits<float>::quiet_NaN() : i % 5 == 0 ? 1e30f : i % 3 == 0 ? -std::numeric_limits<float>::infinity() : 0.1f;
+    return std::make_pair(x, -x);
+  });
+  auto after = renderIn(2.0, sine(0.0, 440));
+  bool finite = true;
+  for (float x : out) finite = finite && std::isfinite(x) && std::fabs(x) <= 1.0f;
+  for (float x : after) finite = finite && std::isfinite(x) && std::fabs(x) <= 1.0f;
+  CHECK(finite, "the output should stay finite and in range");
+  CHECK(rmsOf(after, 1.9, 2.0) < 0.02, "and die away afterwards (%.5f)", rmsOf(after, 1.9, 2.0));
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -3660,7 +4154,8 @@ static void benchmark() {
 static void printControls() {
   std::printf("# Controls and MIDI controller numbers\n\n");
   std::printf("Generated from the firmware's parameter table by `make docs`. Do not edit by hand.\n\n");
-  std::printf("The synth listens on every MIDI channel. Besides the numbers below it responds to\n");
+  std::printf("The synth listens on every MIDI channel unless one is chosen on the MIDI page (Patch button,\n");
+  std::printf("fourth page). Besides the numbers below it responds to\n");
   std::printf("notes with velocity, pitch bend, mod wheel (CC 1, adds LFO depth), sustain pedal (CC 64),\n");
   std::printf("all sound off (CC 120) and all notes off (CC 123). A program change loads that patch slot\n");
   std::printf("(0 to %d), if it holds a patch.\n\n", fw::kPatchSlots - 1);
@@ -3697,6 +4192,20 @@ static void printControls() {
       std::printf("| `%s` | %s | %s | %s | %d |\n", d.key, fw::kSectionNames[d.section], d.name, stops.c_str(), d.cc);
     }
   }
+  std::printf("\n## Settings (Patch button, MIDI and Input pages)\n\n");
+  std::printf("Kept over a restart; not part of a patch; no controller numbers.\n\n| Setting | Values |\n|---|---|\n");
+  for (int i = 0; i < fw::SET_COUNT; ++i) {
+    const fw::SettingDef& d = fw::kSettings[i];
+    std::string values;
+    if (d.labels) {
+      for (int v = 0; v < d.count; ++v) values += std::string(v ? ", " : "") + d.labels[v];
+    } else {
+      values = i == fw::SET_CHANNEL ? "ALL, 1 to 16" : "0 to " + std::to_string(d.count - 1) + " dB";
+    }
+    std::printf("| %s | %s |\n", d.name, values.c_str());
+  }
+  std::printf("\nWith Clock on MIDI or USB the synth follows MIDI clock, start, stop, continue and song position\n");
+  std::printf("from that input.\n");
   std::printf("\n## Encoders and buttons\n\n| Control id | Type |\n|---|---|\n");
   for (int i = fw::kFirstEncoder; i < fw::kNumControls; ++i) {
     fw::ControlInfo info = fw::controlInfo(i);
@@ -3741,6 +4250,9 @@ int main(int argc, char** argv) {
   testRandomUse();
   testDanceLights();
   testNewSoundFeatures();
+  testClock();
+  testMidiOutAndChannel();
+  testAudioInput();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

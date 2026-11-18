@@ -11,6 +11,7 @@
 <header id="bar">
   <span class="name">Synth firmware prototype</span>
   <span class="stat" title="MIDI keyboard"><i id="midi-dot" class="dot"></i><span id="midi-status">Keyboard: not started</span></span>
+  <span class="stat" title="Where the synth's MIDI out jack goes: thru, and clock when Clock Out is on (Patch button, MIDI page)"><i id="out-dot" class="dot"></i><select id="midi-out" aria-label="MIDI out"><option value="">MIDI out: not connected</option></select></span>
   <span class="stat" title="Delay between the firmware and the speaker, as the browser reports it">Audio delay: <b id="audio-delay">–</b></span>
   <span class="stat">Build: <b id="build">–</b></span>
   <span class="spacer"></span>
@@ -48,6 +49,13 @@
     <button id="panic" type="button">Panic</button>
     <button id="rough" type="button" aria-pressed="false" title="Feed the firmware jittery pot readings with a little crosstalk, as real converters and multiplexers give">Rough pots</button>
     <span class="aidnote">Test aids, not part of the panel</span>
+  </div>
+  <div class="aid buttons">
+    <button id="mic" type="button" aria-pressed="false" title="Plug this computer's microphone into the synth's audio input. Use headphones, or the speakers will feed back.">Mic in</button>
+    <span class="stat" title="The light beside the input jack: amber with a signal, red when it is too loud"><i id="in-light" class="dot"></i>Input</span>
+    <button id="clock" type="button" aria-pressed="false" title="Send MIDI clock into the synth's MIDI in, as a DAW or clock hub would. Set Clock to MIDI on the synth (Patch button, MIDI page) to follow it.">Test clock</button>
+    <input id="clock-bpm" type="number" min="30" max="300" value="96" aria-label="Test clock tempo, beats a minute">
+    <span class="aidnote">Stand-ins for a microphone and a clock sender</span>
   </div>
   <p class="hint" id="hint"></p>
 </section>

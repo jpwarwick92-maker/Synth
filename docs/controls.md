@@ -2,7 +2,8 @@
 
 Generated from the firmware's parameter table by `make docs`. Do not edit by hand.
 
-The synth listens on every MIDI channel. Besides the numbers below it responds to
+The synth listens on every MIDI channel unless one is chosen on the MIDI page (Patch button,
+fourth page). Besides the numbers below it responds to
 notes with velocity, pitch bend, mod wheel (CC 1, adds LFO depth), sustain pedal (CC 64),
 all sound off (CC 120) and all notes off (CC 123). A program change loads that patch slot
 (0 to 15), if it holds a patch.
@@ -88,6 +89,23 @@ VA: wave, pulse width, none. FM: ratio, FM amount, feedback. Wavetable: table, p
 | `compress` | FX 2 | COMPRESS | 0 to 100 | 19 |
 | `duck` | MOD | DUCK | 0 to 100 | 30 |
 | `sub_detune` | ENGINE | SUB DETUNE | -25 to 25 | 31 |
+
+## Settings (Patch button, MIDI and Input pages)
+
+Kept over a restart; not part of a patch; no controller numbers.
+
+| Setting | Values |
+|---|---|
+| CLOCK | INT, MIDI, USB |
+| CHANNEL | ALL, 1 to 16 |
+| THRU | OFF, ON |
+| CLOCK OUT | OFF, ON |
+| SOURCE | LINE, MIC |
+| GAIN | 0 to 60 dB |
+| SEND TO | OFF, MIX, FX |
+
+With Clock on MIDI or USB the synth follows MIDI clock, start, stop, continue and song position
+from that input.
 
 ## Encoders and buttons
 

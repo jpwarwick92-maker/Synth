@@ -42,6 +42,8 @@ class Ui {
   void drawPatchPage();
   void drawNamePage();
   void drawSetupPage();
+  void drawMidiPage();
+  void drawInputPage();
   void drawPickup(int id);
   void patchTurn(int enc, int delta);
   void patchPush(int enc);

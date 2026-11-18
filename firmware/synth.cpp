@@ -2,6 +2,7 @@
 
 #include "fw_math.h"
 #include "fx.h"
+#include "midi.h"
 #include "tables.h"
 
 namespace fw {
@@ -311,6 +312,12 @@ inline float svfTick(Svf& s, float v0, const SvfCoef& c, uint8_t type) {
   }
 }
 
+// The audio input as the converter gives it: never outside -1..1, never not a number.
+inline float cleanIn(float x) {
+  if (!(x == x)) return 0.0f;
+  return x > 1.0f ? 1.0f : x < -1.0f ? -1.0f : x;
+}
+
 // Removes `note` from a list of notes with matching velocities.
 inline void dropNote(uint8_t* notes, uint8_t* vels, int& n, uint8_t note) {
   int w = 0;
@@ -351,6 +358,17 @@ void Synth::init(float sampleRate) {
   beatPhase_ = 0.0f;
   beatReset_ = false;
   lfoRng_ = 0x1234567u;
+  clkSource_ = (uint8_t)setting(SET_CLOCK);
+  sampleNow_ = 0;
+  clkOutPhase_ = 0.0f;
+  clkState_ = clkSource_ == CLOCK_INTERNAL ? CLK_INTERNAL : CLK_WAITING;
+  tempoBpm_ = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  beatShown_ = 0.0f;
+  clockReset();
+  inGainMix_ = inGainFx_ = 0.0f;
+  inCoef_ = 1.0f - exp2f_(-1.4427f / (0.005f * sr_));  // the input fades in and out over a few milliseconds
+  inPeak_ = 0.0f;
+  inClip_ = 0.0f;
   qWrite_ = qRead_ = 0;
   overflow_ = false;
   load_ = 0.0f;
@@ -435,7 +453,144 @@ void Synth::handleEvent(uint8_t type, uint8_t a, uint8_t b) {
       break;
     case EV_ALL_SOUND_OFF: killAll(); break;
     case EV_CHORD: toggleChord(); break;
+    case EV_CLOCK: case EV_START: case EV_CONTINUE: case EV_STOP: case EV_SONG_POS: clockEvent(type, a, b); break;
     default: break;
+  }
+}
+
+// ---------------------------------------------------------------- following a clock
+
+// Nothing known about the clock yet: the first tick to arrive will be position 0.
+void Synth::clockReset() {
+  extLocked_ = false;
+  extRun_ = true;
+  extArmed_ = true;
+  extTick_ = 0;
+  extNext_ = 0;
+  extLead_ = 0.0f;
+  extStep_ = -1;
+  extStepFire_ = false;
+  extPeriod_ = sr_ * 60.0f / (mapTempoBpm(gParams.norm(P_ARP_TEMPO)) * 24.0f);
+  extSince_ = 0.0f;
+  extStampN_ = extStampPos_ = 0;
+}
+
+void Synth::clockEvent(uint8_t type, uint8_t a, uint8_t b) {
+  if (clkSource_ == CLOCK_INTERNAL) return;
+  switch (type) {
+    case EV_START:  // the next tick is the first downbeat
+      extRun_ = true;
+      extArmed_ = true;
+      extNext_ = 0;
+      arpRestart_ = true;
+      return;
+    case EV_CONTINUE:  // the next tick carries on from where stop left things
+      if (!extRun_) {
+        extRun_ = true;
+        extArmed_ = true;
+      }
+      return;
+    case EV_STOP:
+      if (extRun_) {
+        extRun_ = false;
+        if (!extArmed_) extNext_ = extTick_ + 1;
+      }
+      return;
+    case EV_SONG_POS:  // the sender moved its playhead: the next tick is at this sixteenth note
+      extNext_ = 6u * ((uint32_t)a | ((uint32_t)b << 7));
+      extArmed_ = true;
+      return;
+    default: break;
+  }
+
+  // ---- a tick ----
+  // Tempo: the average gap between the ticks of the last beat. Ticks are
+  // only seen at the start of an audio block, so one gap alone is rough;
+  // a beat's worth of them is not.
+  if (!extLocked_) {
+    extLocked_ = true;
+    extStampN_ = 0;
+  }
+  bool running = extStampN_ >= 2;  // the smooth position has been moving since the last tick
+  if (extStampN_ > 0) {
+    int gaps = extStampN_ < kClockWindow ? extStampN_ : kClockWindow - 1;
+    uint32_t oldest = extStamp_[(extStampPos_ + kClockWindow - gaps) % kClockWindow];
+    float average = (float)(sampleNow_ - oldest) / (float)gaps;
+    float fastest = sr_ * 60.0f / (400.0f * 24.0f);  // nothing sends 400 beats a minute: a burst of late ticks
+    if (average < fastest) average = fastest;
+    extPeriod_ += (average - extPeriod_) * (gaps < 6 ? 1.0f : 0.3f);
+  }
+  extStamp_[extStampPos_] = sampleNow_;
+  extStampPos_ = (extStampPos_ + 1) % kClockWindow;
+  if (extStampN_ < kClockWindow) ++extStampN_;
+  extSince_ = 0.0f;
+
+  if (!extRun_) return;  // stopped: the tempo is still measured, the position stays where it is
+  if (extArmed_) {
+    extArmed_ = false;
+    extTick_ = extNext_;
+    extLead_ = 0.0f;
+    // a tick that lands exactly on a sixteenth note plays that step
+    extStep_ = (int32_t)(extTick_ / 6u) - (extTick_ % 6u == 0 ? 1 : 0);
+    return;
+  }
+  ++extTick_;
+  extLead_ -= 1.0f;  // the smooth position should be exactly on this tick now
+  if (!running || extLead_ > 1.5f || extLead_ < -1.5f) extLead_ = 0.0f;  // not moving yet, or far out: jump
+  else extLead_ *= 0.8f;                                                 // a little out: close a fifth of the gap
+}
+
+// Once per control block: works out what is keeping time, moves the smooth
+// position on, and sends the synth's own clock when it is the one in charge.
+void Synth::clockAdvance(int len) {
+  uint8_t source = clkSource_;
+  extStepFire_ = false;
+  float knobBpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  if (source == CLOCK_INTERNAL) {
+    clkState_ = CLK_INTERNAL;
+    tempoBpm_ = knobBpm;
+    if (setting(SET_CLOCK_OUT)) {
+      clkOutPhase_ += (float)len * knobBpm * 24.0f / (60.0f * sr_);
+      while (clkOutPhase_ >= 1.0f) {
+        clkOutPhase_ -= 1.0f;
+        gMidi.clockTick();
+      }
+    } else {
+      clkOutPhase_ = 0.0f;
+    }
+    return;
+  }
+  if (extLocked_) {
+    extSince_ += (float)len;
+    if (extSince_ > maxf(0.5f * sr_, 4.0f * extPeriod_)) {  // the clock has gone away
+      extLocked_ = false;
+      if (!extArmed_) {
+        extArmed_ = true;  // if it comes back, it carries on counting from here
+        extNext_ = extTick_ + 1;
+      }
+    }
+  }
+  if (!extRun_) {
+    clkState_ = CLK_STOPPED;
+    tempoBpm_ = extLocked_ ? sr_ * 2.5f / extPeriod_ : knobBpm;
+    return;
+  }
+  if (!extLocked_) {
+    clkState_ = CLK_WAITING;
+    tempoBpm_ = knobBpm;
+    return;
+  }
+  clkState_ = CLK_LOCKED;
+  tempoBpm_ = sr_ * 2.5f / extPeriod_;  // 60 seconds / 24 ticks
+  if (extArmed_) return;                // waiting for the tick that says where things are
+  if (extStampN_ >= 2) {                // (with one tick so far the tempo is not known yet: stay on that tick)
+    extLead_ += (float)len / extPeriod_;
+    if (extLead_ > 12.0f) extLead_ = 12.0f;
+  }
+  int32_t step = (int32_t)(extTick_ / 6u) + (int32_t)floorf_(((float)(extTick_ % 6u) + extLead_) * (1.0f / 6.0f));
+  if (step > extStep_) {
+    extStep_ = step;
+    extStepFire_ = true;
   }
 }
 
@@ -644,6 +799,40 @@ void Synth::arpAdvance(int len) {
     arpRestart_ = true;
     return;
   }
+  if (clkSource_ != CLOCK_INTERNAL && !extRun_) {  // the clock's sender said stop: wait for it
+    if (arpNote_ >= 0) {
+      noteOff((uint8_t)arpNote_);
+      arpNote_ = -1;
+    }
+    arpRestart_ = true;
+    return;
+  }
+  if (clkSource_ != CLOCK_INTERNAL && extLocked_) {
+    // Following a clock: sixteenth notes fall where its ticks put them (six ticks each).
+    float stepLen = 6.0f * extPeriod_;
+    bool fire = extStepFire_;
+    float into = (float)(extTick_ % 6u) + extLead_;  // ticks since the step began
+    into -= 6.0f * floorf_(into * (1.0f / 6.0f));
+    if (arpRestart_) {
+      arpIndex_ = 0;
+      arpBeatStep_ = 0;
+      arpRestart_ = false;
+      // The first key usually comes down a little after the step it was
+      // aimed at. Within a quarter of a step it still gets that step,
+      // rather than waiting for the next one.
+      if (!extArmed_ && into < 1.5f) fire = true;
+    }
+    arpClock_ = into * extPeriod_;  // kept in step, in case the clock goes away and the Tempo knob takes over
+    if (arpNote_ >= 0) {
+      arpGateLeft_ -= (float)len;
+      if (arpGateLeft_ <= 0.0f) {
+        noteOff((uint8_t)arpNote_);
+        arpNote_ = -1;
+      }
+    }
+    if (fire && !extArmed_) arpStep(stepLen);
+    return;
+  }
   // sixteenth notes at the set tempo
   float bpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
   float stepLen = sr_ * 60.0f / (bpm * 4.0f);
@@ -663,6 +852,11 @@ void Synth::arpAdvance(int len) {
   }
   if (arpClock_ < stepLen) return;
   arpClock_ -= stepLen;
+  arpStep(stepLen);
+}
+
+// Plays the arpeggiator's next note.
+void Synth::arpStep(float stepLen) {
   if (arpNote_ >= 0) noteOff((uint8_t)arpNote_);
   uint8_t vel = 100;
   arpNote_ = arpPick(vel);
@@ -992,16 +1186,26 @@ void Synth::derive(Patch& p, int len) {
   float bpm = mapTempoBpm(sm[P_ARP_TEMPO]);
   p.fx.beatSec = 60.0f / bpm;
   p.fx.beatStep = 1.0f / (p.fx.beatSec * sr_);
+  bool following = clkState_ == CLK_LOCKED && !extArmed_;
+  if (following) {  // a clock from outside sets the beat, for the duck as for the arp
+    p.fx.beatSec = 24.0f * extPeriod_ / sr_;
+    p.fx.beatStep = 1.0f / (24.0f * extPeriod_);
+    beatReset_ = false;
+    float beats = ((float)(extTick_ % 24u) + extLead_) * (1.0f / 24.0f);
+    beatPhase_ = beats - floorf_(beats);
+    if (beatPhase_ >= 1.0f) beatPhase_ = 0.0f;
+  }
   if (beatReset_) {
     beatReset_ = false;
     beatPhase_ = 0.0f;
   }
-  if (arpMode_ != ARP_OFF) {
+  if (arpMode_ != ARP_OFF && !following) {
     float stepLen = sr_ * 15.0f / bpm;
     beatPhase_ = ((float)((arpBeatStep_ + 3u) & 3u) + clampf(arpClock_ / stepLen, 0.0f, 1.0f)) * 0.25f;
   }
   p.fx.beatPhase = beatPhase_;
-  if (arpMode_ == ARP_OFF) {
+  beatShown_ = beatPhase_;
+  if (arpMode_ == ARP_OFF && !following) {
     beatPhase_ += p.fx.beatStep * (float)len;
     if (beatPhase_ >= 1.0f) beatPhase_ -= floorf_(beatPhase_);
   }
@@ -1246,7 +1450,12 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   }
 }
 
-void Synth::process(float* outL, float* outR, int n) {
+void Synth::process(const float* inL, const float* inR, float* outL, float* outR, int n) {
+  uint8_t source = (uint8_t)setting(SET_CLOCK);
+  if (source != clkSource_) {  // before the events: a start sent just after the setting changed must count
+    clkSource_ = source;
+    clockReset();
+  }
   while (qRead_ != qWrite_) {
     Event e = queue_[qRead_];
     qRead_ = (qRead_ + 1) % kQueueLen;
@@ -1316,6 +1525,7 @@ void Synth::process(float* outL, float* outR, int n) {
     for (int i = 0; i < len; ++i) busL[i] = busR[i] = 0.0f;
 
     Patch p;
+    clockAdvance(len);
     derive(p, len);
     arpAdvance(len);
 
@@ -1330,9 +1540,49 @@ void Synth::process(float* outL, float* outR, int n) {
       busL[i] *= p.volume;
       busR[i] *= p.volume;
     }
+    // ---- the audio input ----
+    // Metered whenever the target supplies one, so its level can be set
+    // before it is sent anywhere. A microphone is one channel: the left.
+    const float* il = inL ? inL + done : nullptr;
+    const float* ir = il && inR && setting(SET_INPUT_SOURCE) != INSRC_MIC ? inR + done : il;
+    float inPeak = inPeak_ * peakDecay_;
+    float inClip = inClip_ > (float)len ? inClip_ - (float)len : 0.0f;
+    if (il) {
+      for (int i = 0; i < len; ++i) {
+        float a = maxf(absf(cleanIn(il[i])), absf(cleanIn(ir[i])));
+        if (a > inPeak) inPeak = a;
+      }
+      if (inPeak >= 0.98f) inClip = 0.4f * sr_;  // at the converter's limit: the light stays on long enough to see
+    }
+    inPeak_ = inPeak < 1e-6f ? 0.0f : inPeak;
+    inClip_ = inClip;
+    int inTo = il ? setting(SET_INPUT_TO) : INPUT_OFF;
+    if (!il) inGainMix_ = inGainFx_ = 0.0f;
+    float fxTarget = inTo == INPUT_FX ? 1.0f : 0.0f;
+    if (fxTarget > 0.0f || inGainFx_ > 0.0f) {  // into the effects, beside the synth's own sound
+      float g = inGainFx_;
+      for (int i = 0; i < len; ++i) {
+        g += (fxTarget - g) * inCoef_;
+        busL[i] += g * cleanIn(il[i]);
+        busR[i] += g * cleanIn(ir[i]);
+      }
+      inGainFx_ = fxTarget == 0.0f && g < 1e-4f ? 0.0f : g;
+    }
+
     float* l = outL + done;
     float* r = outR + done;
     gFx.process(busL, busR, l, r, len, p.fx);
+
+    float mixTarget = inTo == INPUT_MIX ? 1.0f : 0.0f;
+    if (mixTarget > 0.0f || inGainMix_ > 0.0f) {  // straight to the output, after the effects
+      float g = inGainMix_;
+      for (int i = 0; i < len; ++i) {
+        g += (mixTarget - g) * inCoef_;
+        l[i] += g * cleanIn(il[i]);
+        r[i] += g * cleanIn(ir[i]);
+      }
+      inGainMix_ = mixTarget == 0.0f && g < 1e-4f ? 0.0f : g;
+    }
 
     float peak = peak_ * peakDecay_;
     uint32_t pos = scopePos_;
@@ -1350,6 +1600,7 @@ void Synth::process(float* outL, float* outR, int n) {
     done += len;
   }
   activeCount_ = active;
+  sampleNow_ += (uint32_t)n;
 
   // Notes that began in this block have now sounded: any that were let go
   // before they had can be released.

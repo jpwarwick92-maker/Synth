@@ -10,6 +10,7 @@
 #include "fw_config.h"
 #include "params.h"
 #include "patch.h"
+#include "settings.h"
 
 namespace fw {
 
@@ -32,6 +33,20 @@ void init(float sampleRate);
 
 // Audio context: fills both channels with n samples (n <= kMaxBlock).
 void process(float* outL, float* outR, int n);
+// The same, for a target with an audio input: inL and inR hold n samples as
+// they come from the converter, -1..1 (a mono input passes one buffer for
+// both). Where the input goes is a setting; with it off the output is
+// exactly what process() without an input gives.
+void process(const float* inL, const float* inR, float* outL, float* outR, int n);
+// The gain the target should put in front of the input's converter, in
+// dB (0..kInputGainMaxDb), and which input to listen to (an InputSource).
+// On real hardware this is the preamp's analog gain: a signal that has
+// already overloaded the converter cannot be turned down afterwards.
+int inputGainDb();
+int inputSource();
+// The light beside the input jack, 0xRRGGBB: dark with no signal, amber
+// with one, red for a moment whenever the input reaches the converter's limit.
+uint32_t inputLight();
 // For a target that can time its audio blocks: how much of the time
 // available the last block took (1 = all of it). When this stays above
 // about 0.85 the engine drops voices, one at a time, instead of falling
@@ -39,7 +54,12 @@ void process(float* outL, float* outR, int n);
 void reportLoad(float fraction);
 
 // ---- control context ----
-void midiByte(uint8_t b);
+// One byte arriving at a MIDI input: the MIDI jack (PORT_MIDI) or USB (PORT_USB).
+void midiByte(uint8_t b, int port = PORT_MIDI);
+// Bytes waiting to leave by a MIDI output (thru, and clock when the synth
+// sends it): copies at most `max` into dst and returns how many. Call it
+// often; at least once for every audio block keeps the clock steady.
+uint32_t midiOutRead(int port, uint8_t* dst, uint32_t max);
 
 ControlInfo controlInfo(int index);
 // The parameter a pot, fader, selector or switch sets, or -1 for encoders and buttons.
