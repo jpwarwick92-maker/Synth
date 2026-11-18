@@ -151,9 +151,9 @@ try {
   {
     const { page, errors } = await open(context, { start: false });
     const count = (sel) => page.locator(sel).count();
-    check(await count('#panel .ctl.knob') === 16, '16 knobs', String(await count('#panel .ctl.knob')));
-    check(await count('#panel .ctl.selector') === 10, '10 rotary selectors', String(await count('#panel .ctl.selector')));
-    check(await count('#panel .ctl.toggle') === 1, '1 toggle switch', String(await count('#panel .ctl.toggle')));
+    check(await count('#panel .ctl.knob') === 17, '17 knobs', String(await count('#panel .ctl.knob')));
+    check(await count('#panel .ctl.selector') === 11, '11 rotary selectors', String(await count('#panel .ctl.selector')));
+    check(await count('#panel .ctl.toggle') === 3, '3 lever switches', String(await count('#panel .ctl.toggle')));
     check(await count('#panel .ctl') === layout.controls.length, 'one drawn control for every entry in the layout file');
     check(await count('#panel .ctl.fader') === 12, '12 faders', String(await count('#panel .ctl.fader')));
     check(await count('#panel .ctl.encoder') === 4, '4 push-encoders', String(await count('#panel .ctl.encoder')));
@@ -251,7 +251,7 @@ try {
   {
     const problems = await page.evaluate(() => window.__synth.problems);
     check(problems.length === 0, 'every layout control exists in the firmware and the reverse', problems.join(' | '));
-    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 53, '53 firmware controls');
+    check((await page.evaluate(() => window.__synth.firmwareControls().length)) === 57, '57 firmware controls');
     const f0 = await page.evaluate(() => window.__synth.frames);
     await sleep(500);
     const f1 = await page.evaluate(() => window.__synth.frames);
@@ -334,6 +334,31 @@ try {
     const sw = await centre(page, 'osc_sync');
     await page.mouse.click(sw.x, sw.y);
     check(await pos(page, 'osc_sync') === 1, 'Sync switch: a tap flips it on', String(await pos(page, 'osc_sync')));
+    {
+      const c3 = await centre(page, 'lfo_sync');          // the LFO's three-way lever: Free, Key, Voice
+      await page.mouse.click(c3.x, c3.y);
+      await sleep(150);
+      check(await pos(page, 'lfo_sync') === 1, 'three-way lever: a tap moves it up one position, to KEY', String(await pos(page, 'lfo_sync')));
+      await page.mouse.click(c3.x, c3.y);
+      await sleep(150);
+      check(await pos(page, 'lfo_sync') === 2, 'and again, to VOICE', String(await pos(page, 'lfo_sync')));
+      check(await lcdCount(page, INK, 0, 44) > 60, 'and the display names the setting');
+      await page.mouse.click(c3.x, c3.y);
+      await sleep(150);
+      check(await pos(page, 'lfo_sync') === 0, 'a third tap brings it round to FREE', String(await pos(page, 'lfo_sync')));
+      await page.mouse.move(c3.x, c3.y);
+      await page.mouse.down();
+      await page.mouse.move(c3.x, c3.y - 30, { steps: 4 });   // a flick up goes to the top
+      await page.mouse.up();
+      await sleep(150);
+      check(await pos(page, 'lfo_sync') === 2, 'a flick up takes it to the top position', String(await pos(page, 'lfo_sync')));
+      await page.mouse.move(c3.x, c3.y);
+      await page.mouse.down();
+      await page.mouse.move(c3.x, c3.y + 30, { steps: 4 });
+      await page.mouse.up();
+      await sleep(150);
+      check(await pos(page, 'lfo_sync') === 0, 'and a flick down back to the bottom', String(await pos(page, 'lfo_sync')));
+    }
     check(await page.locator('[data-id="osc_sync"]').evaluate((e) => e.classList.contains('lit')), 'Sync switch shows it is on');
     await page.mouse.click(sw.x, sw.y);
     check(await pos(page, 'osc_sync') === 0, 'Sync switch: a second tap flips it off', String(await pos(page, 'osc_sync')));
@@ -538,7 +563,7 @@ try {
     const labelled = layout.controls.filter((d) => ['knob', 'fader', 'selector', 'toggle'].includes(d.type)).map((d) => d.id);
     const offs = [];
     for (const id of labelled) if (await led(page, id) !== IDLE) offs.push(id);
-    check(labelled.length === 39 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
+    check(labelled.length === 43 && offs.length === 0, 'after Manual every label light is plain', offs.join(', '));
 
     const saves = await page.evaluate(() => window.__synth.patchSaves);
     await drag(page, 'enc1', -24);                      // two clicks: slot 3
@@ -663,13 +688,13 @@ try {
     const want = {};
     for (const id of ids) want[id] = await pos(page, id);
     const blob = await page.evaluate(() => localStorage.getItem('synth.state.v1'));
-    check(ids.length === 40 && blob && blob.length > 50, 'state is stored for the next visit');
+    check(ids.length === 44 && blob && blob.length > 50, 'state is stored for the next visit');
     await page.close();
 
     const again = await open(context);
     let wrong = [];
     for (const id of ids) if (await pos(again.page, id) !== want[id]) wrong.push(id);
-    check(wrong.length === 0, 'all 40 controls are where they were left', wrong.join(', '));
+    check(wrong.length === 0, 'all 44 controls are where they were left', wrong.join(', '));
     check(want.filter_cutoff > 3000 && want.osc1_wave === 3, 'and those are the moved positions, not defaults');
     check(await again.page.evaluate(() => localStorage.getItem('synth.state.v1')) === blob, 'saved state is unchanged by the reload');
     check(again.errors.length === 0, 'no page errors', again.errors.join(' | '));

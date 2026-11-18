@@ -634,7 +634,7 @@ static void phraseBaseline() {
 }
 
 static void testEveryControl() {
-  section("AC4  each of the 40 panel controls changes the sound");
+  section("AC4  each of the 44 panel controls changes the sound");
   boot(48000);
   phraseBaseline();
   renderNew(0.05);
@@ -644,6 +644,11 @@ static void testEveryControl() {
   setSel("arp_mode", fw::ARP_UP);
   renderNew(0.05);
   std::vector<float> baseArp = phrase();
+  boot(48000);
+  phraseBaseline();
+  setPot("chorus", 0.7);
+  renderNew(0.05);
+  std::vector<float> baseChorus = phrase();
   int silent = 0;
   for (int c = 0; c < fw::kFirstEncoder; ++c) {
     boot(48000);
@@ -652,7 +657,9 @@ static void testEveryControl() {
     // Octaves, Tempo and Gate belong to the arpeggiator: they are tried with it running
     bool arpOnly = id == fw::P_ARP_OCTAVES || id == fw::P_ARP_TEMPO || id == fw::P_ARP_GATE;
     if (arpOnly) setSel("arp_mode", fw::ARP_UP);
-    const std::vector<float>& base = arpOnly ? baseArp : basePlain;
+    bool chorusOnly = id == fw::P_CHORUS_TYPE;  // Chorus or Ensemble: tried with the chorus turned up
+    if (chorusOnly) setPot("chorus", 0.7);
+    const std::vector<float>& base = arpOnly ? baseArp : chorusOnly ? baseChorus : basePlain;
     fw::ControlInfo info = fw::controlInfo(c);
     int cur = fw::controlGet(c);
     if (info.kind == fw::CK_SELECTOR) fw::controlSet(c, (cur + 1) % info.steps);
@@ -773,7 +780,7 @@ static void testUi() {
   fw::encoderTurn(enc1, 3);
   CHECK(fw::gParams.step(fw::P_UNI_DETUNE) == before + 3, "enc1 should raise unison detune by 3");
   fw::encoderTurn(ctl("enc2"), 1);
-  CHECK(fw::gParams.step(fw::P_SUB_OCTAVE) == 1, "enc2 should set the sub two octaves down");
+  CHECK(fw::gParams.step(fw::P_SUB_DETUNE) + fw::kParams[fw::P_SUB_DETUNE].intMin == 1, "enc2 should detune the sub by one cent");
   fw::encoderTurn(ctl("enc3"), 5);
   CHECK(fw::gParams.step(fw::P_BEND_RANGE) + fw::kParams[fw::P_BEND_RANGE].intMin == 7, "enc3 should set bend range to 7");
   fw::encoderTurn(enc4, -1);
@@ -807,8 +814,8 @@ static void testSoftPages() {
   };
   static const PageCase kCases[] = {
       {"btn_fx1", "mode_fx1", {fw::P_DLY_TIME, fw::P_DLY_TONE, fw::P_DLY_FDBK, fw::P_DLY_MIX}},
-      {"btn_fx2", "mode_fx2", {fw::P_CHORUS, fw::P_RVB_SIZE, fw::P_RVB_TONE, fw::P_RVB_MIX}},
-      {"btn_mod", "mode_mod", {fw::P_LFO_FADE, fw::P_VEL_CUTOFF, fw::P_FENV_PITCH, fw::P_LFO_SYNC}},
+      {"btn_fx2", "mode_fx2", {fw::P_COMPRESS, fw::P_RVB_SIZE, fw::P_RVB_TONE, fw::P_RVB_MIX}},
+      {"btn_mod", "mode_mod", {fw::P_LFO_FADE, fw::P_VEL_CUTOFF, fw::P_FENV_PITCH, fw::P_DUCK}},
   };
   static const char* const kEncoders[4] = {"enc1", "enc2", "enc3", "enc4"};
   boot(48000);
@@ -1601,7 +1608,7 @@ static double worstBelow(const std::vector<float>& x, double hz) {
 
 static void testPanelRegistry() {
   section("panel: every control maps to its own parameter, and old control numbers are unchanged");
-  CHECK(fw::kFirstEncoder == 40 && fw::kNumControls == 53, "%d panel controls, %d controls in all", fw::kFirstEncoder, fw::kNumControls);
+  CHECK(fw::kFirstEncoder == 44 && fw::kNumControls == 57, "%d panel controls, %d controls in all", fw::kFirstEncoder, fw::kNumControls);
   for (int c = 0; c < 32; ++c) CHECK(fw::controlParam(c) == c, "control %d moved to parameter %d", c, fw::controlParam(c));
   for (int a = 0; a < fw::kNumControls; ++a)
     for (int b = a + 1; b < fw::kNumControls; ++b) {
@@ -2080,6 +2087,7 @@ static void testOlderSavedState() {
     const fw::ParamDef& d = fw::kParams[i];
     uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
     if (i == fw::P_LFO_SHAPE) v = 2600;  // the first build stored Shape as a knob position: this one is in the SQUARE zone
+    if (i == fw::P_SUB_OCTAVE) v = 1;    // and the sub as 0 = one octave down, 1 = two
     blob[6 + i * 2] = (uint8_t)(v & 0xFF);
     blob[7 + i * 2] = (uint8_t)(v >> 8);
     sum = (uint16_t)(sum * 31u + v + 1u);
@@ -2093,10 +2101,12 @@ static void testOlderSavedState() {
   for (int i = 0; i < oldCount; ++i) {
     const fw::ParamDef& d = fw::kParams[i];
     uint16_t v = d.kind == fw::PK_STEP ? (uint16_t)(d.steps - 1) : (uint16_t)(900 + i * 7);
-    if (i == fw::P_LFO_SHAPE) continue;
+    if (i == fw::P_LFO_SHAPE || i == fw::P_SUB_OCTAVE) continue;
     wrong += fw::gParams.val[i] != v;
   }
   CHECK(wrong == 0, "%d of the old parameters came back different", wrong);
+  CHECK(fw::gParams.step(fw::P_SUB_OCTAVE) == fw::SUB_2_OCT_DOWN, "an old 'two octaves down' sub should still be two octaves down (got %d)",
+        fw::gParams.step(fw::P_SUB_OCTAVE));
   CHECK(fw::gParams.step(fw::P_LFO_SHAPE) == fw::LFOS_SQUARE, "an old Shape knob position should become the matching stop (got %d)",
         fw::gParams.step(fw::P_LFO_SHAPE));
   wrong = 0;
@@ -2475,7 +2485,7 @@ static void testPatches() {
     setPot("filter_resonance", 0.6);
     setSel("osc1_wave", fw::WAVE_SQR);
     setPot("mix_sub", 0.5);
-    setStep(fw::P_CHORUS, 60);
+    setPot("chorus", 0.6);
   };
   auto anotherSound = [] {
     setPot("filter_cutoff", 0.9);
@@ -2519,7 +2529,7 @@ static void testLongRun() {
     std::snprintf(title, sizeof title, "long run: eight minutes at %.0f Hz with every delay line busy stays in bounds", sr);
     section(title);
     boot(sr);
-    setStep(fw::P_CHORUS, 100);
+    setPot("chorus", 1.0);
     setStep(fw::P_DLY_MIX, 60);
     setStep(fw::P_DLY_FDBK, 60);
     setStep(fw::P_RVB_MIX, 60);
@@ -2911,7 +2921,7 @@ static void testHighSampleRates() {
     std::snprintf(title, sizeof title, "review: at %.0f Hz everything stays in bounds and finite, effects on", sr);
     section(title);
     boot(sr);
-    setStep(fw::P_CHORUS, 100);
+    setPot("chorus", 1.0);
     setStep(fw::P_DLY_MIX, 70);
     setStep(fw::P_DLY_TIME, 100);
     setStep(fw::P_DLY_FDBK, 70);
@@ -3385,6 +3395,244 @@ static void testDanceLights() {
   midi({0x80, 60, 0});
 }
 
+// ---------------------------------------- per-voice LFO, ensemble, compressor, duck, sub pitch
+
+// The level in each window of `ms` milliseconds.
+static std::vector<double> levels(const std::vector<float>& x, double ms) {
+  size_t win = (size_t)(ms * 0.001 * gSr);
+  std::vector<double> out;
+  for (size_t at = 0; at + win <= x.size(); at += win) {
+    double sum = 0;
+    for (size_t i = at; i < at + win; ++i) sum += (double)x[i] * x[i];
+    out.push_back(std::sqrt(sum / (double)win));
+  }
+  return out;
+}
+
+static void testNewSoundFeatures() {
+  section("LFO sync VOICE: every voice has its own LFO, so a chord no longer moves as one");
+  double swing[3];
+  for (int mode : {(int)fw::LFOSYNC_FREE, (int)fw::LFOSYNC_VOICE}) {
+    boot(48000);
+    cleanTone(fw::WAVE_SIN);
+    setSel("lfo_destination", fw::LFO_AMP);
+    setSel("lfo_shape", fw::LFOS_TRI);
+    setPot("lfo_rate", 0.6);  // about 2.3 Hz
+    setPot("lfo_depth", 1.0);
+    setSel("lfo_sync", mode);
+    for (int k = 0; k < 8; ++k) midi({0x90, 48 + k * 5, 100});
+    renderNew(1.0);
+    std::vector<double> lv = levels(renderNew(4.0), 40);
+    double lo = 1e9, hi = 0;
+    for (double v : lv) {
+      lo = std::min(lo, v);
+      hi = std::max(hi, v);
+    }
+    swing[mode] = lo / hi;  // how far the whole chord dips: near 0 = all the way, near 1 = hardly at all
+  }
+  CHECK(swing[fw::LFOSYNC_FREE] < 0.2, "FREE: with one shared LFO the chord's level should swing nearly to nothing (%.2f)", swing[fw::LFOSYNC_FREE]);
+  CHECK(swing[fw::LFOSYNC_VOICE] > swing[fw::LFOSYNC_FREE] + 0.3,
+        "VOICE: with the voices out of step the chord as a whole should dip far less (%.2f against %.2f)", swing[fw::LFOSYNC_VOICE], swing[fw::LFOSYNC_FREE]);
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  setSel("lfo_destination", fw::LFO_AMP);
+  setSel("lfo_shape", fw::LFOS_TRI);
+  setPot("lfo_rate", 0.6);
+  setPot("lfo_depth", 1.0);
+  setSel("lfo_sync", fw::LFOSYNC_VOICE);
+  midi({0x90, 60, 100});
+  renderNew(0.5);
+  std::vector<double> one = levels(renderNew(3.0), 40);
+  CHECK(*std::min_element(one.begin(), one.end()) < 0.2 * *std::max_element(one.begin(), one.end()), "VOICE: a single note still gets its full tremolo");
+
+  section("ensemble: a second kind of chorus, on the Type switch; exactly off at zero either way");
+  std::vector<float> take[3], right[3];
+  for (int kind = 0; kind < 3; ++kind) {  // 0 = chorus knob at zero (type set to ensemble), 1 = chorus, 2 = ensemble
+    boot(48000);
+    setSel("chorus_type", kind == 1 ? fw::CHORUS_PLAIN : fw::CHORUS_ENSEMBLE);
+    setPot("chorus", kind == 0 ? 0.0 : 0.8);
+    renderNew(0.05);
+    take[kind] = phrase();
+    right[kind] = gRight;
+  }
+  boot(48000);
+  renderNew(0.05);
+  std::vector<float> dry = phrase();
+  CHECK(rmsDiff(take[0], dry) == 0.0, "with Chorus at zero the Type switch must change nothing");
+  CHECK(rmsDiff(take[1], dry) > 1e-3 && rmsDiff(take[2], dry) > 1e-3, "both kinds should be heard when turned up");
+  CHECK(rmsDiff(take[1], take[2]) > 1e-3, "and the ensemble should not sound like the chorus (difference %.5f)", rmsDiff(take[1], take[2]));
+  CHECK(rmsDiff(take[2], right[2]) > 1e-3, "the ensemble should be stereo");
+  bool finite = true;
+  for (float v : take[2]) finite = finite && std::isfinite(v);
+  CHECK(finite && peakOf(take[2]) <= 1.0, "ensemble output in range");
+
+  section("compressor: one note and a full chord come out nearer the same level; exactly off at zero");
+  double ratio[2], quiet[2];
+  for (int on = 0; on < 2; ++on) {
+    boot(48000);
+    setPot("aenv_sustain", 1.0);
+    setPot("aenv_velocity", 1.0);
+    if (on) setStep(fw::P_COMPRESS, 100);
+    midi({0x90, 60, 127});
+    renderNew(0.5);
+    double single = rmsOf(renderNew(1.0), 0.0, 1.0);
+    for (int k = 1; k < 8; ++k) midi({0x90, 60 + k * 3, 127});
+    renderNew(0.5);
+    double chord = rmsOf(renderNew(1.0), 0.0, 1.0);
+    ratio[on] = chord / single;
+    midi({0xB0, 123, 0});
+    renderNew(3.0);
+    midi({0x90, 60, 30});  // a soft note
+    renderNew(0.5);
+    quiet[on] = rmsOf(renderNew(1.0), 0.0, 1.0);
+  }
+  CHECK(ratio[1] < 0.75 * ratio[0], "a chord should be less far above a single note with the compressor on (%.2f times against %.2f)", ratio[1], ratio[0]);
+  CHECK(quiet[1] > 1.5 * quiet[0], "and a soft note should be lifted (%.4f against %.4f)", quiet[1], quiet[0]);
+  boot(48000);
+  renderNew(0.05);
+  std::vector<float> plain = phrase();
+  boot(48000);
+  setStep(fw::P_COMPRESS, 40);
+  setStep(fw::P_COMPRESS, 0);
+  renderNew(0.05);
+  CHECK(rmsDiff(plain, phrase()) == 0.0, "at zero the compressor must leave the sound exactly as it was");
+
+  section("duck: the level dips once a beat at the arp's Tempo, and lets a note's attack through");
+  boot(48000);
+  cleanTone(fw::WAVE_SAW);
+  setPot("aenv_sustain", 1.0);
+  setPot("arp_tempo", 0.4);  // 120 BPM: a beat is half a second
+  setStep(fw::P_DUCK, 100);
+  renderNew(0.2);
+  midi({0x90, 57, 110});
+  std::vector<float> held = renderNew(4.0);
+  std::vector<double> lv = levels(held, 10);
+  double top = *std::max_element(lv.begin() + 5, lv.end());
+  std::vector<double> dips;
+  for (size_t i = 1; i + 1 < lv.size(); ++i)
+    if (lv[i] < 0.45 * top && lv[i] <= lv[i - 1] && lv[i] < lv[i + 1] && (dips.empty() || (double)i * 0.01 - dips.back() > 0.2)) dips.push_back((double)i * 0.01);
+  CHECK(dips.size() == 8, "four seconds at 120 BPM should have eight dips (%zu found)", dips.size());
+  double gapSum = 0;
+  for (size_t i = 1; i < dips.size(); ++i) gapSum += dips[i] - dips[i - 1];
+  double beat = dips.size() > 1 ? gapSum / (double)(dips.size() - 1) : 0;
+  CHECK(std::fabs(beat - 0.5) < 0.02, "the dips should be one beat apart: %.3f s, expected 0.500", beat);
+  CHECK(lv[0] > 0.5 * top, "the first hundredth of a second of the note should come through before the dip (%.2f of full)", lv[0] / top);
+  CHECK(dips[0] < 0.08, "and the dip should follow straight after (first dip at %.2f s)", dips.empty() ? -1.0 : dips[0]);
+  // with the arp running, the beat is counted from its steps: four steps to a dip
+  boot(48000);
+  cleanTone(fw::WAVE_SAW);
+  setPot("aenv_sustain", 1.0);
+  setPot("arp_tempo", 0.4);
+  setPot("arp_gate", 1.0);
+  setSel("arp_mode", fw::ARP_UP);
+  setStep(fw::P_DUCK, 100);
+  midi({0x90, 57, 110});
+  renderNew(1.0);
+  for (int sweep = 0; sweep < 60; ++sweep) {  // tempo wound up and down: the dips must stay on the arp's beat
+    setPot("arp_tempo", 0.3 + 0.4 * std::fabs(std::sin(sweep * 0.3)));
+    renderNew(0.1);
+  }
+  setPot("arp_tempo", 0.4);
+  renderNew(1.5);
+  uint32_t stepsBefore = fw::gSynth.arpStepCount();
+  std::vector<float> run = renderNew(2.0);
+  CHECK(fw::gSynth.arpStepCount() - stepsBefore == 16, "set-up: two seconds at 120 BPM is sixteen steps");
+  lv = levels(run, 5);
+  top = *std::max_element(lv.begin(), lv.end());
+  dips.clear();
+  for (size_t i = 2; i + 1 < lv.size(); ++i)
+    if (lv[i] < 0.45 * top && lv[i] <= lv[i - 1] && lv[i] < lv[i + 1] && (dips.empty() || (double)i * 0.005 - dips.back() > 0.2)) dips.push_back((double)i * 0.005);
+  CHECK(dips.size() == 4, "sixteen steps should carry four dips (%zu found)", dips.size());
+
+  section("sub pitch: two octaves or one below oscillator 1, a fifth above, or an octave above; and its detune");
+  static const double kWant[4] = {0.25, 0.5, 1.4983, 2.0};
+  for (int iv = 0; iv < 4; ++iv) {
+    boot(48000);
+    cleanTone(fw::WAVE_SAW);
+    setPot("mix_osc1", 0.0);
+    setPot("mix_sub", 0.9);
+    setPot("filter_cutoff", 0.55);  // leaves little but the fundamental
+    setSel("sub_pitch", iv);
+    midi({0x90, 69, 100});
+    std::vector<float> x = renderNew(1.0);
+    double hz = measureFreq(x, (size_t)(0.3 * gSr), x.size());
+    CHECK(std::fabs(hz / (440.0 * kWant[iv]) - 1.0) < 0.003, "sub pitch stop %d: %.2f Hz, expected %.2f", iv, hz, 440.0 * kWant[iv]);
+  }
+  boot(48000);
+  cleanTone(fw::WAVE_SAW);
+  setPot("mix_osc1", 0.0);
+  setPot("mix_sub", 0.9);
+  setPot("filter_cutoff", 0.55);
+  setStep(fw::P_SUB_DETUNE, 50);  // +25 cents
+  midi({0x90, 69, 100});
+  std::vector<float> det = renderNew(1.0);
+  double cents = 1200.0 * std::log2(measureFreq(det, (size_t)(0.3 * gSr), det.size()) / 220.0);
+  CHECK(std::fabs(cents - 25.0) < 2.0, "sub detune at the top should be +25 cents (measured %.1f)", cents);
+
+  section("older saved data: a chorus set on its old encoder page and an old sub setting come through unchanged in meaning");
+  {
+    // state as the build before this one wrote it: version 4, 62 parameters, 40 panel controls
+    const int oldParams = fw::P_CHORUS_TYPE, oldPanel = 40;
+    std::vector<uint8_t> blob = {'S', 'Y', 'N', 'T', 4, (uint8_t)oldParams};
+    uint16_t sum = 0;
+    for (int i = 0; i < oldParams; ++i) {
+      uint16_t v = fw::kParams[i].def;
+      if (i == fw::P_CHORUS) v = 60;      // 60% on the old 0..100 encoder
+      if (i == fw::P_SUB_OCTAVE) v = 1;   // old meaning: two octaves down
+      if (i == fw::P_LFO_SYNC) v = 1;     // KEY
+      blob.push_back((uint8_t)(v & 0xFF));
+      blob.push_back((uint8_t)(v >> 8));
+      sum = (uint16_t)(sum * 31u + v + 1u);
+    }
+    size_t extAt = blob.size();
+    blob.push_back((uint8_t)oldPanel);
+    for (int c = 0; c < oldPanel; ++c) {
+      uint16_t v = fw::kParams[fw::kPanelParams[c]].def;
+      for (uint8_t b : {(uint8_t)(v & 0xFF), (uint8_t)(v >> 8), (uint8_t)(v & 0xFF), (uint8_t)(v >> 8), (uint8_t)0}) blob.push_back(b);
+    }
+    for (uint8_t b : {(uint8_t)0, (uint8_t)2, (uint8_t)0}) blob.push_back(b);  // no slot, guide on, not edited
+    for (char ch : std::string("OLDSTATE")) blob.push_back((uint8_t)ch);
+    for (uint8_t b : {(uint8_t)0, (uint8_t)0}) blob.push_back(b);              // palette, lights
+    for (size_t i = extAt; i < blob.size(); ++i) sum = (uint16_t)(sum * 31u + blob[i] + 1u);
+    blob.push_back((uint8_t)(sum & 0xFF));
+    blob.push_back((uint8_t)(sum >> 8));
+    std::memcpy(gStore, blob.data(), blob.size());
+    gStoreLen = (uint32_t)blob.size();
+    std::memset(gBankLen, 0, sizeof gBankLen);
+    fw::init(48000.0f);
+    CHECK(!std::strcmp(fw::gPatch.name(), "OLDSTATE"), "set-up: the old state should load (name '%s')", fw::gPatch.name());
+    CHECK(fw::gParams.val[fw::P_CHORUS] == 60 * 4095 / 100, "an old chorus of 60%% should still be 60%% (pot value %d)", (int)fw::gParams.val[fw::P_CHORUS]);
+    CHECK(fw::gParams.step(fw::P_SUB_OCTAVE) == fw::SUB_2_OCT_DOWN, "an old 'two octaves down' should still be two octaves down");
+    CHECK(fw::gParams.step(fw::P_LFO_SYNC) == fw::LFOSYNC_KEY, "an old LFO SYNC of KEY should still be KEY");
+    int chorusKnob = ctl("chorus");
+    CHECK(fw::controlGet(chorusKnob) == fw::gParams.val[fw::P_CHORUS] && !fw::gPatch.following(chorusKnob),
+          "the new Chorus knob should start where the old setting was, live");
+    CHECK(fw::gParams.val[fw::P_COMPRESS] == 0 && fw::gParams.val[fw::P_DUCK] == 0 && fw::gParams.step(fw::P_SUB_DETUNE) == 25,
+          "the new values should be at their defaults: compressor and duck off, sub in tune");
+
+    // and a patch stored by that build
+    uint8_t patch[fw::kPatchSize] = {'P', 'A', 'T', 1, (uint8_t)oldParams, 'O', 'L', 'D', 'P', 'A', 'T', 'C', 'H'};
+    sum = 0;
+    for (int i = 0; i < fw::kPatchNameLen; ++i) sum = (uint16_t)(sum * 31u + patch[5 + i] + 1u);
+    for (int i = 0; i < oldParams; ++i) {
+      uint16_t v = fw::kParams[i].def;
+      if (i == fw::P_CHORUS) v = 35;
+      if (i == fw::P_SUB_OCTAVE) v = 0;   // old meaning: one octave down
+      patch[13 + i * 2] = (uint8_t)(v & 0xFF);
+      patch[14 + i * 2] = (uint8_t)(v >> 8);
+      sum = (uint16_t)(sum * 31u + v + 1u);
+    }
+    patch[13 + oldParams * 2] = (uint8_t)(sum & 0xFF);
+    patch[14 + oldParams * 2] = (uint8_t)(sum >> 8);
+    std::memcpy(gBank[3], patch, 15 + oldParams * 2);
+    gBankLen[3] = 15 + oldParams * 2;
+    CHECK(fw::patchLoad(3), "set-up: the old patch should load");
+    CHECK(fw::gParams.val[fw::P_CHORUS] == 35 * 4095 / 100 && fw::gParams.step(fw::P_SUB_OCTAVE) == fw::SUB_1_OCT_DOWN,
+          "an old patch's chorus and sub should keep their meaning (chorus %d, sub %d)", (int)fw::gParams.val[fw::P_CHORUS], fw::gParams.step(fw::P_SUB_OCTAVE));
+    CHECK(fw::gPatch.following(chorusKnob), "and the Chorus knob, which is elsewhere, should follow the patch");
+  }
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -3492,6 +3740,7 @@ int main(int argc, char** argv) {
   testReviewPictures();
   testRandomUse();
   testDanceLights();
+  testNewSoundFeatures();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

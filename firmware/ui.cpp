@@ -24,9 +24,9 @@ struct Page {
 constexpr int kMaxPages = 3;
 const Page kPages[MB_COUNT][kMaxPages] = {
     /* FX 1   */ {{"DELAY", {P_DLY_TIME, P_DLY_TONE, P_DLY_FDBK, P_DLY_MIX}}, {nullptr, {}}},
-    /* FX 2   */ {{"CHORUS + REVERB", {P_CHORUS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
-    /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_LFO_SYNC}}, {nullptr, {}}},
-    /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_OCTAVE, P_BEND_RANGE, P_FILT_SLOPE}},
+    /* FX 2   */ {{"COMPRESSOR + REVERB", {P_COMPRESS, P_RVB_SIZE, P_RVB_TONE, P_RVB_MIX}}, {nullptr, {}}},
+    /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_DUCK}}, {nullptr, {}}},
+    /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_DETUNE, P_BEND_RANGE, P_FILT_SLOPE}},
                   {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
     // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
     /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}},
@@ -436,8 +436,7 @@ void drawMacroIdle(int osc, const Box& b) {
 
 // Detune: two oscillators a little apart beat against each other. The
 // picture is one second of the pair at A3: the swell and fade of the beats.
-void drawDetune(const Box& b = kPic) {
-  float cents = mapDetuneCents(gParams.norm(P_OSC2_DETUNE));
+void drawBeats(float cents, const char* inTune, const Box& b = kPic) {
   float beats = absf(220.0f * (exp2f_(cents * (1.0f / 1200.0f)) - 1.0f));
   int mid = b.y + b.h / 2 + 6, amp = b.h / 2 - 22;
   int pyT = 0, pyB = 0;
@@ -453,13 +452,15 @@ void drawDetune(const Box& b = kPic) {
   }
   Str s;
   if (beats < 0.05f) {
-    s.add("IN TUNE WITH OSC 1");
+    s.add(inTune);
   } else {
     s.addFixed(beats, 1);
     s.add(" BEATS A SECOND");
   }
   hint(b.y + 2, s.b);
 }
+
+void drawDetune() { drawBeats(mapDetuneCents(gParams.norm(P_OSC2_DETUNE)), "IN TUNE WITH OSC 1"); }
 
 // X-Mod: oscillator 1 as it is (dim) and as oscillator 2 bends it (bright).
 void drawXmod(const Box& b = kPic) {
@@ -512,7 +513,7 @@ void drawMixer(int selected) {
   }
   const Box wave = {8, 130, 304, 84};
   midLine(wave);
-  float ratio = oscRatio(), sub = gParams.step(P_SUB_OCTAVE) ? 0.25f : 0.5f;
+  float ratio = oscRatio(), sub = mapSubRatio(gParams.step(P_SUB_OCTAVE), 0.0f);
   float span = 2.0f * exp2f_(octaveOf(0));
   plotWave(wave, span, kLine, [&](float t) {
     uint32_t h = (uint32_t)(t * 4096.0f) * 2654435761u;  // the same "noise" every time, so the picture holds still
@@ -884,12 +885,56 @@ void drawUnison(const Box& b) {
     gfxPlotLine(b.x + 20, mid, b.x + b.w - 4, mid - (int)(kOff[v] * spread * (float)(b.h / 2 - 4)), v < 2 ? kLine : kLineDim);
 }
 
-// Sub octave: oscillator 1 (dim) and the square one or two octaves under it.
+// Sub pitch: oscillator 1 (dim) and the sub's square against it: two
+// octaves or one below, a fifth above, or an octave above.
 void drawSub(const Box& b) {
   midLine(b);
-  float sub = gParams.step(P_SUB_OCTAVE) ? 0.25f : 0.5f;
+  float sub = mapSubRatio(gParams.step(P_SUB_OCTAVE), 0.0f);
   plotWave(b, 4.0f, kLineDim, [](float t) { return oscShape(0, t) * 0.6f; });
   plotWave(b, 4.0f, kLine, [sub](float t) { return frac01(t * sub) < 0.5f ? 0.9f : -0.9f; });
+}
+
+// Sub detune: the beating it makes against oscillator 1.
+void drawSubDetune(const Box& b) {
+  drawBeats((float)(gParams.step(P_SUB_DETUNE) + kParams[P_SUB_DETUNE].intMin), "SUB IS IN TUNE", b);
+}
+
+// Compressor: what comes out (up) against what goes in (across). The dim
+// line is no compression; the bright one bends over above the threshold
+// and sits higher at low levels, where the quiet parts are being lifted.
+void drawCompress(const Box& b) {
+  float amount = gParams.frac(P_COMPRESS);
+  CompSettings c = mapCompress(amount);
+  int base = b.y + b.h - 2, top = b.y + 4, x0 = b.x + 40, w = b.w - 80;
+  gfxHLine(b.x, base, b.w, kGrid);
+  gfxLine(x0, base, x0 + w, top, kLineDim);
+  int py = base;
+  for (int px = 0; px <= w; ++px) {
+    float in = (float)px / (float)w;
+    float out = minf(in * compressGain(c, in), 1.0f);
+    int yy = base - (int)(out * (float)(base - top));
+    plotColumn(x0 + px, py, yy, kLine);
+    py = yy;
+  }
+  if (amount < 0.005f) hint(b.y + 2, "COMPRESSOR IS OFF");
+}
+
+// Duck: the level over two beats at the arp's Tempo. It dips just after
+// each beat (the marks) and comes back before the next.
+void drawDuck(const Box& b) {
+  float depth = gParams.frac(P_DUCK);
+  float beatSec = 60.0f / mapTempoBpm(gParams.norm(P_ARP_TEMPO));
+  int base = b.y + b.h - 2, top = b.y + 14;
+  gfxHLine(b.x, base, b.w, kGrid);
+  for (int k = 0; k < 2; ++k) gfxFill(b.x + k * b.w / 2, b.y, 3, 10, kAccent);
+  int py = top;
+  for (int px = 0; px < b.w; ++px) {
+    float level = 1.0f - 0.92f * depth * duckShape(frac01((float)px * 2.0f / (float)b.w), beatSec);
+    int yy = base - (int)(level * (float)(base - top));
+    plotColumn(b.x + px, px > 0 ? py : yy, yy, kLine);
+    py = yy;
+  }
+  if (depth < 0.005f) hint(b.y + 2, "DUCK IS OFF");
 }
 
 // Bend range: how far the pitch goes with the wheel pushed right up, and pulled right down.
@@ -928,12 +973,23 @@ void drawDelay(const Box& b) {
   if (mix < 0.005f) hint(b.y + 2, "DELAY IS OFF: MIX IS 0");
 }
 
-// Chorus: the two sides wobbling against each other.
+// Chorus: the two copies wobbling against each other. Ensemble: three,
+// each a third of a cycle apart, with a quick shiver on top of the slow sweep.
 void drawChorus(const Box& b) {
-  float amount = gParams.frac(P_CHORUS);
+  float amount = gParams.norm(P_CHORUS);
   midLine(b);
-  plotWave(b, 2.0f, kLine, [amount](float t) { return 0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t)); });
-  plotWave(b, 2.0f, kLineDim, [amount](float t) { return -0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t + 0.25f)); });
+  if (gParams.step(P_CHORUS_TYPE) == CHORUS_ENSEMBLE) {
+    for (int k = 2; k >= 0; --k) {
+      float third = (float)k * (1.0f / 3.0f);
+      plotWave(b, 2.0f, k == 0 ? kLine : kLineDim, [amount, third, k](float t) {
+        return 0.3f * amount * (float)(1 - k) +
+               amount * (0.5f * tabRead(gSine, frac01(t + third)) + 0.14f * tabRead(gSine, frac01(t * 10.0f + third)));
+      });
+    }
+  } else {
+    plotWave(b, 2.0f, kLine, [amount](float t) { return 0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t)); });
+    plotWave(b, 2.0f, kLineDim, [amount](float t) { return -0.3f * amount + 0.6f * amount * tabRead(gSine, frac01(t + 0.25f)); });
+  }
   if (amount < 0.005f) hint(b.y + 2, "CHORUS IS OFF");
 }
 
@@ -980,13 +1036,24 @@ void drawEnvPitch(const Box& b) {
   }
 }
 
-// LFO key sync. Three keys, drawn as bars along the top: the second is
-// played while the first is still down, the third after a silence. With KEY
-// the LFO starts again when a note begins from silence (the first and the
-// third), not for a note that joins others already sounding.
+// LFO sync. Three keys, drawn as bars along the top: the second is played
+// while the first is still down, the third after a silence. FREE: one LFO
+// that takes no notice of the keys. KEY: it starts again when a note begins
+// from silence (the first and the third), not for a note that joins others
+// already sounding. VOICE: every voice has its own LFO, each a little out
+// of step and a little off the others' pace, so a chord shimmers instead
+// of moving as one.
 void drawLfoSync(const Box& b) {
   midLine(b);
-  bool key = gParams.step(P_LFO_SYNC) != 0;
+  int mode = gParams.step(P_LFO_SYNC);
+  if (mode == LFOSYNC_VOICE) {
+    static const float kRate[4] = {1.0f, 0.94f, 1.07f, 0.97f};
+    for (int v = 3; v >= 0; --v)
+      plotWave(b, 1.0f, v == 0 ? kLine : kLineDim, [v](float t) { return 0.75f * tabRead(gSine, frac01(t * 5.3f * kRate[v] + 0.27f * (float)v)); });
+    hint(b.y + 2, "ONE LFO FOR EACH VOICE");
+    return;
+  }
+  bool key = mode == LFOSYNC_KEY;
   static const float kDown[3] = {0.08f, 0.30f, 0.70f}, kUp[3] = {0.46f, 0.56f, 0.94f};
   for (int k = 0; k < 3; ++k) {
     int x0 = b.x + (int)(kDown[k] * (float)b.w), x1 = b.x + (int)(kUp[k] * (float)b.w);
@@ -1013,10 +1080,13 @@ bool drawSoftPicture(int id, const Box& b) {
   switch (id) {
     case P_UNI_DETUNE: drawUnison(b); return true;
     case P_SUB_OCTAVE: drawSub(b); return true;
+    case P_SUB_DETUNE: drawSubDetune(b); return true;
+    case P_COMPRESS: drawCompress(b); return true;
+    case P_DUCK: drawDuck(b); return true;
     case P_BEND_RANGE: drawBend(b); return true;
     case P_FILT_SLOPE: drawFilterIn(b); return true;
     case P_DLY_TIME: case P_DLY_TONE: case P_DLY_FDBK: case P_DLY_MIX: drawDelay(b); return true;
-    case P_CHORUS: drawChorus(b); return true;
+    case P_CHORUS: case P_CHORUS_TYPE: drawChorus(b); return true;
     case P_RVB_SIZE: case P_RVB_TONE: case P_RVB_MIX: drawReverb(b); return true;
     case P_LFO_FADE: drawLfoFade(b); return true;
     case P_VEL_CUTOFF: drawVelocityLine(0.0f, gParams.frac(P_VEL_CUTOFF), b); return true;
@@ -1448,6 +1518,10 @@ void Ui::drawParamPopup(int id) {
       if (id == P_OSC2_MACRO && macroIdle(1)) drawMacroIdle(1, kPic);
       return;
     case P_OSC2_DETUNE: drawDetune(); return;
+    // ---- panel controls whose section would otherwise give them another control's picture ----
+    case P_SUB_OCTAVE: drawSub(kPic); return;
+    case P_LFO_SYNC: drawLfoSync(kPic); return;
+    case P_CHORUS: case P_CHORUS_TYPE: drawChorus(kPic); return;
     case P_XMOD: drawXmod(); return;
     case P_SYNC: drawSync(); return;
     // ---- voice ----

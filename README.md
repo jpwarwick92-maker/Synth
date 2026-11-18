@@ -100,6 +100,16 @@ scope and a visual for each control as it moves.
 - **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
   fader down.
 - **Arp** has its own section: Mode, Octaves, Tempo, Gate, Hold and Chord.
+- **LFO Sync** is a three-way lever in the LFO section. FREE: one LFO that takes no
+  notice of the keys. KEY: it starts again when a note begins from silence. VOICE:
+  every voice has its own LFO, each a little out of step and a little off the others'
+  pace, so a held chord shimmers instead of moving as one.
+- **Chorus** is a knob in the Voice section, with a Type switch beside it. CHORUS is two
+  slowly swept copies, one per side. ENSEMBLE is three, a third of a cycle apart, swept
+  by a slow and a fast wave at once: a swirl with no one wobble to be heard in it.
+- **Sub pitch** is a selector beside the Sub fader: two octaves below oscillator 1, one
+  below, a fifth above, or an octave above. Sub detune (up to 25 cents either way) is
+  on the Engine page.
 - **Chord** remembers the shape of a chord. Hold a chord and press Chord; after that
   each single key plays that chord, moved to the key. With the arp running, one key
   arpeggiates it. Press Chord again to forget it.
@@ -111,7 +121,7 @@ The layout keeps knob, selector and encoder centres at least 22 mm apart and fad
 centres at least 17 mm apart, and the page tests fail if any label overlaps another
 label, a control, or its section's outline. The sections sit on a grid: two rows of
 equal height on five shared columns, with the same gap between every pair of
-neighbours. The panel is 490 x 152 mm.
+neighbours. The panel is 530 x 152 mm.
 
 **The display.** Every control has a picture that follows it: turn a control and its
 picture changes, or says in words why there is nothing to show (Macro on a saw wave,
@@ -146,9 +156,9 @@ encoder restores its default.
 | Button | Page | Encoders |
 |---|---|---|
 | FX 1 | Delay | time, tone, feedback, mix |
-| FX 2 | Chorus + reverb | chorus, reverb size, reverb tone, reverb mix |
-| Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, LFO key sync |
-| Engine | 1: Voice | unison detune, sub octave, bend range, filter slope (12 dB, 24 dB, ladder) |
+| FX 2 | Compressor + reverb | compressor, reverb size, reverb tone, reverb mix |
+| Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, duck |
+| Engine | 1: Voice | unison detune, sub detune, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
@@ -208,6 +218,21 @@ reports how much of each block's time was used. If that stays above about 85% th
 engine drops voices one at a time, down to two at the fewest, and gives them back
 after a calm spell, instead of falling behind. Saving to storage waits for silence
 (for up to half a minute), because on real hardware a save can interrupt the sound.
+
+**Compressor** (FX 2 page) turns the loud parts down and everything back up, so one
+note and a full chord come out nearer the same level and soft notes and tails are
+lifted. Its one control lowers the threshold, raises the ratio (to 4:1) and adds
+make-up gain together. At zero it is out of the path altogether.
+
+**Duck** (Mod page) dips the level just after every beat and lets it come back before
+the next, as a compressor keyed from a kick drum does. The beat is the arp's Tempo.
+While the arp runs the beat is counted from its steps, four to a beat, so the two
+cannot slip apart; otherwise it starts with any note played from silence. The first
+hundredth of a second of each beat is let through, so a note played on the beat keeps
+its attack.
+
+The order of the effects is chorus, delay, reverb, compressor, duck, then the output
+limiter.
 
 **Output** is stereo once Spread, the chorus or the reverb is in use. With Spread at
 zero and every effect off, both channels carry exactly the same signal.

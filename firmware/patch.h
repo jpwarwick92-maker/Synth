@@ -121,6 +121,10 @@ class PatchPanel {
 
 extern PatchPanel gPatch;
 
+// A value saved before Chorus became a pot and the sub gained its four
+// pitches, brought up to date (used for old saved state and old patches alike).
+int upgradeOldValue(int id, int value);
+
 // The characters a patch name can hold, in the order the encoder steps through them.
 extern const char kNameChars[];
 int nameCharIndex(char c);

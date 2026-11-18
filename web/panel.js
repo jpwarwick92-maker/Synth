@@ -288,23 +288,30 @@ function makeButton(g, def, sizes, c, send) {
   });
 }
 
-// A two-position lever switch. To the firmware it is a selector with two stops.
+// A lever switch with two or three positions. To the firmware it is a
+// selector with that many stops: the first is lever down, the last lever up.
 function makeToggle(g, def, sizes, c, send) {
-  const [w, h] = sizes.toggle || [6, 11];
+  const n = def.stops.length;
+  const [w, h2] = sizes.toggle || [6, 11];
+  const h = n === 3 ? h2 + 4 : h2;                  // a three-way lever has a longer throw
+  const top = -h / 2 + w / 2, bottom = h / 2 - w / 2;
   el('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: w / 2, class: 'tslot' }, g);
   const lever = el('circle', { r: w / 2 - 0.6, class: 'tlever' }, g);
-  const on = el('text', { y: -h / 2 - 1.6, class: 'stop' , 'text-anchor': 'middle' }, g, def.stops[1]);
-  const off = el('text', { y: h / 2 + 3.6, class: 'stop', 'text-anchor': 'middle' }, g, def.stops[0]);
+  const stopLabels = def.stops.map((text, i) => {
+    if (i === n - 1) return el('text', { y: -h / 2 - 1.6, class: 'stop', 'text-anchor': 'middle' }, g, text);
+    if (i === 0) return el('text', { y: h / 2 + 3.6, class: 'stop', 'text-anchor': 'middle' }, g, text);
+    return el('text', { x: w / 2 + 2, y: 0.9, class: 'stop', 'text-anchor': 'start' }, g, text);   // the middle one, beside the lever
+  });
   if (def.label) c.labelEl = el('text', { y: h / 2 + 8.6, class: 'label' }, g, def.label);
   const hit = el('rect', { x: -w / 2 - 3, y: -h / 2 - 5, width: w + 6, height: h + 10, class: 'hit' }, g);
 
   c.draw = () => {
-    lever.setAttribute('cy', c.value ? -h / 2 + w / 2 : h / 2 - w / 2);   // up is on
-    on.classList.toggle('on', c.value > 0);
-    off.classList.toggle('on', c.value === 0);
+    lever.setAttribute('cy', bottom + ((top - bottom) * c.value) / (n - 1));   // up is the last stop
+    stopLabels.forEach((t, i) => t.classList.toggle('on', i === c.value));
     g.classList.toggle('lit', c.value > 0);
   };
   const flip = (v) => {
+    v = clamp(v, 0, n - 1);
     if (v === c.value) return;
     c.value = v;
     c.touched();
@@ -312,8 +319,13 @@ function makeToggle(g, def, sizes, c, send) {
     send(def.id, 'set', v);
   };
   onDrag(hit, {
-    move: (e, st) => { if (st.moved) flip(e.clientY < st.y0 ? 1 : 0); },   // a flick up or down
-    up: (e, st) => { if (!st.moved) flip(c.value ? 0 : 1); },             // a tap flips it
+    down: (e, st) => { st.from = c.value; },
+    move: (e, st) => {
+      if (!st.moved) return;
+      const up = st.y0 - e.clientY;                       // a flick up or down, one position for every 14 px
+      flip(n === 2 ? (up > 0 ? 1 : 0) : st.from + Math.round(up / 14));
+    },
+    up: (e, st) => { if (!st.moved) flip((c.value + 1) % n); },   // a tap moves it on one position, round and round
   });
 }
 

@@ -86,13 +86,18 @@ enum ParamId : uint8_t {
   P_SPREAD,
   P_XMOD,
   P_SYNC,
+  // added with the per-voice LFO, the ensemble, the compressor and the wider sub
+  P_CHORUS_TYPE,
+  P_COMPRESS,
+  P_DUCK,
+  P_SUB_DETUNE,
 
   P_COUNT,
 };
 
 // The parameters that have their own knob, fader, selector or switch on the
 // panel, in control order. A control's index is its place in this list.
-constexpr int kPanelCount = 40;
+constexpr int kPanelCount = 44;
 extern const uint8_t kPanelParams[kPanelCount];
 bool isPanelParam(int id);
 
@@ -141,6 +146,13 @@ enum Unit : uint8_t {
 enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN, WAVE_SUPER, WAVE_COUNT };
 enum FilterType : uint8_t { FILT_LP, FILT_BP, FILT_HP };
 enum FilterSlope : uint8_t { SLOPE_12, SLOPE_24, SLOPE_LADDER };
+// How the LFO runs: free, restarted by a note played from silence, or one
+// LFO for each voice, each a little out of step with the others.
+enum LfoSync : uint8_t { LFOSYNC_FREE, LFOSYNC_KEY, LFOSYNC_VOICE };
+enum ChorusType : uint8_t { CHORUS_PLAIN, CHORUS_ENSEMBLE };
+// Where the sub sits against oscillator 1 (the P_SUB_OCTAVE selector).
+enum SubInterval : uint8_t { SUB_2_OCT_DOWN, SUB_1_OCT_DOWN, SUB_FIFTH_UP, SUB_1_OCT_UP, SUB_COUNT };
+float mapSubRatio(int interval, float detuneCents);  // the sub's frequency as a multiple of oscillator 1's
 float mapLadderFeedback(float n);  // 0 .. 3.9; the ladder whistles on its own at 4
 enum VoiceMode : uint8_t { MODE_POLY, MODE_MONO, MODE_UNI };
 enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_PW };
@@ -218,5 +230,18 @@ extern const char* const kEngineColorName[ENG_COUNT];   // "" = this engine has 
 extern const char* const kEngineWaveLabels[ENG_COUNT][WAVE_COUNT];
 float mapTempoBpm(float n);       // 40 .. 240
 float mapArpGate(float n);        // 0.05 .. 1 of a step
+
+// The compressor, from its one Amount control: above `threshold` the level
+// rises only 1/ratio as fast, and everything is then turned up by `makeup`.
+struct CompSettings {
+  float threshold, slope, makeup;  // slope = 1 - 1/ratio
+};
+CompSettings mapCompress(float amount);
+// The compressor's gain for a steady level (0..1 and beyond).
+float compressGain(const CompSettings& c, float level);
+// The duck: how far the sound is pulled down at `phase` (0..1) through a
+// beat lasting `beatSec`. It lets the first few milliseconds through, so a
+// note played on the beat keeps its attack, then dips and recovers.
+float duckShape(float phase, float beatSec);
 
 }  // namespace fw

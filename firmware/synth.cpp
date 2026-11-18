@@ -25,6 +25,9 @@ constexpr float kSuperSide = 0.6f, kSuperGain = 0.42f;
 // share of mistuning at full Drift (as analog voice cards differ).
 const float kVoicePan[kNumVoices] = {-1.0f, 1.0f, -0.6f, 0.6f, -0.3f, 0.3f, -0.8f, 0.8f};
 const float kVoiceTune[kNumVoices] = {0.3f, -0.7f, 1.0f, -0.2f, -1.0f, 0.6f, -0.4f, 0.8f};
+// With one LFO per voice, each runs a few percent faster or slower than the
+// knob says, so they never fall into step with each other.
+const float kVoiceLfoRate[kNumVoices] = {1.0f, 0.94f, 1.07f, 0.97f, 1.04f, 0.91f, 1.1f, 0.985f};
 const float kVoiceCut[kNumVoices] = {-0.5f, 0.9f, 0.2f, -1.0f, 0.6f, -0.3f, 1.0f, -0.8f};
 }  // namespace
 
@@ -40,8 +43,17 @@ struct Synth::Patch {
   float color1, color2;  // 0..1: its second one, where the engine has one
   float mix[4];          // osc1, osc2, sub, noise
   float cutoffOct;       // octaves above 20 Hz
-  float lfoCut;          // octaves
-  float lfoPw;           // added to pulse width, or to Macro on the other engines
+  // The LFO. `lfo` is the shared one's value now (-1..1); with one LFO per
+  // voice each voice works out its own from lfoStep and lfoShape. The four
+  // amounts say how far a full swing moves each destination.
+  float lfo;
+  bool lfoPerVoice;
+  uint8_t lfoShape;
+  float lfoStep;         // cycles per control block
+  float lfoPitchAmt;     // semitones
+  float lfoCutAmt;       // octaves
+  float lfoPwAmt;        // added to pulse width, or to Macro on the other engines
+  float lfoTremAmt;      // 0..1: how far the level is pulled down at the bottom of the swing
   float lfoFadeStep;     // how far the LFO fades in per block (1 = at once)
   float velCut;          // octaves at full velocity
   float fenvPitch;       // semitones at full envelope
@@ -53,11 +65,9 @@ struct Synth::Patch {
   float glideCoef;       // 1 = no glide
   EnvCoef aenv, fenv;
   float velAmt;
-  float lfoPitch;        // semitones
-  float tremGain;
   float bendSemis;
   float uniDetune;       // semitones, half the total spread
-  float subDiv;          // sub frequency as a fraction of osc 1
+  float subRatio;        // sub frequency as a multiple of oscillator 1's
   float volume;
   float drift, driftCoef;  // 0..1, and how fast the wander moves per block
   float spread;            // 0..1
@@ -90,6 +100,18 @@ inline float softClip(float x) {
 inline float wrap01(float x) {
   x -= floorf_(x);
   return x >= 1.0f ? 0.0f : x;
+}
+
+// The LFO's five shapes, -1..1, at `phase` (0..1) through its cycle.
+// `random` is the value the random shape is holding for this cycle.
+inline float lfoWave(uint8_t shape, float phase, float random) {
+  switch (shape) {
+    case LFOS_SINE: return tabRead(gSine, phase);
+    case LFOS_TRI: return 1.0f - 4.0f * absf(phase - 0.5f);
+    case LFOS_SAW: return 1.0f - 2.0f * phase;
+    case LFOS_SQUARE: return phase < 0.5f ? 1.0f : -1.0f;
+    default: return random;
+  }
 }
 
 inline float nextNoise(uint32_t& s) {
@@ -321,10 +343,13 @@ void Synth::init(float sampleRate) {
   arpRestart_ = true;
   arpRng_ = 0x2545F491u;
   arpSteps_ = 0;
+  arpBeatStep_ = 0;
   sustain_ = false;
   bend_ = bendSmooth_ = 0.0f;
   modWheel_ = 0.0f;
   lfoPhase_ = lfoValue_ = lfoRandom_ = 0.0f;
+  beatPhase_ = 0.0f;
+  beatReset_ = false;
   lfoRng_ = 0x1234567u;
   qWrite_ = qRead_ = 0;
   overflow_ = false;
@@ -364,6 +389,8 @@ void Synth::init(float sampleRate) {
     v.wave1 = v.wave2 = WAVE_SAW;
     v.eng1 = v.eng2 = ENG_VA;
     v.lfoAmt = 1.0f;
+    v.lfoPhase = (float)i * (1.0f / (float)kNumVoices);  // spread round the cycle from the start
+    v.lfoRandom = 0.0f;
     v.f1 = Svf{0.0f, 0.0f};
     v.f2 = Svf{0.0f, 0.0f};
     v.aenv = Env{0.0f, ENV_IDLE};
@@ -623,6 +650,7 @@ void Synth::arpAdvance(int len) {
   if (arpRestart_) {
     arpClock_ = stepLen;
     arpIndex_ = 0;
+    arpBeatStep_ = 0;
     arpRestart_ = false;
   }
   arpClock_ += (float)len;
@@ -640,6 +668,7 @@ void Synth::arpAdvance(int len) {
   arpNote_ = arpPick(vel);
   ++arpIndex_;
   ++arpSteps_;
+  ++arpBeatStep_;
   if (arpNote_ < 0) return;
   noteOn((uint8_t)arpNote_, vel);
   float gate = mapArpGate(gParams.norm(P_ARP_GATE));
@@ -753,10 +782,11 @@ void Synth::noteOn(uint8_t note, uint8_t velocity) {
   float x = (float)velocity * (1.0f / 127.0f);
   float vel = x * x;
 
-  if (gParams.step(P_LFO_SYNC) != 0) {  // key sync: the LFO starts over when a note starts from silence
-    bool any = false;
-    for (int i = 0; i < kNumVoices; ++i) any = any || voices_[i].active;
-    if (!any) lfoPhase_ = 0.0f;
+  bool any = false;
+  for (int i = 0; i < kNumVoices; ++i) any = any || voices_[i].active;
+  if (!any) {  // a note starting from silence
+    if (gParams.step(P_LFO_SYNC) == LFOSYNC_KEY) lfoPhase_ = 0.0f;  // key sync: the LFO starts over
+    beatReset_ = true;                                              // and the duck's beat starts with it
   }
 
   if (mode_ == MODE_POLY) {
@@ -883,25 +913,18 @@ void Synth::derive(Patch& p, int len) {
     lfoPhase_ -= floorf_(lfoPhase_);
     lfoRandom_ = nextNoise(lfoRng_);
   }
-  float lfo;
-  switch (gParams.step(P_LFO_SHAPE)) {
-    case LFOS_SINE: lfo = tabRead(gSine, lfoPhase_); break;
-    case LFOS_TRI: lfo = 1.0f - 4.0f * absf(lfoPhase_ - 0.5f); break;
-    case LFOS_SAW: lfo = 1.0f - 2.0f * lfoPhase_; break;
-    case LFOS_SQUARE: lfo = lfoPhase_ < 0.5f ? 1.0f : -1.0f; break;
-    default: lfo = lfoRandom_; break;
-  }
-  lfoValue_ = lfo;
+  p.lfoShape = (uint8_t)gParams.step(P_LFO_SHAPE);
+  p.lfoStep = mapLfoHz(sm[P_LFO_RATE]) * blockSec;
+  p.lfoPerVoice = gParams.step(P_LFO_SYNC) == LFOSYNC_VOICE;
+  p.lfo = lfoWave(p.lfoShape, lfoPhase_, lfoRandom_);
+  lfoValue_ = p.lfo;
   float depth = clampf(sm[P_LFO_DEPTH] + modWheel_, 0.0f, 1.0f);  // mod wheel adds depth
-  p.lfoPitch = 0.0f;
-  p.lfoCut = 0.0f;
-  p.lfoPw = 0.0f;
-  p.tremGain = 1.0f;
+  p.lfoPitchAmt = p.lfoCutAmt = p.lfoPwAmt = p.lfoTremAmt = 0.0f;
   switch (gParams.step(P_LFO_DEST)) {
-    case LFO_PITCH: p.lfoPitch = lfo * depth * depth * 12.0f; break;
-    case LFO_CUTOFF: p.lfoCut = lfo * depth * 4.0f; break;
-    case LFO_AMP: p.tremGain = 1.0f - depth * (0.5f - 0.5f * lfo); break;
-    default: p.lfoPw = lfo * depth * 0.4f; break;
+    case LFO_PITCH: p.lfoPitchAmt = depth * depth * 12.0f; break;
+    case LFO_CUTOFF: p.lfoCutAmt = depth * 4.0f; break;
+    case LFO_AMP: p.lfoTremAmt = depth; break;
+    default: p.lfoPwAmt = depth * 0.4f; break;
   }
   float fade = mapFadeTime(gParams.frac(P_LFO_FADE));
   p.lfoFadeStep = fade <= 0.0f ? 1.0f : blockSec / fade;
@@ -934,7 +957,7 @@ void Synth::derive(Patch& p, int len) {
   bendSmooth_ += (bend_ - bendSmooth_) * 0.25f;
   p.bendSemis = bendSmooth_ * (float)(gParams.step(P_BEND_RANGE) + kParams[P_BEND_RANGE].intMin);
   p.uniDetune = (float)gParams.step(P_UNI_DETUNE) * 0.01f;
-  p.subDiv = gParams.step(P_SUB_OCTAVE) == 0 ? 0.5f : 0.25f;
+  p.subRatio = mapSubRatio(gParams.step(P_SUB_OCTAVE), (float)(gParams.step(P_SUB_DETUNE) + kParams[P_SUB_DETUNE].intMin));
   p.fenvPitch = (float)gParams.step(P_FENV_PITCH);
 
   // ---- envelopes: per-sample one-pole coefficients ----
@@ -958,7 +981,30 @@ void Synth::derive(Patch& p, int len) {
   p.sync = gParams.step(P_SYNC) != 0;
 
   // ---- effects ----
-  p.fx.chorus = gParams.frac(P_CHORUS);
+  p.fx.chorus = sm[P_CHORUS];
+  p.fx.ensemble = gParams.step(P_CHORUS_TYPE) == CHORUS_ENSEMBLE;
+  p.fx.compress = gParams.frac(P_COMPRESS);
+  p.fx.duck = gParams.frac(P_DUCK);
+  // The duck keeps time with the arp's Tempo, one dip to a beat. While the
+  // arp runs, the beat is counted from its steps (four to a beat), so the
+  // two can never slip apart; otherwise it runs free from the last note
+  // that started out of silence.
+  float bpm = mapTempoBpm(sm[P_ARP_TEMPO]);
+  p.fx.beatSec = 60.0f / bpm;
+  p.fx.beatStep = 1.0f / (p.fx.beatSec * sr_);
+  if (beatReset_) {
+    beatReset_ = false;
+    beatPhase_ = 0.0f;
+  }
+  if (arpMode_ != ARP_OFF) {
+    float stepLen = sr_ * 15.0f / bpm;
+    beatPhase_ = ((float)((arpBeatStep_ + 3u) & 3u) + clampf(arpClock_ / stepLen, 0.0f, 1.0f)) * 0.25f;
+  }
+  p.fx.beatPhase = beatPhase_;
+  if (arpMode_ == ARP_OFF) {
+    beatPhase_ += p.fx.beatStep * (float)len;
+    if (beatPhase_ >= 1.0f) beatPhase_ -= floorf_(beatPhase_);
+  }
   p.fx.dlyTime = mapDelayTime(gParams.frac(P_DLY_TIME));
   p.fx.dlyTone = gParams.frac(P_DLY_TONE);
   p.fx.dlyFdbk = gParams.frac(P_DLY_FDBK);
@@ -1040,7 +1086,17 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
 void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float* outR, int n) {
   // ---- modulation that belongs to this voice ----
   v.lfoAmt = minf(v.lfoAmt + p.lfoFadeStep, 1.0f);
-  float lfoPw = p.lfoPw * v.lfoAmt;
+  float lfo = p.lfo;
+  if (p.lfoPerVoice) {  // this voice's own LFO, a little off the others' pace
+    v.lfoPhase += p.lfoStep * kVoiceLfoRate[index] * ((float)n * (1.0f / (float)kCtrlBlock));
+    if (v.lfoPhase >= 1.0f) {
+      v.lfoPhase -= floorf_(v.lfoPhase);
+      v.lfoRandom = nextNoise(v.rng);
+    }
+    lfo = lfoWave(p.lfoShape, v.lfoPhase, v.lfoRandom);
+  }
+  float lfoNow = lfo * v.lfoAmt;
+  float lfoPw = p.lfoPwAmt * lfoNow;
 
   // Drift: each voice is a little out of tune with the others, by a fixed
   // amount plus a slow wander, as the voices of an analog poly are.
@@ -1057,7 +1113,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   // ---- pitch ----
   v.pitch += (v.target - v.pitch) * p.glideCoef;
   float detune = mode_ == MODE_UNI ? p.uniDetune * ((float)index * (2.0f / (float)(kNumVoices - 1)) - 1.0f) : 0.0f;
-  float base = v.pitch + p.bendSemis + p.lfoPitch * v.lfoAmt + detune - 69.0f;
+  float base = v.pitch + p.bendSemis + p.lfoPitchAmt * lfoNow + detune - 69.0f;
   // Env>Pitch moves both oscillators. With Sync on it moves only oscillator
   // 2, the one being reset, which is what makes the classic sync sweep.
   float sweep = p.fenvPitch * v.fenv.level;
@@ -1066,7 +1122,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float invSr = 1.0f / sr_;
   float inc1 = minf(440.0f * exp2f_((base1 + p.oct1) * (1.0f / 12.0f)) * invSr, 0.45f);
   float inc2 = minf(440.0f * exp2f_((base2 + p.oct2 + p.detune2) * (1.0f / 12.0f)) * invSr, 0.45f);
-  float incSub = inc1 * p.subDiv;
+  float incSub = minf(inc1 * p.subRatio, 0.45f);
 
   OscRun r1, r2;
   // Pulse width for the VA engine; on the others the LFO's "PW" destination sweeps Macro instead.
@@ -1083,7 +1139,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   bool sync = p.sync && p.eng2 != ENG_PLUCK;   // a string has no cycle to restart
 
   // ---- filter coefficients for this block ----
-  float oct = p.cutoffOct + p.lfoCut * v.lfoAmt + p.envAmt * v.fenv.level + p.velCut * v.vel + driftCut +
+  float oct = p.cutoffOct + p.lfoCutAmt * lfoNow + p.envAmt * v.fenv.level + p.velCut * v.vel + driftCut +
               p.keytrack * (v.pitch - 60.0f) * (1.0f / 12.0f);
   float fc = clampf(20.0f * exp2f_(oct), 20.0f, 0.45f * sr_);
   float g = tanf_(kPi * fc * invSr);
@@ -1096,7 +1152,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float lDen = 1.0f / (1.0f + p.ladderK * lG2 * lG2);
 
   float velGain = 1.0f - p.velAmt * (1.0f - v.vel);
-  float trem = 1.0f - (1.0f - p.tremGain) * v.lfoAmt;
+  float trem = 1.0f - p.lfoTremAmt * (0.5f - 0.5f * lfo) * v.lfoAmt;
   float amp = velGain * trem * (mode_ == MODE_UNI ? 0.45f : 1.0f);
 
   // Spread: where this voice sits between the speakers. A lone mono voice stays in the middle.

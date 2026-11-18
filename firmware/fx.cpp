@@ -1,6 +1,7 @@
 #include "fx.h"
 
 #include "fw_math.h"
+#include "params.h"
 #include "tables.h"
 
 namespace fw {
@@ -36,6 +37,8 @@ const float kAllpassSec[2] = {0.00531f, 0.00189f};
 // is included on purpose: a position a hair below zero, wrapped by adding
 // len, rounds up to exactly len in a float, and must read slot 0, not the
 // memory after the buffer.
+inline float wrapPhase(float p) { return p >= 1.0f ? p - 1.0f : p; }
+
 inline float readFrac(const float* buf, int len, float pos) {
   int i0 = (int)pos;
   float f = pos - (float)i0;
@@ -59,9 +62,13 @@ inline float sane(float x) {
 
 void Effects::init(float sampleRate) {
   sr_ = sampleRate;
-  chorusOn_ = delayOn_ = reverbOn_ = false;
+  chorusOn_ = delayOn_ = reverbOn_ = compOn_ = false;
   chPos_ = 0;
-  chPhase_ = 0.0f;
+  chPhase_ = chFast_ = 0.0f;
+  cEnv_ = 0.0f;
+  cGain_ = duckGain_ = 1.0f;
+  cUp_ = 1.0f - exp2f_(-1.4427f / (0.005f * sr_));   // follows a rise in about 5 ms
+  cDown_ = 1.0f - exp2f_(-1.4427f / (0.15f * sr_));  // and a fall in about 150 ms
   dlPos_ = 0;
   dlLen_ = minf(0.3f * sr_, (float)(kDelayLen - 2));
   dlGlide_ = 1.0f - exp2f_(-1.4427f / (0.06f * sr_));
@@ -88,7 +95,9 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
   inL = outL;  // from here on, only the checked copy is read
   inR = outR;
 
-  // ---- chorus: two slowly swept taps, one per side ----
+  // ---- chorus: two slowly swept copies, one per side. Ensemble: three,
+  // each a third of a cycle apart, swept by a slow and a fast wave at once,
+  // which blurs into a swirl with no one wobble to be heard in it. ----
   bool chorus = s.chorus > 0.001f;
   if (chorus && !chorusOn_)
     for (int i = 0; i < kChorusLen; ++i) gChorus[i] = 0.0f;
@@ -96,24 +105,34 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
   if (chorus) {
     float room = minf(1.0f, (float)(kChorusLen - 4) / (0.016f * sr_));  // keeps the taps inside the line at any rate
     float base = 0.012f * sr_ * room, depth = 0.004f * sr_ * s.chorus * room;
-    float wet = 0.5f * s.chorus;
-    float inc = 0.6f / sr_;
+    float inc = 0.6f / sr_, incFast = 6.1f / sr_;
+    auto tap = [&](float delay) {
+      float p = (float)chPos_ - delay;
+      if (p < 0.0f) p += (float)kChorusLen;
+      return readFrac(gChorus, kChorusLen, p);
+    };
     for (int i = 0; i < n; ++i) {
-      float mono = 0.5f * (inL[i] + inR[i]);
-      gChorus[chPos_] = mono;
-      float ph2 = chPhase_ + 0.25f;
-      if (ph2 >= 1.0f) ph2 -= 1.0f;
-      float dL = base + depth * tabRead(gSine, chPhase_);
-      float dR = base + depth * tabRead(gSine, ph2);
-      float pL = (float)chPos_ - dL, pR = (float)chPos_ - dR;
-      if (pL < 0.0f) pL += (float)kChorusLen;
-      if (pR < 0.0f) pR += (float)kChorusLen;
       float dryL = inL[i], dryR = inR[i];
-      outL[i] = dryL + wet * (readFrac(gChorus, kChorusLen, pL) - mono);
-      outR[i] = dryR + wet * (readFrac(gChorus, kChorusLen, pR) - mono);
+      float mono = 0.5f * (dryL + dryR);
+      gChorus[chPos_] = mono;
+      if (!s.ensemble) {
+        float wet = 0.5f * s.chorus;
+        outL[i] = dryL + wet * (tap(base + depth * tabRead(gSine, chPhase_)) - mono);
+        outR[i] = dryR + wet * (tap(base + depth * tabRead(gSine, wrapPhase(chPhase_ + 0.25f))) - mono);
+      } else {
+        float wet = 0.75f * s.chorus;
+        float t[3];
+        for (int k = 0; k < 3; ++k) {
+          float third = (float)k * (1.0f / 3.0f);
+          float sweep = 0.78f * tabRead(gSine, wrapPhase(chPhase_ + third)) + 0.22f * tabRead(gSine, wrapPhase(chFast_ + third));
+          t[k] = tap(base + depth * sweep);
+        }
+        outL[i] = dryL + wet * ((t[0] + 0.7f * t[1]) * (1.0f / 1.7f) - mono);
+        outR[i] = dryR + wet * ((t[2] + 0.7f * t[1]) * (1.0f / 1.7f) - mono);
+      }
       if (++chPos_ >= kChorusLen) chPos_ = 0;
-      chPhase_ += inc;
-      if (chPhase_ >= 1.0f) chPhase_ -= 1.0f;
+      chPhase_ = wrapPhase(chPhase_ + inc);
+      chFast_ = wrapPhase(chFast_ + incFast);
     }
   }
 
@@ -190,6 +209,47 @@ void Effects::process(const float* inL, const float* inR, float* outL, float* ou
       outL[i] += wet * (d[0] + 0.5f * d[2]);
       outR[i] += wet * (d[1] + 0.5f * d[3]);
     }
+  }
+
+  // ---- compressor: turns the loud parts down and everything back up, so
+  // one note and a full chord come out nearer the same level and tails are
+  // lifted. The level is followed sample by sample; the gain it calls for
+  // is worked out once for the block and eased towards. ----
+  bool comp = s.compress > 0.001f;
+  if (comp && !compOn_) {
+    cEnv_ = 0.0f;
+    cGain_ = 1.0f;
+  }
+  compOn_ = comp;
+  if (comp) {
+    for (int i = 0; i < n; ++i) {
+      float a = maxf(absf(outL[i]), absf(outR[i]));
+      cEnv_ += (a - cEnv_) * (a > cEnv_ ? cUp_ : cDown_);
+    }
+    cEnv_ = tiny0(cEnv_);
+    float want = compressGain(mapCompress(s.compress), cEnv_);
+    float step = (want - cGain_) / (float)n;
+    for (int i = 0; i < n; ++i) {
+      cGain_ += step;
+      outL[i] *= cGain_;
+      outR[i] *= cGain_;
+    }
+  }
+
+  // ---- duck: the sound dips on every beat and comes back, as if a kick
+  // drum were pushing it down. ----
+  if (s.duck > 0.001f) {
+    float end = s.beatPhase + s.beatStep * (float)n;
+    if (end >= 1.0f) end -= 1.0f;
+    float want = 1.0f - 0.92f * s.duck * duckShape(end, s.beatSec);
+    float step = (want - duckGain_) / (float)n;
+    for (int i = 0; i < n; ++i) {
+      duckGain_ += step;
+      outL[i] *= duckGain_;
+      outR[i] *= duckGain_;
+    }
+  } else {
+    duckGain_ = 1.0f;
   }
 }
 

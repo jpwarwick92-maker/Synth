@@ -12,9 +12,10 @@ const char* const kOctaveLabels[] = {"-2", "-1", "0", "+1", "+2"};
 const char* const kFilterLabels[] = {"LP", "BP", "HP"};
 const char* const kModeLabels[] = {"POLY", "MONO", "UNI"};
 const char* const kDestLabels[] = {"PITCH", "CUTOFF", "AMP", "PW"};
-const char* const kSubLabels[] = {"-1 OCT", "-2 OCT"};
+const char* const kSubLabels[] = {"-2 OCT", "-1 OCT", "5TH UP", "+1 OCT"};
+const char* const kChorusLabels[] = {"CHORUS", "ENSEMBLE"};
 const char* const kSlopeLabels[] = {"12 dB", "24 dB", "LADDER"};
-const char* const kSyncLabels[] = {"FREE", "KEY"};
+const char* const kSyncLabels[] = {"FREE", "KEY", "VOICE"};
 const char* const kArpLabels[] = {"OFF", "UP", "DOWN", "UP-DOWN", "RANDOM", "PLAYED"};
 const char* const kEngineLabels[] = {"VA", "FM", "WAVETABLE", "PLUCK"};
 const char* const kOnOffLabels[] = {"OFF", "ON"};
@@ -50,6 +51,7 @@ const uint8_t kPanelParams[kPanelCount] = {
     P_VOLUME,
     P_ARP_MODE, P_ARP_OCTAVES, P_ARP_TEMPO, P_ARP_GATE,
     P_DRIFT, P_SPREAD, P_XMOD, P_SYNC,
+    P_LFO_SYNC, P_CHORUS, P_CHORUS_TYPE, P_SUB_OCTAVE,
 };
 
 bool isPanelParam(int id) {
@@ -98,21 +100,21 @@ const ParamDef kParams[P_COUNT] = {
     {"lfo_destination", "DESTINATION", SEC_LFO, PK_STEP, 4,    0,         109, U_STEP,       kDestLabels,   0},
     {"volume",        "VOLUME",     SEC_OUTPUT, PK_POT,  0,    pot(0.75f), 7,  U_PERCENT,    nullptr,       0},
     {"unison_detune", "UNI DETUNE", SEC_ENGINE, PK_STEP, 51,   15,        110, U_INT_CENTS,  nullptr,       0},
-    {"sub_octave",    "SUB OCTAVE", SEC_ENGINE, PK_STEP, 2,    0,         111, U_STEP,       kSubLabels,    0},
+    {"sub_pitch",     "SUB PITCH",  SEC_MIXER,  PK_STEP, 4,    1,         111, U_STEP,       kSubLabels,    0},
     {"bend_range",    "BEND RANGE", SEC_ENGINE, PK_STEP, 12,   1,         112, U_INT_SEMI,   nullptr,       1},
     {"filter_slope",  "FILT SLOPE", SEC_ENGINE, PK_STEP, 3,    1,         113, U_STEP,       kSlopeLabels,  0},
     {"delay_time",    "TIME",       SEC_FX1,    PK_STEP, 101,  55,        46,  U_DLY_TIME,   nullptr,       0},
     {"delay_tone",    "TONE",       SEC_FX1,    PK_STEP, 101,  60,        47,  U_INT_PERCENT, nullptr,      0},
     {"delay_feedback", "FEEDBACK",  SEC_FX1,    PK_STEP, 101,  35,        48,  U_INT_PERCENT, nullptr,      0},
     {"delay_mix",     "MIX",        SEC_FX1,    PK_STEP, 101,  0,         49,  U_INT_PERCENT, nullptr,      0},
-    {"chorus",        "CHORUS",     SEC_FX2,    PK_STEP, 101,  0,         50,  U_INT_PERCENT, nullptr,      0},
+    {"chorus",        "CHORUS",     SEC_VOICE,  PK_POT,  0,    pot(0.0f), 50,  U_PERCENT,    nullptr,       0},
     {"reverb_size",   "RVB SIZE",   SEC_FX2,    PK_STEP, 101,  50,        51,  U_RVB_TIME,   nullptr,       0},
     {"reverb_tone",   "RVB TONE",   SEC_FX2,    PK_STEP, 101,  50,        52,  U_INT_PERCENT, nullptr,      0},
     {"reverb_mix",    "RVB MIX",    SEC_FX2,    PK_STEP, 101,  0,         53,  U_INT_PERCENT, nullptr,      0},
     {"lfo_fade",      "LFO FADE",   SEC_MOD,    PK_STEP, 101,  0,         54,  U_FADE_TIME,  nullptr,       0},
     {"vel_cutoff",    "VEL>CUTOFF", SEC_MOD,    PK_STEP, 101,  0,         55,  U_INT_PERCENT, nullptr,      0},
     {"fenv_pitch",    "ENV>PITCH",  SEC_MOD,    PK_STEP, 25,   0,         56,  U_INT_SEMI,   nullptr,       0},
-    {"lfo_sync",      "LFO SYNC",   SEC_MOD,    PK_STEP, 2,    0,         57,  U_STEP,       kSyncLabels,   0},
+    {"lfo_sync",      "SYNC",       SEC_LFO,    PK_STEP, 3,    0,         57,  U_STEP,       kSyncLabels,   0},
     {"arp_mode",      "MODE",       SEC_ARP,    PK_STEP, 6,    0,         58,  U_STEP,       kArpLabels,    0},
     {"arp_tempo",     "TEMPO",      SEC_ARP,    PK_POT,  0,    pot(0.4f), 59,  U_BPM,        nullptr,       0},
     {"arp_octaves",   "OCTAVES",    SEC_ARP,    PK_STEP, 4,    0,         60,  U_STEP,       kArpOctaveLabels, 0},
@@ -127,6 +129,10 @@ const ParamDef kParams[P_COUNT] = {
     {"voice_spread",  "SPREAD",     SEC_VOICE,  PK_POT,  0,    pot(0.0f), 15,  U_PERCENT,    nullptr,       0},
     {"osc_xmod",      "X-MOD",      SEC_OSC2,   PK_POT,  0,    pot(0.0f), 16,  U_PERCENT,    nullptr,       0},
     {"osc_sync",      "SYNC",       SEC_OSC2,   PK_STEP, 2,    0,         17,  U_STEP,       kOnOffLabels,  0},
+    {"chorus_type",   "CHORUS TYPE", SEC_VOICE, PK_STEP, 2,    0,         18,  U_STEP,       kChorusLabels, 0},
+    {"compress",      "COMPRESS",   SEC_FX2,    PK_STEP, 101,  0,         19,  U_INT_PERCENT, nullptr,      0},
+    {"duck",          "DUCK",       SEC_MOD,    PK_STEP, 101,  0,         30,  U_INT_PERCENT, nullptr,      0},
+    {"sub_detune",    "SUB DETUNE", SEC_ENGINE, PK_STEP, 51,   25,        31,  U_INT_CENTS,  nullptr,       -25},
 };
 
 Params gParams;
@@ -218,6 +224,34 @@ float mapDelayTime(float f) { return 0.02f * exp2f_(f * 5.2288f); }
 float mapTempoBpm(float n) { return floorf_(40.5f + 200.0f * n); }
 
 float mapArpGate(float n) { return 0.05f + 0.95f * n; }
+
+float mapSubRatio(int interval, float detuneCents) {
+  static const float kRatio[SUB_COUNT] = {0.25f, 0.5f, 1.4983071f, 2.0f};  // the fifth is seven semitones
+  return kRatio[interval >= 0 && interval < SUB_COUNT ? interval : SUB_1_OCT_DOWN] * exp2f_(detuneCents * (1.0f / 1200.0f));
+}
+
+CompSettings mapCompress(float amount) {
+  // One control does three jobs at once: the threshold comes down from
+  // full level to about a tenth, the ratio goes from 1:1 to 4:1, and the
+  // make-up gain gives back most of what that takes off the loudest sounds.
+  CompSettings c;
+  c.threshold = 1.0f - 0.88f * amount;
+  c.slope = 1.0f - 1.0f / (1.0f + 3.0f * amount);
+  c.makeup = exp2f_(-0.7f * c.slope * log2f_(c.threshold));
+  return c;
+}
+
+float compressGain(const CompSettings& c, float level) {
+  float over = level / c.threshold;
+  return (over > 1.0f ? exp2f_(-c.slope * log2f_(over)) : 1.0f) * c.makeup;
+}
+
+float duckShape(float phase, float beatSec) {
+  float t = phase * beatSec;
+  const float kLetThrough = 0.012f;  // seconds: long enough for a note's attack to be heard
+  if (t < kLetThrough) return t * (1.0f / kLetThrough);
+  return exp2f_(-6.0f * (t - kLetThrough) / beatSec);  // back to nearly full by the next beat
+}
 
 float mapReverbTime(float f) { return 0.3f * exp2f_(f * 4.737f); }
 

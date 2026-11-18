@@ -68,6 +68,8 @@ struct Voice {
   uint8_t wave1, wave2;
   uint8_t eng1, eng2;
   float lfoAmt;     // 0..1, fades the LFO in after the note starts
+  float lfoPhase;   // this voice's own LFO, used when the LFO runs one per voice
+  float lfoRandom;  // and its held value for the random shape
   float drift1, drift2, driftCut;  // slow random wander of each oscillator's pitch and of the cutoff
   uint32_t driftRng;
   Svf f1, f2;
@@ -192,6 +194,7 @@ class Synth {
   bool arpRestart_;
   uint32_t arpRng_;
   volatile uint32_t arpSteps_;
+  uint32_t arpBeatStep_;      // steps since the arp last started: four to a beat, for the duck
 
   bool sustain_;
   volatile float bend_;       // -1..1 target
@@ -205,6 +208,8 @@ class Synth {
   float calmSamples_;         // time spent comfortably under it
   void shedVoice();
 
+  float beatPhase_;           // where in the beat the duck is, when the arp is not keeping time
+  bool beatReset_;            // a note has started from silence: the beat starts with it
   float lfoPhase_;
   float lfoValue_;
   float lfoRandom_;
