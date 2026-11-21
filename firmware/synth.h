@@ -231,6 +231,8 @@ class Synth {
   bool extLocked_;            // ticks are arriving
   bool extRun_;               // false between stop and the next start or continue
   bool extArmed_;             // the next tick sets the position (after start, continue or a song position)
+  bool extWait_;              // start or continue has been said: the arp holds its breath until the tick that follows
+  float extWaitLeft_;         // ...but not for ever: samples left before it gives up waiting
   uint32_t extTick_;          // the position of the latest tick
   uint32_t extNext_;          // the position the next tick takes, when armed
   float extLead_;             // how far past the latest tick the smooth position has run, in ticks

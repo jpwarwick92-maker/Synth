@@ -338,6 +338,31 @@ static void saveFrame(const char* name) {
   std::fclose(f);
 }
 
+// Writes a render as a sound file (one channel, 16 bits) beside the display
+// frames, so a result can be listened to as well as measured.
+static void saveSound(const char* name, const std::vector<float>& x) {
+  if (gOutDir.empty()) return;
+  FILE* f = std::fopen((gOutDir + "/" + name + ".wav").c_str(), "wb");
+  if (!f) return;
+  uint32_t rate = (uint32_t)gSr, bytes = (uint32_t)x.size() * 2;
+  auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+  auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+  std::fwrite("RIFF", 1, 4, f);
+  u32(36 + bytes);
+  std::fwrite("WAVEfmt ", 1, 8, f);
+  u32(16);
+  u16(1);
+  u16(1);
+  u32(rate);
+  u32(rate * 2);
+  u16(2);
+  u16(16);
+  std::fwrite("data", 1, 4, f);
+  u32(bytes);
+  for (float v : x) u16((uint16_t)(int16_t)std::lround(std::max(-1.0f, std::min(1.0f, v)) * 32767.0f));
+  std::fclose(f);
+}
+
 static long countColour(fw::Colour c, int y0 = 0, int y1 = fw::kDisplayH) {
   long n = 0;
   for (int y = y0; y < y1; ++y)
@@ -1221,6 +1246,20 @@ static void testEffects() {
   for (float v : l) finite = finite && std::isfinite(v);
   CHECK(finite && peakOf(l) < 0.99, "peak %.3f", peakOf(l));
   std::printf("    worst case, all effects full with eight voices: peak %.3f\n", peakOf(l));
+  saveSound("all_effects_eight_voices", l);
+  boot(48000);  // the same with the compressor at full as well: its make-up gain must not push the chord into the limiter
+  setCC(fw::P_CHORUS, 127);
+  setCC(fw::P_DLY_MIX, 127);
+  setCC(fw::P_DLY_FDBK, 127);
+  setCC(fw::P_RVB_MIX, 127);
+  setCC(fw::P_RVB_SIZE, 127);
+  setStep(fw::P_COMPRESS, 100);
+  for (int i = 0; i < 8; ++i) midi({0x90, 36 + i * 5, 127});
+  l = renderNew(6.0);
+  finite = true;
+  for (float v : l) finite = finite && std::isfinite(v);
+  CHECK(finite && peakOf(l) < 0.98, "with the compressor at full too: peak %.3f", peakOf(l));
+  std::printf("    and with the compressor at full as well: peak %.3f\n", peakOf(l));
 }
 
 // Spread of the gaps between upward zero crossings: how much the pitch wobbles.
@@ -4226,6 +4265,8 @@ static void testVocoder() {
   double voicePitch = bandEnergy(outAh, 20000, 712, 728) + bandEnergy(outAh, 20000, 832, 848);    // 6 x 120, 7 x 120
   CHECK(synthPitch > 100 * voicePitch, "the pitch should be the synth's 220 Hz, not the voice's 120 (%.1f dB apart)", 10 * std::log10(synthPitch / voicePitch));
   auto outEe = renderIn(1.0, ee);
+  saveSound("vocoder_ah", outAh);
+  saveSound("vocoder_ee", outEe);
   // "ah" is strong round 700 to 1200 Hz and weak round 2300; "ee" is the other way about
   double ahMid = bandEnergy(outAh, 20000, 600, 1400), ahHigh = bandEnergy(outAh, 20000, 2000, 3400);
   double eeMid = bandEnergy(outEe, 20000, 600, 1400), eeHigh = bandEnergy(outEe, 20000, 2000, 3400);
@@ -4397,6 +4438,243 @@ static void testVocoder() {
   }
 }
 
+// ------------------------------------------------- findings of the second independent review, 2026-11-21
+
+// How many times a square-wave LFO on level goes round in four seconds, rendered in blocks of `block` samples.
+static int lfoCycles(int sync, int block) {
+  boot(48000);
+  cleanTone(fw::WAVE_SIN);
+  setSel("lfo_shape", fw::LFOS_SQUARE);
+  setSel("lfo_destination", fw::LFO_AMP);
+  setPot("lfo_depth", 1.0);
+  setPot("lfo_rate", 0.6);
+  setSel("lfo_sync", sync);
+  renderNew(0.3);
+  midi({0x90, 69, 100});
+  std::vector<float> x;
+  float l[fw::kMaxBlock], r[fw::kMaxBlock];
+  for (long n = 4 * 48000; n > 0; n -= block) {
+    fw::process(l, r, block);
+    x.insert(x.end(), l, l + block);
+  }
+  std::vector<double> lv = levels(x, 2.0);
+  double peak = 0;
+  for (double v : lv) peak = std::max(peak, v);
+  int count = 0;
+  bool high = lv[0] > 0.5 * peak;
+  for (double v : lv) {
+    bool now = v > (high ? 0.3 : 0.7) * peak;
+    if (now && !high) ++count;
+    high = now;
+  }
+  return count;
+}
+
+static void testSecondReview() {
+  auto tone = [](long i) {
+    float x = (float)(0.3 * std::sin(2.0 * M_PI * 440.0 * (double)i / gSr));
+    return std::make_pair(x, x);
+  };
+
+  section("review 2: changing Channel lets go of whatever was held on the old one");
+  boot(48000);
+  midi({0x90, 60, 100});
+  renderNew(0.2);
+  fw::settingSet(fw::SET_CHANNEL, 2);
+  midi({0x80, 60, 0});  // on channel 1: no longer listened to
+  renderNew(3.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "a key held across a Channel change should not sound for ever (%d voices)", fw::gSynth.activeVoices());
+  boot(48000);
+  midi({0xB0, 64, 127, 0x90, 60, 100, 0x80, 60, 0, 0xE0, 0, 0x7F});
+  renderNew(0.2);
+  fw::settingSet(fw::SET_CHANNEL, 2);
+  midi({0xB0, 64, 0});
+  renderNew(3.0);
+  CHECK(fw::gSynth.activeVoices() == 0, "nor a note held by the pedal (%d voices)", fw::gSynth.activeVoices());
+  boot(48000, true);
+  CHECK(fw::setting(fw::SET_CHANNEL) == 0 || fw::gSynth.activeVoices() == 0, "a saved Channel setting loads without upsetting anything");
+
+  section("review 2: MIDI Start with a chord held plays nothing until the first tick, then the pattern's first note");
+  for (double gapMs : {2.0, 20.0}) {
+    boot(48000);
+    arpTone();
+    fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+    setSel("arp_mode", fw::ARP_UP);
+    midi({0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100});
+    renderNew(0.4);  // no clock yet: the arp is running from the Tempo knob
+    uint32_t before = fw::gSynth.arpStepCount();
+    midi({0xFA});
+    renderNew(gapMs * 0.001);
+    CHECK(fw::gSynth.arpStepCount() == before, "%.0f ms between start and the first tick: no step should play in the gap", gapMs);
+    clockBegin();
+    auto steps = runClock(0.11, 120);
+    double hz = measureFreq(gClockAudio, 480, 4800);
+    CHECK(steps.size() == 1 && steps[0] < 0.002 && std::fabs(hz - 261.63) < 4.0, "the first tick plays the pattern's first note (%zu steps, %.1f Hz)", steps.size(), hz);
+  }
+  boot(48000);
+  arpTone();
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setSel("arp_mode", fw::ARP_UP);
+  midi({0x90, 60, 100, 0xFA});
+  clockBegin();
+  auto steps = runClock(3.0, 0);
+  CHECK(steps.size() >= 12 && steps.size() <= 17 && steps[0] > 0.9, "a start with no clock after it: the arp waits a second, then runs from the Tempo knob (%zu steps)", steps.size());
+
+  section("review 2: continue carries on with the pattern; start begins it again");
+  boot(48000);
+  arpTone();
+  setPot("aenv_release", 0.0);
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setSel("arp_mode", fw::ARP_UP);
+  midi({0x90, 60, 100, 0x90, 64, 100, 0x90, 67, 100, 0x90, 71, 100});
+  clockBegin();
+  midi({0xFA});
+  steps = runClock(0.24, 120);  // two steps: C and E
+  CHECK(steps.size() == 2, "two steps before the stop (%zu)", steps.size());
+  midi({0xFC});
+  runClock(0.5, 120);
+  midi({0xFB});
+  steps = runClock(0.2, 120);
+  size_t at = steps.empty() ? 0 : (size_t)(steps[0] * gSr);
+  double next = steps.empty() ? 0 : measureFreq(gClockAudio, at + 480, at + 4800);
+  CHECK(std::fabs(next - 392.0) < 6.0, "after continue the next note is the pattern's third (G4, 392 Hz), got %.1f Hz", next);
+  saveSound("arp_stop_continue", gClockAudio);
+
+  section("review 2: after a stop the arp waits; with the clock gone too, a fresh chord plays from the Tempo knob");
+  boot(48000);
+  arpTone();
+  fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+  setSel("arp_mode", fw::ARP_UP);
+  press("btn_hold");
+  midi({0x90, 60, 100, 0x80, 60, 0});  // latched by Hold
+  clockBegin();
+  midi({0xFA});
+  runClock(1.0, 120);
+  midi({0xFC});
+  steps = runClock(2.0, 0);  // the sender stops its clock as well, as a DAW does
+  CHECK(steps.empty() && fw::gSynth.clockState() == fw::CLK_STOPPED, "what was latched stays silent after a stop (%zu steps)", steps.size());
+  midi({0x90, 64, 100});
+  steps = runClock(1.0, 0);
+  CHECK(steps.size() >= 7 && fw::gSynth.clockState() == fw::CLK_WAITING, "a fresh chord is not kept waiting for a clock that has gone (%zu steps)", steps.size());
+  midi({0x80, 64, 0});
+  press("btn_hold");
+
+  section("review 2: the Volume knob turns the audio input down with the synth");
+  for (int to : {fw::INPUT_MIX, fw::INPUT_FX}) {
+    boot(48000);
+    fw::settingSet(fw::SET_INPUT_TO, to);
+    auto usual = renderIn(0.5, tone);
+    setPot("volume", 0.0);
+    renderIn(0.3, tone);
+    auto off = renderIn(0.2, tone);
+    CHECK(std::fabs(peakOf(usual, 12000) - 0.3) < 0.002 && peakOf(off) < 1e-4, "Send To %s: %.3f at the usual volume, %.5f with Volume at zero",
+          to == fw::INPUT_MIX ? "MIX" : "FX", peakOf(usual, 12000), peakOf(off));
+  }
+
+  section("review 2: the duck keeps the beat with Arp mode on and no key held");
+  boot(48000);
+  setSel("arp_mode", fw::ARP_UP);
+  setStep(fw::P_DUCK, 100);
+  midi({0x90, 60, 100});
+  renderNew(0.52);
+  midi({0x80, 60, 0});
+  {
+    int beats = 0;
+    float l[16], r[16], last = fw::gSynth.beatNow();
+    for (int i = 0; i < 2 * 48000 / 16; ++i) {
+      fw::process(l, r, 16);
+      float now = fw::gSynth.beatNow();
+      if (now < last - 0.5f) ++beats;
+      last = now;
+    }
+    CHECK(beats >= 3 && beats <= 4, "two seconds at 120 BPM is four beats; the duck counted %d", beats);
+  }
+
+  section("review 2: a target that can save at any time does not wait for silence");
+  boot(48000);
+  midi({0x90, 60, 100});
+  renderNew(0.1);
+  fw::saveWhilePlaying(true);
+  setPot("filter_cutoff", 0.9);
+  int saves = gSaveCount;
+  fw::tick(1200);
+  CHECK(gSaveCount == saves + 1, "with a note sounding, the state should still be saved a second after the change");
+  fw::saveWhilePlaying(false);
+  setPot("filter_cutoff", 0.8);
+  renderNew(0.05);
+  fw::tick(1200);
+  CHECK(gSaveCount == saves + 1, "hardware still waits for silence");
+  midi({0x80, 60, 0});
+
+  section("review 2: one LFO per voice runs at the same rate whatever the audio block length");
+  {
+    int whole = lfoCycles(fw::LFOSYNC_VOICE, 128), eight = lfoCycles(fw::LFOSYNC_VOICE, 8), one = lfoCycles(fw::LFOSYNC_VOICE, 1);
+    CHECK(whole >= 8 && std::abs(whole - eight) <= 1 && std::abs(whole - one) <= 1, "cycles in four seconds: %d in blocks of 128, %d in 8s, %d in 1s", whole, eight, one);
+  }
+
+  section("review 2: Thru never leaves a note hanging further down the chain");
+  auto allNotesOff = [](const std::vector<int>& v) {
+    if (v.size() < 48) return false;
+    size_t from = v.size() - 48;
+    for (int ch = 0; ch < 16; ++ch)
+      if (v[from + ch * 3] != (0xB0 | ch) || v[from + ch * 3 + 1] != 123 || v[from + ch * 3 + 2] != 0) return false;
+    return true;
+  };
+  boot(48000);
+  fw::settingSet(fw::SET_THRU, 1);
+  midi({0x90, 60, 100});
+  drainMidi(fw::PORT_MIDI);
+  drainMidi(fw::PORT_USB);
+  fw::settingSet(fw::SET_THRU, 0);  // with the note still held
+  fw::tick(33);
+  CHECK(allNotesOff(drainMidi(fw::PORT_MIDI)) && allNotesOff(drainMidi(fw::PORT_USB)), "switching Thru off sends all notes off on every channel");
+  fw::settingSet(fw::SET_THRU, 1);
+  for (int i = 0; i < 400; ++i) midi({0x90, 60, 100});  // more than the output holds: some are dropped
+  fw::tick(33);
+  drainMidi(fw::PORT_MIDI);
+  fw::tick(33);
+  CHECK(allNotesOff(drainMidi(fw::PORT_MIDI)), "after messages were dropped, all notes off follows once there is room");
+  fw::tick(33);
+  CHECK(drainMidi(fw::PORT_MIDI).empty(), "and it is sent once, not for ever");
+
+  section("review 2: the MIDI page says in words what Channel, Thru and Clock Out amount to");
+  boot(48000);
+  for (int i = 0; i < 4; ++i) press("btn_patch");
+  fw::tick(33);
+  auto words = pictureRows(126, 162);
+  static const int kThree[3] = {fw::SET_CHANNEL, fw::SET_THRU, fw::SET_CLOCK_OUT};
+  for (int id : kThree) {
+    fw::settingSet(id, 1);
+    fw::tick(33);
+    auto now = pictureRows(126, 162);
+    CHECK(now != words, "%s: the words on the page should change with it", fw::kSettings[id].name);
+    words = now;
+  }
+  saveFrame("mode_midi_words");
+
+  section("review 2: the duck's picture shows the beat it is really running at when the clock is stopped");
+  std::vector<uint8_t> duckPicture[3];
+  for (int c = 0; c < 3; ++c) {  // the synth's own clock; a clock at 60 BPM, stopped; that clock running
+    boot(48000);
+    if (c > 0) {
+      fw::settingSet(fw::SET_CLOCK, fw::CLOCK_MIDI);
+      clockBegin();
+      midi({0xFA});
+      runClock(2.0, 60);
+      if (c == 1) {
+        midi({0xFC});
+        runClock(0.2, 60);
+      }
+    }
+    press("btn_mod");
+    fw::encoderTurn(ctl("enc4"), 10);
+    fw::tick(33);
+    duckPicture[c] = pictureRows(76, 154);
+  }
+  CHECK(duckPicture[1] == duckPicture[0], "stopped, the duck runs at the Tempo knob, and its picture should say so");
+  CHECK(duckPicture[2] != duckPicture[0], "running, it follows the clock, and its picture shows the slower beat");
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -4524,6 +4802,7 @@ int main(int argc, char** argv) {
   testMidiOutAndChannel();
   testAudioInput();
   testVocoder();
+  testSecondReview();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

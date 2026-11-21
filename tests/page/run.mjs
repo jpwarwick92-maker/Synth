@@ -649,7 +649,7 @@ try {
     check(await sent(0, [0x90, 0x80]) === 0, 'with Thru off, notes are not passed to MIDI out');
     for (let i = 0; i < 4; i++) await press(page, 'btn_patch');     // Patch, Name, Setup, MIDI
     await sleep(200);
-    check(await lcdCount(page, ACCENT, 106, 124) === 0, 'the MIDI page starts out on the synth\'s own clock');
+    check(await lcdCount(page, ACCENT, 96, 112) === 0, 'the MIDI page starts out on the synth\'s own clock');
     await drag(page, 'enc1', -12);                                  // Clock: MIDI
     await drag(page, 'enc3', -12);                                  // Thru: on
     await drag(page, 'enc4', -12);                                  // Clock Out: on
@@ -663,7 +663,7 @@ try {
     await clear();
     await page.click('#clock');                                     // the test clock: 96 BPM into MIDI in
     await sleep(2500);
-    check(await lcdCount(page, ACCENT, 106, 124) > 200, 'Test clock: the page says the synth is following MIDI clock', String(await lcdCount(page, ACCENT, 106, 124)));
+    check(await lcdCount(page, ACCENT, 96, 112) > 200, 'Test clock: the page says the synth is following MIDI clock', String(await lcdCount(page, ACCENT, 96, 112)));
     await page.screenshot({ path: path.join(shotDir, 'page_midi.png') });
     await clear();
     await sleep(2000);
@@ -672,10 +672,31 @@ try {
     await page.click('#clock');
     await sleep(400);
     check(await sent(0, [0xfc]) === 1, 'stopping the test clock sends stop, and that is passed on too');
-    check(await lcdCount(page, ACCENT, 106, 124) === 0, 'and the page no longer says it is following', String(await lcdCount(page, ACCENT, 106, 124)));
+    check(await lcdCount(page, ACCENT, 96, 112) === 0, 'and the page no longer says it is following', String(await lcdCount(page, ACCENT, 96, 112)));
     await drag(page, 'enc1', 12);                                   // everything back as it was
     await drag(page, 'enc3', 12);
     await drag(page, 'enc4', 12);
+
+    // the test aids are a keyboard on the synth's own channel, and Panic is heard on every channel
+    const voices = () => lcdCount(page, LINE, 222, 236);            // the status strip: 64 pixels a voice
+    for (let i = 0; i < 3; i++) await drag(page, 'enc2', -12);      // Channel: 3
+    await sleep(300);
+    check(await page.evaluate(() => window.__synth.channel) === 3, 'the Channel encoder sets channel 3', String(await page.evaluate(() => window.__synth.channel)));
+    await page.click('#test-note');
+    await sleep(500);
+    check(await voices() === 4 * 64, 'on channel 3, Test note still plays its four notes', String(await voices()));
+    await page.click('#panic');
+    await sleep(400);
+    check(await voices() === 0, 'and Panic still silences them', String(await voices()));
+    await page.click('#test-note');
+    await sleep(400);
+    await drag(page, 'enc2', 12);                                   // Channel: 2, with the chord held
+    await sleep(600);
+    check(await voices() === 0, 'changing Channel with notes held lets them go', String(await voices()));
+    check(await page.locator('#test-note').getAttribute('aria-pressed') === 'false', 'and the Test note button shows it');
+    for (let i = 0; i < 2; i++) await drag(page, 'enc2', 12);       // back to ALL
+    await sleep(300);
+    check(await page.evaluate(() => window.__synth.channel) === 0, 'Channel is back on ALL');
 
     await press(page, 'btn_patch');                                 // the Input page
     await sleep(300);
@@ -730,6 +751,13 @@ try {
     check(heard, 'and its signal reaches the firmware\'s input');
     await page.click('#mic');
     check(await page.locator('#mic').getAttribute('aria-pressed') === 'false', 'pressing again unplugs it');
+    // a double click must not leave a second microphone plugged in behind the button's back
+    await page.waitForFunction(() => window.__synth.inputLight === 0, null, { timeout: 6000 }).catch(() => {});
+    await page.dblclick('#mic');
+    await sleep(1500);
+    if (await page.locator('#mic').getAttribute('aria-pressed') === 'true') await page.click('#mic');
+    const dark = await page.waitForFunction(() => window.__synth.inputLight === 0, null, { timeout: 6000 }).then(() => true, () => false);
+    check(await page.locator('#mic').getAttribute('aria-pressed') === 'false' && dark, 'after a double click and switching off, no microphone is left feeding the input');
   }
 
   section('AC8  test aids: Test note sounds, wheels and Panic send MIDI');

@@ -117,6 +117,14 @@ constexpr uint32_t kStateSize = 6 + P_COUNT * 2 + kPanelStateSize + 2;
 uint32_t stateWrite(uint8_t* dst);
 bool stateRead(const uint8_t* src, uint32_t len);
 
+// On hardware, writing the saved state can stop everything for a moment,
+// so a save waits for silence (up to half a minute). A target whose
+// storage is harmless to write at any time says so here, and saves are
+// then made a second after the last change, playing or not.
+void saveWhilePlaying(bool allowed);
+// The MIDI channel the synth plays: 0 = every channel, else 1 to 16.
+int midiChannel();
+
 }  // namespace fw
 
 // ---- storage, provided by each target ----

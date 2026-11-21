@@ -33,6 +33,7 @@ constexpr uint8_t kStateVersion = 5;
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
 uint32_t gSaveWaitedMs;  // how long a due save has been waiting for silence
+bool gSaveAnyTime = false;  // the target's storage can be written while sound plays
 
 }  // namespace
 
@@ -147,6 +148,10 @@ void onParamChanged(int id) {
 
 void stateTouched() { gSaveMs = kSaveDelayMs; }
 
+void saveWhilePlaying(bool allowed) { gSaveAnyTime = allowed; }
+
+int midiChannel() { return setting(SET_CHANNEL); }
+
 bool patchLoad(int slot) {
   if (!gPatch.load(slot)) return false;
   gUi.patchLoaded();
@@ -219,7 +224,7 @@ bool tick(uint32_t dtMs) {
   if (gSaveMs > 0) {
     if (gSaveMs > dtMs) {
       gSaveMs -= dtMs;
-    } else if (gSynth.activeVoices() > 0 && gSaveWaitedMs < kSaveWaitMaxMs) {
+    } else if (!gSaveAnyTime && gSynth.activeVoices() > 0 && gSaveWaitedMs < kSaveWaitMaxMs) {
       gSaveMs = 1;  // due, but notes are sounding: look again next tick
       gSaveWaitedMs += dtMs;
     } else {

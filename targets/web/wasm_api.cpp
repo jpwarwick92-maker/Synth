@@ -75,7 +75,10 @@ void FW_EXPORT(fw_patch_set_len)(uint32_t slot, uint32_t n) {
 uint32_t FW_EXPORT(fw_patch_save_count)() { return gPatchSaveCount; }
 
 // ---- lifecycle and audio ----
-void FW_EXPORT(fw_init)(float sampleRate) { fw::init(sampleRate); }
+void FW_EXPORT(fw_init)(float sampleRate) {
+  fw::saveWhilePlaying(true);  // the page's storage costs the audio nothing
+  fw::init(sampleRate);
+}
 float* FW_EXPORT(fw_out_left_ptr)() { return gOutL; }
 float* FW_EXPORT(fw_out_right_ptr)() { return gOutR; }
 int FW_EXPORT(fw_max_block)() { return fw::kMaxBlock; }
@@ -106,6 +109,8 @@ void FW_EXPORT(fw_midi_port)(int count, int port) {
   for (int i = 0; i < count; ++i) fw::midiByte(gMidiBuf[i], port);
 }
 void FW_EXPORT(fw_midi)(int count) { fw_midi_port(count, fw::PORT_MIDI); }
+// The channel the synth plays (0 = all), so that the page's stand-in keyboard can be on it.
+int FW_EXPORT(fw_midi_channel)() { return fw::midiChannel(); }
 
 // ---- MIDI out: fw_midi_out(port) copies the bytes waiting to leave by
 // that output into the buffer and returns how many (0 = nothing more) ----

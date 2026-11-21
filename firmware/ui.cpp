@@ -939,7 +939,8 @@ void drawCompress(const Box& b) {
 // each beat (the marks) and comes back before the next.
 void drawDuck(const Box& b) {
   float depth = gParams.frac(P_DUCK);
-  float beatSec = 60.0f / gSynth.tempoBpm();  // the Tempo knob's, or the clock's when one is followed
+  // the beat is the clock's while one is followed, otherwise the Tempo knob's
+  float beatSec = 60.0f / (gSynth.clockState() == CLK_LOCKED ? gSynth.tempoBpm() : mapTempoBpm(gParams.norm(P_ARP_TEMPO)));
   int base = b.y + b.h - 2, top = b.y + 14;
   gfxHLine(b.x, base, b.w, kGrid);
   for (int k = 0; k < 2; ++k) gfxFill(b.x + k * b.w / 2, b.y, 3, 10, kAccent);
@@ -1572,14 +1573,27 @@ void Ui::drawMidiPage() {
   Str bpm;
   bpm.addInt((int)(gSynth.tempoBpm() + 0.5f));
   bpm.add(" BPM");
-  gfxTextCentre(160, 78, bpm.b, clock == CLK_STOPPED ? kGrey : kInk, 3);
+  gfxTextCentre(160, 72, bpm.b, clock == CLK_STOPPED ? kGrey : kInk, 3);
   static const char* const kSays[4] = {"THE SYNTH KEEPS TIME", "", "NO CLOCK: TEMPO KNOB USED", "STOPPED: WAITS FOR START"};
   const char* says = clock == CLK_LOCKED ? (setting(SET_CLOCK) == CLOCK_USB ? "FOLLOWING USB CLOCK" : "FOLLOWING MIDI CLOCK")
                      : kSays[clock == CLK_INTERNAL ? 0 : clock == CLK_WAITING ? 2 : 3];
-  gfxTextCentre(160, 108, says, clock == CLK_LOCKED ? kAccent : kGrey, 2);
+  gfxTextCentre(160, 97, says, clock == CLK_LOCKED ? kAccent : kGrey, 2);
   // the beat, a quarter at a time
   int quarter = clock == CLK_STOPPED ? -1 : clampi((int)(gSynth.beatNow() * 4.0f), 0, 3);
-  for (int i = 0; i < 4; ++i) gfxFill(88 + i * 38, 132, 30, 10, i == quarter ? (i == 0 ? kAccent : kLine) : kDarkGrey);
+  for (int i = 0; i < 4; ++i) gfxFill(88 + i * 38, 115, 30, 8, i == quarter ? (i == 0 ? kAccent : kLine) : kDarkGrey);
+  // what Channel, Thru and Clock Out amount to, in words
+  Str plays;
+  if (setting(SET_CHANNEL) == 0) {
+    plays.add("PLAYS EVERY CHANNEL");
+  } else {
+    plays.add("PLAYS CHANNEL ");
+    plays.addInt(setting(SET_CHANNEL));
+    plays.add(" ONLY");
+  }
+  gfxTextCentre(160, 129, plays.b, kGrey, 2);
+  bool thru = setting(SET_THRU) != 0, clockOut = setting(SET_CLOCK_OUT) != 0;
+  gfxTextCentre(160, 146, thru && clockOut ? "OUT: NOTES AND CLOCK" : thru ? "OUT: NOTES PASSED ON" : clockOut ? "OUT: CLOCK ONLY" : "OUT: NOTHING IS SENT",
+                kGrey, 2);
   drawStatus();
 }
 

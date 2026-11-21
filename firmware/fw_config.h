@@ -10,15 +10,11 @@
 
 // Large static buffers that are read only now and then per sample (the
 // wavetables, the delay line, the scope) are tagged with FW_BIGMEM. A target
-// can define it to place them in a specific memory region. On the Teensy 4.1
-// they go in RAM2, leaving the fast RAM for code, the tables read most
-// often, and the display buffer.
+// can define it, before this file is read, to place them in a particular
+// memory region (the Teensy target does: targets/teensy/src/fw_target.h).
+// Such a region need not be cleared at start-up: the core initialises all of it.
 #ifndef FW_BIGMEM
-#if defined(__IMXRT1062__)  // Teensy 4.x: RAM2. Not cleared at start-up; the core initialises all of it.
-#define FW_BIGMEM __attribute__((section(".dmabuffers"), used))
-#else
 #define FW_BIGMEM
-#endif
 #endif
 
 namespace fw {

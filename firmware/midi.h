@@ -12,7 +12,10 @@
 // jack's input to USB (never USB back to USB). With Clock Out on, the clock
 // the synth is running on is sent too: its own when it keeps time itself,
 // the incoming one when it is following. System-exclusive messages are not
-// passed on.
+// passed on. If a message cannot be passed on because an output is not
+// being read, or Thru is switched off while notes are held, "all notes
+// off" is sent on every channel as soon as there is room, so that nothing
+// further down the chain is left sounding.
 #pragma once
 
 #include "fw_config.h"
@@ -33,6 +36,8 @@ class Midi {
   uint32_t outRead(int port, uint8_t* dst, uint32_t max);
   // Audio context: the synth's own clock has ticked (24 to a beat).
   void clockTick();
+  // Thru has been switched off: whatever was passed on is told to stop.
+  void thruEnded();
 
  private:
   struct Parser {
@@ -59,6 +64,7 @@ class Midi {
   Ring thru_[PORT_COUNT];   // written by the control context: what is passed on
   Ring clock_[PORT_COUNT];  // written by the audio context: the synth's own clock
   uint32_t idleMs_;
+  bool lost_[PORT_COUNT];   // a message meant for this output could not be queued
 };
 
 extern Midi gMidi;
