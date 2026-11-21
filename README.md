@@ -13,7 +13,7 @@ and the panel layout can be played before any hardware exists.
 | `targets/teensy/` | Thin wrapper that builds the core for the Teensy 4.1 (PlatformIO). Compile-checked on every push; not yet run on a board. |
 | `web/` | The page. It is fake hardware only: it draws the panel, reports raw control positions and MIDI bytes, shows the firmware's display buffer, lights each control's label in the colour the firmware asks for, and plays its audio. It can also plug a microphone into the firmware's audio input, send it MIDI clock, and pass on what leaves by its MIDI out. |
 | `layouts/a3.json` | The panel layout in millimetres. The page draws whatever this file says. |
-| `tests/native/` | Engine and display tests that render audio and display frames with no browser. |
+| `tests/native/` | Engine and display tests that render audio and display frames with no browser. `make test` leaves the frames, and a few of the renders as sound files, in `build/out`. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
 | `docs/controls.md` | Every control with its MIDI controller number, generated from the firmware's table. |
 
@@ -80,6 +80,8 @@ Teensy compile check: `pip install platformio && pio run -d targets/teensy`.
   smooths them, so nothing should look or sound different with it on.
 - Below the panel are test aids that are not part of the synth: stand-in pitch-bend
   and mod wheels, a Test note button that holds a chord, a sustain-pedal switch and Panic.
+  They behave as a keyboard set to the channel the synth plays, and Panic is sent on
+  every channel.
 - **Mic in** plugs this computer's microphone into the synth's audio input (use
   headphones, or the speakers feed back). The dot beside it is the light by the input
   jack. **Test clock** sends MIDI clock into the synth's MIDI in at the tempo in the box
@@ -184,10 +186,13 @@ used (its picture says so, and shows the clock's tempo).
   of the last beat's ticks, and the arp steps on a position that runs on smoothly at that
   tempo and is nudged towards each tick, so ticks that arrive a few milliseconds early
   or late (as they do from a computer) still give even steps.
-- **Start** begins the pattern again on the next tick. **Stop** holds the arp silent
-  until start or continue; notes latched by Hold stay latched. **Continue** carries on
-  from where it stopped. A **song position** message moves the beat to the sender's
-  playhead.
+- **Start** begins the pattern again on the next tick, and nothing plays until that
+  tick. **Stop** holds the arp silent until start or continue; notes latched by Hold
+  stay latched. **Continue** carries on from where it stopped, in the beat and in the
+  pattern. A **song position** message moves the beat to the sender's playhead.
+- After a stop, if the clock itself has gone as well (a DAW usually stops sending it), a
+  fresh chord is not kept waiting: it plays from the Tempo knob. What was latched before
+  the stop stays silent.
 - A key pressed up to a quarter of a step late still gets that step; later than that it
   waits for the next one.
 - If no clock is arriving (none yet, or it has stopped coming for half a second) the
@@ -196,18 +201,26 @@ used (its picture says so, and shows the clock's tempo).
 
 **MIDI in and out.** There are two connections, the MIDI jacks and USB. Notes and
 controllers are played from either, on the Channel set (or on every channel).
+Changing Channel lets go of every note and the pedal, since their note-offs may now
+arrive on a channel that is no longer listened to.
 With **Thru** on, every note and controller message that arrives is passed on, whatever
 its channel: both inputs to the MIDI out jack, and the MIDI jack's input to USB (never
 USB back to USB). With **Clock Out** on, the clock the synth is running on is sent too:
 its own, 24 ticks to a beat at the Tempo knob's setting, when it keeps time itself; the
 incoming clock with its start, stop and continue when it is following. System-exclusive
-messages are not passed on. The synth's own clock is made in the audio blocks, so on
-the Teensy each tick can leave up to 2.9 ms late; the tempo it carries is exact.
+messages are not passed on. If Thru is switched off while notes are held, or a message
+could not be passed on because nothing was reading the output, "all notes off" is sent
+on every channel, so nothing further down the chain is left sounding. The synth's own
+clock is made in the audio blocks, so on the Teensy each tick can leave up to 2.9 ms
+late; the tempo it carries is exact. On the page, a device that is both a MIDI input
+and the one picked for MIDI out is not listened to while it is the output: the synth
+would be handed its own messages back, round and round. Use one bus each way.
 
 **Audio input.** The firmware takes a stereo input beside its output. **Send To**
 chooses where it goes: nowhere, straight to the output beside the synth's own sound
-(Mix), or into the effects with it (FX). A line input is stereo; a microphone is one
-channel and comes out on both sides. **Gain** is what the firmware asks of the preamp in
+(Mix), or into the effects with it (FX). The Volume knob turns it up and down with the
+synth: at the knob's usual setting the input passes at its own level. A line input is
+stereo; a microphone is one channel and comes out on both sides. **Gain** is what the firmware asks of the preamp in
 front of the converter, so on real hardware it is analog gain. The Input page shows the
 level against the converter's limit, and the light by the jack is dark with no signal,
 amber with one, and red for nearly half a second whenever the input reaches the limit.
@@ -289,8 +302,11 @@ does nothing on a plain saw, triangle or sine.
 **When the processor is short of time.** A target that can time its audio (the Teensy)
 reports how much of each block's time was used. If that stays above about 85% the
 engine drops voices one at a time, down to two at the fewest, and gives them back
-after a calm spell, instead of falling behind. Saving to storage waits for silence
-(for up to half a minute), because on real hardware a save can interrupt the sound.
+after a calm spell, instead of falling behind. Saving the state (the control
+positions and settings, a second after the last change) waits for silence, for up to
+half a minute, because on real hardware a save can interrupt the sound. The page's
+storage costs the sound nothing, so there it does not wait. Saving a patch is written
+at once on either: it is asked for by hand, and must not be lost.
 
 **Compressor** (FX 2 page) turns the loud parts down and everything back up, so one
 note and a full chord come out nearer the same level and soft notes and tails are
@@ -301,7 +317,8 @@ make-up gain together. At zero it is out of the path altogether.
 the next, as a compressor keyed from a kick drum does. The beat is the arp's Tempo, or
 the MIDI clock's when one is being followed (the dips then fall on that clock's beats).
 On the synth's own clock, while the arp runs the beat is counted from its steps, four to
-a beat, so the two cannot slip apart; otherwise it starts with any note played from silence. The first
+a beat, so the two cannot slip apart; otherwise (the arp off, or no key held) it runs on
+by itself, starting again with any note played from silence. The first
 hundredth of a second of each beat is let through, so a note played on the beat keeps
 its attack.
 

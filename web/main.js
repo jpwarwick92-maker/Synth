@@ -42,6 +42,15 @@ function sendMidi(bytes, port = 0) {
   if (node) node.port.postMessage({ t: 'midi', bytes: Array.from(bytes), port });
 }
 
+// The test aids stand in for a keyboard set to the channel the synth plays
+// (channel 1 when it plays them all). They are written for channel 1 and
+// moved to that channel here.
+let aidChannel = 0;
+let aidsReleased = () => {};
+function sendAid(bytes) {
+  sendMidi(Array.from(bytes, (b) => (b >= 0x80 && b < 0xf0 ? (b & 0xf0) | aidChannel : b)));
+}
+
 // Bytes leaving by the synth's MIDI outputs. The MIDI out jack (port 0)
 // goes to whichever device is picked in the bar at the top; the tests read the log.
 let midiOutDevice = null;
@@ -79,6 +88,12 @@ function onFirmwareMessage(e) {
   if (m.t === 'midiout') return onMidiOut(m.port, m.bytes);
   if (m.t !== 'frame') return;
   if (m.inLight !== undefined) showInputLight(m.inLight);
+  if (m.channel !== undefined) {
+    // The synth lets go of everything when its channel changes: the aids' buttons follow.
+    if (window.__synth.channel !== undefined) aidsReleased();
+    aidChannel = m.channel > 0 ? m.channel - 1 : 0;
+    window.__synth.channel = m.channel;
+  }
 
   if (m.fb) {
     drawDisplay(new Uint16Array(m.fb));
@@ -343,9 +358,9 @@ function setupAids() {
   // These send the same MIDI a keyboard would; they are not part of the panel.
   const bend = setupWheel($('bend'), (v) => {
     const v14 = Math.min(16383, Math.max(0, Math.round(v * 16383 + 0.5)));
-    sendMidi([0xe0, v14 & 0x7f, v14 >> 7]);
+    sendAid([0xe0, v14 & 0x7f, v14 >> 7]);
   });
-  const mod = setupWheel($('mod'), (v) => sendMidi([0xb0, 1, Math.round(v * 127)]));
+  const mod = setupWheel($('mod'), (v) => sendAid([0xb0, 1, Math.round(v * 127)]));
 
   const chord = [48, 55, 60, 63];
   const toggle = (btn, on, off) => {
@@ -356,9 +371,9 @@ function setupAids() {
     });
   };
   toggle($('test-note'),
-    () => sendMidi(chord.flatMap((n) => [0x90, n, 100])),
-    () => sendMidi(chord.flatMap((n) => [0x80, n, 0])));
-  toggle($('sustain'), () => sendMidi([0xb0, 64, 127]), () => sendMidi([0xb0, 64, 0]));
+    () => sendAid(chord.flatMap((n) => [0x90, n, 100])),
+    () => sendAid(chord.flatMap((n) => [0x80, n, 0])));
+  toggle($('sustain'), () => sendAid([0xb0, 64, 127]), () => sendAid([0xb0, 64, 0]));
 
   // Real pots jitter and bleed into each other a little. This switches the
   // stand-in hardware from perfect readings to rough ones.
@@ -376,7 +391,7 @@ function setupAids() {
 
   // A microphone into the audio input. The browser's own echo and noise
   // processing is switched off: the firmware should get what a real input would.
-  let micStream = null, micNode = null;
+  let micStream = null, micNode = null, micAsking = false;
   const micOff = () => {
     if (micNode) micNode.disconnect();
     if (micStream) micStream.getTracks().forEach((t) => t.stop());
@@ -385,7 +400,8 @@ function setupAids() {
   };
   $('mic').addEventListener('click', async () => {
     if (micStream) return micOff();
-    if (!ctx || !node) return;
+    if (!ctx || !node || micAsking) return;   // a second click while the browser is still asking must not open a second microphone
+    micAsking = true;
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
@@ -397,6 +413,7 @@ function setupAids() {
       micOff();
       $('mic').title = 'The microphone was not allowed for this page.';
     }
+    micAsking = false;
   });
 
   // A clock sender: MIDI clock into the MIDI in jack, with start and stop.
@@ -409,10 +426,16 @@ function setupAids() {
   window.__synth.clock = sendClock;
   window.__synth.inputTone = (level, hz = 440) => { if (node) node.port.postMessage({ t: 'tone', level, hz }); };
 
-  $('panic').addEventListener('click', () => {
-    sendMidi([0xb0, 120, 0, 0xb0, 123, 0]);          // all sound off, all notes off
+  aidsReleased = () => {
     $('test-note').setAttribute('aria-pressed', 'false');
     $('sustain').setAttribute('aria-pressed', 'false');
+  };
+  $('panic').addEventListener('click', () => {
+    // all sound off and all notes off, on every channel: whichever one the synth plays, it hears them
+    const bytes = [];
+    for (let ch = 0; ch < 16; ch++) bytes.push(0xb0 | ch, 120, 0, 0xb0 | ch, 123, 0);
+    sendMidi(bytes);
+    aidsReleased();
     bend.reset();
     mod.reset();
   });
@@ -430,12 +453,6 @@ async function setupMidi() {
   try {
     const access = await navigator.requestMIDIAccess({ sysex: false });
     const refresh = () => {
-      const names = [];
-      for (const input of access.inputs.values()) {
-        input.onmidimessage = (e) => sendMidi(e.data);   // notes, controllers and clock alike
-        if (input.state === 'connected') names.push(input.name || 'MIDI input');
-      }
-      show(names.length ? `Keyboard: ${names.join(', ')}` : 'Keyboard: none connected', names.length > 0);
       // the devices the MIDI out jack could be plugged into
       const pick = $('midi-out'), chosen = pick.value;
       while (pick.options.length > 1) pick.remove(1);
@@ -444,6 +461,19 @@ async function setupMidi() {
       }
       pick.value = [...pick.options].some((o) => o.value === chosen) ? chosen : '';
       midiOutDevice = pick.value ? access.outputs.get(pick.value) : null;
+      // A device that is both an input and the chosen output (a virtual bus
+      // shared with a DAW, say) would hand the synth its own output straight
+      // back, round and round. While it is the MIDI out, it is not listened to.
+      const names = [], deaf = [];
+      for (const input of access.inputs.values()) {
+        const loops = midiOutDevice !== null && (input.name || '') === (midiOutDevice.name || '');
+        input.onmidimessage = loops ? null : (e) => sendMidi(e.data);   // notes, controllers and clock alike
+        if (input.state !== 'connected') continue;
+        (loops ? deaf : names).push(input.name || 'MIDI input');
+      }
+      show((names.length ? `Keyboard: ${names.join(', ')}` : 'Keyboard: none connected')
+        + (deaf.length ? ` (not listening to ${deaf.join(', ')}: it is the MIDI out)` : ''), names.length > 0);
+      window.__synth.midiDeaf = deaf;
     };
     $('midi-out').addEventListener('change', refresh);
     access.onstatechange = refresh;                  // fires when a keyboard is plugged in or pulled out

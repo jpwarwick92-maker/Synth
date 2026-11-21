@@ -44,6 +44,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.preamp = 1;
     this.tone = { level: 0, step: 0, phase: 0 };
     this.inLight = 0;
+    this.channel = -1;         // the channel the synth plays, as last told to the page
     // A stand-in for a clock sender (a DAW, or the clock hub): MIDI clock
     // at a set tempo into one of the MIDI inputs, timed by the sample.
     this.clock = { bpm: 0, port: 0, phase: 0 };
@@ -259,6 +260,11 @@ class SynthProcessor extends AudioWorkletProcessor {
       this.inLight = inLight;
       msg.inLight = inLight;
     }
+    const channel = x.fw_midi_channel();                   // so the page's stand-in keyboard can be on the synth's channel
+    if (channel !== this.channel) {
+      this.channel = channel;
+      msg.channel = channel;
+    }
     this.first = false;
 
     const saves = x.fw_storage_save_count();
@@ -277,7 +283,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
     }
 
-    if (msg.fb || msg.pos || msg.led || msg.state || msg.patches || msg.inLight !== undefined) this.port.postMessage(msg, transfer);
+    if (msg.fb || msg.pos || msg.led || msg.state || msg.patches || msg.inLight !== undefined || msg.channel !== undefined) this.port.postMessage(msg, transfer);
   }
 }
 

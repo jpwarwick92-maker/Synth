@@ -12,6 +12,13 @@
 
 #include "firmware.h"
 
+// Set to 1 once an audio chip with an input is fitted. Until then the input
+// is left alone: an I2S input pin with nothing driving it reads as noise,
+// which the level meter and the vocoder would take for a signal.
+#ifndef SYNTH_HAS_AUDIO_INPUT
+#define SYNTH_HAS_AUDIO_INPUT 0
+#endif
+
 static_assert(AUDIO_BLOCK_SAMPLES <= fw::kMaxBlock, "audio block larger than the firmware accepts");
 
 static volatile bool gReady = false;
@@ -36,10 +43,13 @@ class AudioSynthFirmware : public AudioStream {
     // (the audio chip's own gain setting, once that chip is chosen): applied
     // here, after the converter, it is only a stand-in and cannot undo an
     // input that has already overloaded.
+    // Which input to listen to is the firmware's too: fw::inputSource() is
+    // INSRC_LINE or INSRC_MIC, and the audio chip's input select follows it
+    // (in loop(), where the chip is talked to).
     audio_block_t* inL = receiveReadOnly(0);
     audio_block_t* inR = receiveReadOnly(1);
     float il[AUDIO_BLOCK_SAMPLES], ir[AUDIO_BLOCK_SAMPLES];
-    bool haveInput = inL || inR;
+    bool haveInput = SYNTH_HAS_AUDIO_INPUT && (inL || inR);
     if (haveInput) {
       static int lastDb = -1;
       static float gain = 1.0f;
@@ -215,7 +225,8 @@ void loop() {
     sinceTick = 0;
     fw::tick(dt);
     // The label lights: fw::ledColour(i) for each panel control goes to the
-    // LED chain here, once the lighting board exists.
+    // LED chain here, once the lighting board exists. The light by the
+    // input jack is one more on the same chain: fw::inputLight().
   }
 
   // Processor load: the number the bench run is for.

@@ -71,6 +71,7 @@ struct Synth::Patch {
   float uniDetune;       // semitones, half the total spread
   float subRatio;        // sub frequency as a multiple of oscillator 1's
   float volume;
+  float inputVolume;     // what the Volume knob does to the audio input
   float drift, driftCoef;  // 0..1, and how fast the wander moves per block
   float spread;            // 0..1
   float xmod;              // 0..1: oscillator 2 bending oscillator 1
@@ -468,6 +469,8 @@ void Synth::clockReset() {
   extLocked_ = false;
   extRun_ = true;
   extArmed_ = true;
+  extWait_ = false;
+  extWaitLeft_ = 0.0f;
   extTick_ = 0;
   extNext_ = 0;
   extLead_ = 0.0f;
@@ -486,11 +489,15 @@ void Synth::clockEvent(uint8_t type, uint8_t a, uint8_t b) {
       extArmed_ = true;
       extNext_ = 0;
       arpRestart_ = true;
+      extWait_ = true;  // nothing sounds until that tick, even if the clock had not been running
+      extWaitLeft_ = sr_;
       return;
     case EV_CONTINUE:  // the next tick carries on from where stop left things
       if (!extRun_) {
         extRun_ = true;
         extArmed_ = true;
+        extWait_ = true;
+        extWaitLeft_ = sr_;
       }
       return;
     case EV_STOP:
@@ -529,6 +536,7 @@ void Synth::clockEvent(uint8_t type, uint8_t a, uint8_t b) {
   extSince_ = 0.0f;
 
   if (!extRun_) return;  // stopped: the tempo is still measured, the position stays where it is
+  extWait_ = false;
   if (extArmed_) {
     extArmed_ = false;
     extTick_ = extNext_;
@@ -548,6 +556,10 @@ void Synth::clockEvent(uint8_t type, uint8_t a, uint8_t b) {
 void Synth::clockAdvance(int len) {
   uint8_t source = clkSource_;
   extStepFire_ = false;
+  if (extWait_) {  // a start with no tick after it within a second: stop waiting for one
+    extWaitLeft_ -= (float)len;
+    if (extWaitLeft_ <= 0.0f) extWait_ = false;
+  }
   float knobBpm = mapTempoBpm(gParams.norm(P_ARP_TEMPO));
   if (source == CLOCK_INTERNAL) {
     clkState_ = CLK_INTERNAL;
@@ -680,8 +692,19 @@ void Synth::keyDown(uint8_t note, uint8_t velocity) {
   setChord_[setN_] = chordOn_;
   ++setN_;
 
-  if (!arp) soundKey(setN_ - 1);
-  else if (setN_ == 1) arpRestart_ = true;  // first note: start on it at once
+  if (!arp) {
+    soundKey(setN_ - 1);
+  } else if (setN_ == 1) {
+    arpRestart_ = true;  // first note: start on it at once
+    // After a stop the arp waits for its clock. But if that clock is no
+    // longer arriving at all, a fresh chord is not kept waiting for it:
+    // the Tempo knob takes over, as it does whenever there is no clock.
+    if (clkSource_ != CLOCK_INTERNAL && !extRun_ && !extLocked_) {
+      extRun_ = true;
+      extArmed_ = true;
+      extWait_ = false;
+    }
+  }
 }
 
 void Synth::keyUp(uint8_t note) {
@@ -802,12 +825,14 @@ void Synth::arpAdvance(int len) {
     arpRestart_ = true;
     return;
   }
-  if (clkSource_ != CLOCK_INTERNAL && !extRun_) {  // the clock's sender said stop: wait for it
+  // The clock's sender said stop, or has just said start or continue and
+  // its next tick has not come yet: nothing plays. The place in the pattern
+  // is kept, so that continue carries on from it (start begins it again).
+  if (clkSource_ != CLOCK_INTERNAL && (!extRun_ || extWait_)) {
     if (arpNote_ >= 0) {
       noteOff((uint8_t)arpNote_);
       arpNote_ = -1;
     }
-    arpRestart_ = true;
     return;
   }
   if (clkSource_ != CLOCK_INTERNAL && extLocked_) {
@@ -1170,6 +1195,9 @@ void Synth::derive(Patch& p, int len) {
   p.velAmt = sm[P_VELOCITY];
 
   p.volume = mapVolume(sm[P_VOLUME]) * 0.35f;  // 0.35 leaves headroom for 8 voices
+  // The audio input follows the Volume knob too: at the knob's usual
+  // setting it passes at its own level, and it goes down to nothing with it.
+  p.inputVolume = mapVolume(sm[P_VOLUME]) / mapVolume((float)kParams[P_VOLUME].def * (1.0f / (float)kPotMax));
 
   p.drift = sm[P_DRIFT];
   p.driftCoef = 1.0f - exp2f_(-1.4427f * kTwoPi * 0.8f * blockSec);  // wanders at under 1 Hz
@@ -1209,13 +1237,16 @@ void Synth::derive(Patch& p, int len) {
     beatReset_ = false;
     beatPhase_ = 0.0f;
   }
-  if (arpMode_ != ARP_OFF && !following) {
+  // (the arp only keeps the beat while it is stepping: with no key held, or
+  // waiting on a stopped clock, the beat runs on by itself from where it was)
+  bool arpBeat = arpMode_ != ARP_OFF && setN_ > 0 && !following && !(clkSource_ != CLOCK_INTERNAL && (!extRun_ || extWait_));
+  if (arpBeat) {
     float stepLen = sr_ * 15.0f / bpm;
     beatPhase_ = ((float)((arpBeatStep_ + 3u) & 3u) + clampf(arpClock_ / stepLen, 0.0f, 1.0f)) * 0.25f;
   }
   p.fx.beatPhase = beatPhase_;
   beatShown_ = beatPhase_;
-  if (arpMode_ == ARP_OFF && !following) {
+  if (!arpBeat && !following) {
     beatPhase_ += p.fx.beatStep * (float)len;
     if (beatPhase_ >= 1.0f) beatPhase_ -= floorf_(beatPhase_);
   }
@@ -1302,7 +1333,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   v.lfoAmt = minf(v.lfoAmt + p.lfoFadeStep, 1.0f);
   float lfo = p.lfo;
   if (p.lfoPerVoice) {  // this voice's own LFO, a little off the others' pace
-    v.lfoPhase += p.lfoStep * kVoiceLfoRate[index] * ((float)n * (1.0f / (float)kCtrlBlock));
+    v.lfoPhase += p.lfoStep * kVoiceLfoRate[index];  // (lfoStep is already for this block's length)
     if (v.lfoPhase >= 1.0f) {
       v.lfoPhase -= floorf_(v.lfoPhase);
       v.lfoRandom = nextNoise(v.rng);
@@ -1583,8 +1614,8 @@ void Synth::process(const float* inL, const float* inR, float* outL, float* outR
       float g = inGainFx_;
       for (int i = 0; i < len; ++i) {
         g += (fxTarget - g) * inCoef_;
-        busL[i] += g * cleanIn(il[i]);
-        busR[i] += g * cleanIn(ir[i]);
+        busL[i] += g * p.inputVolume * cleanIn(il[i]);
+        busR[i] += g * p.inputVolume * cleanIn(ir[i]);
       }
       inGainFx_ = fxTarget == 0.0f && g < 1e-4f ? 0.0f : g;
     }
@@ -1598,8 +1629,8 @@ void Synth::process(const float* inL, const float* inR, float* outL, float* outR
       float g = inGainMix_;
       for (int i = 0; i < len; ++i) {
         g += (mixTarget - g) * inCoef_;
-        l[i] += g * cleanIn(il[i]);
-        r[i] += g * cleanIn(ir[i]);
+        l[i] += g * p.inputVolume * cleanIn(il[i]);
+        r[i] += g * p.inputVolume * cleanIn(ir[i]);
       }
       inGainMix_ = mixTarget == 0.0f && g < 1e-4f ? 0.0f : g;
     }

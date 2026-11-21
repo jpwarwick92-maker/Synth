@@ -241,7 +241,10 @@ CompSettings mapCompress(float amount) {
   CompSettings c;
   c.threshold = 1.0f - 0.88f * amount;
   c.slope = 1.0f - 1.0f / (1.0f + 3.0f * amount);
-  c.makeup = exp2f_(-0.7f * c.slope * log2f_(c.threshold));
+  // (not all of it: the first few milliseconds of a note get through before
+  // the level is turned down, and with full make-up a big chord's attack
+  // would be pushed hard into the output limiter)
+  c.makeup = exp2f_(-0.56f * c.slope * log2f_(c.threshold));
   return c;
 }
 

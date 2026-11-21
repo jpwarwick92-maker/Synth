@@ -1,6 +1,8 @@
 #include "settings.h"
 
 #include "firmware.h"
+#include "midi.h"
+#include "synth.h"
 
 namespace fw {
 
@@ -37,7 +39,17 @@ bool settingSet(int id, int value) {
   int hi = kSettings[id].count - 1;
   value = value < 0 ? 0 : value > hi ? hi : value;
   if (value == gValue[id]) return false;
+  bool was = gValue[id] != 0;
   gValue[id] = (uint8_t)value;
+  if (id == SET_CHANNEL) {
+    // Whatever is being held was played on the old channel, and its
+    // note-off or pedal-up may never be listened to now: let it all go.
+    gSynth.post(EV_ALL_NOTES_OFF);
+    gSynth.post(EV_SUSTAIN, 0);
+    gSynth.setBend(0.0f);
+    gSynth.setModWheel(0.0f);
+  }
+  if (id == SET_THRU && was && value == 0) gMidi.thruEnded();  // notes passed on so far must not hang
   stateTouched();
   return true;
 }

@@ -16,12 +16,27 @@ void Midi::init() {
     in_[p].inSysex = false;
     thru_[p].w = thru_[p].r = 0;
     clock_[p].w = clock_[p].r = 0;
+    lost_[p] = false;
   }
   idleMs_ = 100000;
 }
 
 void Midi::tick(uint32_t dtMs) {
   if (idleMs_ < 100000) idleMs_ += dtMs;
+  // An output that lost a message may have lost a note-off. Once it has
+  // room again, every channel is told to let its notes go.
+  for (int p = 0; p < PORT_COUNT; ++p) {
+    if (!lost_[p] || kRingLen - (thru_[p].w - thru_[p].r) < 48u) continue;
+    for (int ch = 0; ch < 16; ++ch) {
+      const uint8_t off[3] = {(uint8_t)(0xB0 | ch), 123, 0};
+      put(thru_[p], off, 3);
+    }
+    lost_[p] = false;
+  }
+}
+
+void Midi::thruEnded() {
+  for (int p = 0; p < PORT_COUNT; ++p) lost_[p] = true;  // tick() sends the all-notes-off
 }
 
 // All of the bytes or none: half a message must never go out.
@@ -38,8 +53,8 @@ bool Midi::put(Ring& ring, const uint8_t* bytes, int n) {
 // sending a computer its own messages back would have them going round in circles.
 void Midi::pass(int fromPort, const uint8_t* bytes, int n, bool clock) {
   if (!setting(clock ? SET_CLOCK_OUT : SET_THRU)) return;
-  put(thru_[PORT_MIDI], bytes, n);
-  if (fromPort != PORT_USB) put(thru_[PORT_USB], bytes, n);
+  if (!put(thru_[PORT_MIDI], bytes, n) && !clock) lost_[PORT_MIDI] = true;
+  if (fromPort != PORT_USB && !put(thru_[PORT_USB], bytes, n) && !clock) lost_[PORT_USB] = true;
 }
 
 uint32_t Midi::outRead(int port, uint8_t* dst, uint32_t max) {
