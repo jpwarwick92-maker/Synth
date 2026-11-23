@@ -3,3 +3,24 @@ node_modules/
 package-lock.json
 .pio/
 .DS_Store
+Thumbs.db
+
+# KiCad: per-user and machine files. The project itself is the .kicad_pro,
+# .kicad_sch, .kicad_pcb and the two lib-table files, which are all kept.
+.history/
+*-backups/
+_autosave-*
+\#auto_saved_files\#
+fp-info-cache
+*.kicad_prl
+~*.lck
+*.lck
+*.bak
+*.kicad_sch-bak
+*.kicad_pcb-bak
+*-save.kicad_pcb
+
+# KiCad: generated outputs (Gerbers, drill files, BOMs, PDFs, STEP exports).
+# Each board writes them to its own out/ folder. The set that was actually
+# ordered is attached to a GitHub release instead of committed.
+hardware/*/out/

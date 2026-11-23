@@ -1,0 +1,30 @@
+# Text files are stored with LF line endings in the repo, whatever machine
+# they were written on (Windows PC or Mac). Each machine checks them out with
+# its own line endings.
+* text=auto
+
+# KiCad files are text. KiCad on Windows saves them with CRLF and on the Mac
+# with LF; git stores LF either way, so a save on one machine doesn't show every
+# line as changed on the other.
+*.kicad_pro     text
+*.kicad_sch     text
+*.kicad_pcb     text
+*.kicad_sym     text
+*.kicad_mod     text
+*.kicad_wks     text
+*.kicad_dru     text
+*.kicad_jobset  text
+sym-lib-table   text
+fp-lib-table    text
+
+# 3D models: large, and nobody reads a diff of them.
+*.step  -diff
+*.stp   -diff
+*.wrl   -diff
+
+# Binary files.
+*.png   binary
+*.jpg   binary
+*.pdf   binary
+*.zip   binary
+*.wav   binary

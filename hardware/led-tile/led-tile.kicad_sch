@@ -1,0 +1,19 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "57c3e4dc-4d47-4396-b6dd-d8a69954f84d")
+	(paper "A4")
+	(title_block
+		(title "One-LED tile (SK6812 MINI-E)")
+		(date "2026-11-22")
+		(rev "A")
+		(company "Synth family")
+	)
+	(lib_symbols)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+)
