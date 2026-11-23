@@ -9,7 +9,7 @@ above this one.
 | Path | What it is |
 |---|---|
 | `hub-main/` | MIDI clock hub main board: Teensy 4.1, multiplexer, MIDI in and four outs, power. Mostly through-hole, hand-soldered, chips in sockets. |
-| `led-tile/` | One-LED tile, about 10 × 12 mm: a reverse-mount SK6812 MINI-E, its 100 nF capacitor and pads for 5 V, ground, data in and data out. One design for the hub, the synth and later boxes, ordered as maker-assembled snap-apart sheets. |
+| `led-tile/` | One-LED tile, 12 × 10 × 0.8 mm: a reverse-mount SK6812 MINI-E, its 100 nF capacitor, a series resistor on data in, and IN and OUT wire pads (+5 V, data, GND). One design for the hub, the synth and later boxes, ordered as maker-assembled snap-apart sheets. Design notes in `led-tile/README.md`. |
 | `lib/Synth.kicad_sym` | Shared symbol library, `Synth` in every project. |
 | `lib/Synth.pretty/` | Shared footprint library, `Synth` in every project. |
 | `lib/3dmodels/` | STEP models for the shared footprints. |
