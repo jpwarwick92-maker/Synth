@@ -1,0 +1,100 @@
+(footprint "WirePads_1x03_P2.80mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Three surface pads for hand-soldered wires, 1.4 x 1.8 mm, 2.8 mm pitch. Pasted so the maker's reflow pre-tins them. Not a part: excluded from the BOM and placement files.")
+	(tags "wire solder pad")
+	(property "Reference" "REF**"
+		(at 0 -4.3 0)
+		(layer "F.Fab")
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a01")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Value" "WirePads_1x03_P2.80mm"
+		(at 0 4.3 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a02")
+		(effects
+			(font
+				(size 0.6 0.6)
+				(thickness 0.1)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a03")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "Wire solder pads, 1x03"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a04")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd exclude_from_pos_files exclude_from_bom)
+	(fp_rect
+		(start -0.95 -3.95)
+		(end 0.95 3.95)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a05")
+	)
+	(fp_rect
+		(start -0.7 -3.7)
+		(end 0.7 3.7)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a06")
+	)
+	(pad "1" smd roundrect
+		(at 0 -2.8)
+		(size 1.4 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.15)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a07")
+	)
+	(pad "2" smd roundrect
+		(at 0 0)
+		(size 1.4 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.15)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a08")
+	)
+	(pad "3" smd roundrect
+		(at 0 2.8)
+		(size 1.4 1.8)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.15)
+		(uuid "8f0f6c55-3f0e-4a3a-9a7e-1d1f6f0c0a09")
+	)
+	(embedded_fonts no)
+)

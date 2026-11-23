@@ -1,0 +1,10 @@
+(version 1)
+
+# Copper keeps 0.3 mm from every board edge, except D1's pads to D1's own light
+# hole. KiCad's reverse-mount footprint puts its pads 0.25 mm from the hole it
+# cuts, which is within common board makers' routed-edge limits (about 0.2 mm).
+# The board-wide floor in Board Setup is 0.2 mm so this rule can make that one
+# exception. Check the chosen maker's limit before ordering.
+(rule "Copper to edge"
+	(constraint edge_clearance (min 0.3mm))
+	(condition "!A.memberOfFootprint('D1')"))
