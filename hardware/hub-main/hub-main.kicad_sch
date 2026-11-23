@@ -1,0 +1,19 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "6e3f080e-0ebd-4811-9df5-685c90e2e985")
+	(paper "A4")
+	(title_block
+		(title "MIDI clock hub - main board")
+		(date "2026-11-22")
+		(rev "A")
+		(company "Synth family")
+	)
+	(lib_symbols)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+)

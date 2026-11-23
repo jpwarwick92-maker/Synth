@@ -16,6 +16,7 @@ and the panel layout can be played before any hardware exists.
 | `tests/native/` | Engine and display tests that render audio and display frames with no browser. `make test` leaves the frames, and a few of the renders as sound files, in `build/out`. |
 | `tests/page/` | Page tests in a headless browser (mouse, touch, MIDI). |
 | `docs/controls.md` | Every control with its MIDI controller number, generated from the firmware's table. |
+| `hardware/` | KiCad 10 projects for the circuit boards (clock hub main board, one-LED tile) and the shared `Synth` parts library. See `hardware/README.md`. |
 
 ## The rule that keeps the code portable
 
