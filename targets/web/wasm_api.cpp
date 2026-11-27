@@ -130,6 +130,9 @@ int FW_EXPORT(fw_control_get)(int i) { return fw::controlGet(i); }
 // The light behind a control's label, 0xRRGGBB, as an LED driver would be sent it.
 uint32_t FW_EXPORT(fw_led_rgb)(int i) { return fw::ledColour(i); }
 
+// ---- spare-time work (preparing a changed drawing): call while it returns 1 ----
+int FW_EXPORT(fw_work)() { return fw::work() ? 1 : 0; }
+
 // ---- display ----
 int FW_EXPORT(fw_tick)(int dtMs) {
   if (!fw::tick((uint32_t)dtMs)) return 0;

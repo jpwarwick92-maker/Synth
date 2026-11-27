@@ -4,7 +4,7 @@
 // and MIDI bytes to the firmware, shows the firmware's display buffer and
 // plays its audio. There is no synthesis, parameter or menu logic here.
 
-import { buildPanel, makeControl, setKnobMode } from './panel.js';
+import { buildPanel, makeControl, setKnobMode, panelProblems } from './panel.js';
 
 const LS_STATE = 'synth.state.v1';     // the firmware's saved state, as it would sit in flash
 const LS_PATCHES = 'synth.patches.v1'; // the patch slots, likewise
@@ -203,6 +203,7 @@ function checkLayoutAgainstFirmware() {
 async function loadPanel() {
   layout = await (await fetch('layouts/a3.json')).json();
   controls = buildPanel($('panel'), layout, send);
+  problems.push(...panelProblems);
 
   // the display sits where the layout file says, at its true size
   const { width: W, height: H } = layout.panel, d = layout.display, lcd = $('lcd');

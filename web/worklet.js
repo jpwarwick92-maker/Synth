@@ -179,6 +179,10 @@ class SynthProcessor extends AudioWorkletProcessor {
       if (out.length > 1) out[1].set(whole ? this.outR : this.outR.subarray(0, len), done);
     }
 
+    // Spare-time work, as a real main loop would do it between other jobs:
+    // a few slices of preparing a changed drawing.
+    for (let k = 0; k < 12 && this.x.fw_work(); k++);
+
     // Whatever is waiting to leave by the MIDI outputs goes to the page.
     for (let port = 0; port < 2; port++) {
       let bytes = null;

@@ -1,6 +1,7 @@
 #include "tables.h"
 
 #include "fw_math.h"
+#include "shapes.h"
 
 namespace fw {
 
@@ -67,6 +68,7 @@ void tablesInit() {
   }
 
   buildWavetables();
+  shapesInit();
 }
 
 // ---- wavetable engine: every frame is a recipe of harmonic strengths ----

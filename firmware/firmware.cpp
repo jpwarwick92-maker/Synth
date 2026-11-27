@@ -1,5 +1,6 @@
 #include "firmware.h"
 
+#include "draw.h"
 #include "gfx.h"
 #include "midi.h"
 #include "synth.h"
@@ -28,7 +29,9 @@ constexpr uint32_t kSaveWaitMaxMs = 30000;
 // Version 4: the panel's positions and the loaded patch follow the parameters.
 // Version 5: Chorus became a panel pot (it was a stepped encoder value), and
 // the sub's two octave settings became four pitches in a different order.
-constexpr uint8_t kStateVersion = 5;
+// Version 6: the drawing's 16 points follow the parameters (older state
+// starts with the INIT drawing).
+constexpr uint8_t kStateVersion = 6;
 
 uint16_t gEncoderPos[kNumEncoders];
 uint32_t gSaveMs;
@@ -52,6 +55,10 @@ uint32_t stateWrite(uint8_t* dst) {
     *p++ = (uint8_t)(v >> 8);
     sum = (uint16_t)(sum * 31u + v + 1u);
   }
+  for (int i = 0; i < kDrawPoints; ++i) {
+    *p = (uint8_t)gDraw.point(i);
+    sum = (uint16_t)(sum * 31u + *p++ + 1u);
+  }
   uint32_t extra = gPatch.stateWrite(p);
   for (uint32_t i = 0; i < extra; ++i) sum = (uint16_t)(sum * 31u + p[i] + 1u);
   p += extra;
@@ -68,9 +75,10 @@ bool stateRead(const uint8_t* src, uint32_t len) {
   int count = src[5];  // parameters are only ever added at the end, so an older blob is a prefix
   if (count < 1 || count > P_COUNT) return false;
   uint32_t paramsEnd = 6u + (uint32_t)count * 2u;
-  if (len < paramsEnd + 2u) return false;
-  uint32_t extra = len - paramsEnd - 2u;  // the panel's part, from version 4 on
-  if (version < 4 ? extra != 0 : !PatchPanel::stateValid(src + paramsEnd, extra)) return false;
+  uint32_t drawLen = version >= 6 ? (uint32_t)kDrawPoints : 0u;  // the drawing, from version 6 on
+  if (len < paramsEnd + drawLen + 2u) return false;
+  uint32_t extra = len - paramsEnd - drawLen - 2u;  // the panel's part, from version 4 on
+  if (version < 4 ? extra != 0 : !PatchPanel::stateValid(src + paramsEnd + drawLen, extra)) return false;
   uint16_t sum = 0;
   const uint8_t* p = src + 6;
   for (int i = 0; i < count; ++i) {
@@ -78,7 +86,7 @@ bool stateRead(const uint8_t* src, uint32_t len) {
     p += 2;
     sum = (uint16_t)(sum * 31u + v + 1u);
   }
-  for (uint32_t i = 0; i < extra; ++i) sum = (uint16_t)(sum * 31u + *p++ + 1u);
+  for (uint32_t i = 0; i < drawLen + extra; ++i) sum = (uint16_t)(sum * 31u + *p++ + 1u);
   if ((uint16_t)(p[0] | (p[1] << 8)) != sum) return false;
   p = src + 6;
   for (int i = 0; i < count; ++i) {
@@ -91,7 +99,8 @@ bool stateRead(const uint8_t* src, uint32_t len) {
     p += 2;
   }
   gPatch.syncToParams();
-  if (version >= 4) gPatch.stateRead(src + paramsEnd, extra);
+  if (drawLen) gDraw.setPoints((const int8_t*)(src + paramsEnd));
+  if (version >= 4) gPatch.stateRead(src + paramsEnd + drawLen, extra);
   return true;
 }
 
@@ -103,11 +112,13 @@ void init(float sampleRate) {
   lightsReset();
   gPatch.init();
   gPatch.scanSlots();
+  gDraw.reset();
   uint8_t blob[kStateSize];
   uint32_t n = fw_hal_storage_load(blob, kStateSize);
   if (n > 0) stateRead(blob, n);
   gParams.set(P_HOLD, 0);  // Hold is a performance switch, like Chord: it does not come back on by itself
   gSynth.init(sampleRate);
+  gDraw.buildNow();  // the drawing is ready before the first note
   gMidi.init();
   gUi.init();
   for (int i = 0; i < kNumEncoders; ++i) gEncoderPos[i] = 0;
@@ -147,6 +158,8 @@ void onParamChanged(int id) {
 }
 
 void stateTouched() { gSaveMs = kSaveDelayMs; }
+
+bool work() { return gDraw.work(); }
 
 void saveWhilePlaying(bool allowed) { gSaveAnyTime = allowed; }
 

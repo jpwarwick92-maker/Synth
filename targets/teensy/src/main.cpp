@@ -114,10 +114,10 @@ static AudioConnection patch4(synthOut, 1, usbOut, 1);
 
 // ---- storage: the on-board EEPROM (4284 bytes on a Teensy 4.1) ----
 // Saved state: two length bytes, then the blob, in the first 512 bytes.
-// Patches: sixteen slots of 160 bytes after that, each one length byte and
+// Patches: sixteen slots of 176 bytes after that, each one length byte and
 // the patch. A memory card or the board's flash file store would hold far
 // more; that choice belongs to the hardware build.
-static const int kStateRegion = 512, kPatchRegion = 160;
+static const int kStateRegion = 512, kPatchRegion = 176;  // 176: a patch carries its drawing (16 bytes) since version 3
 static_assert(fw::kStateSize + 2 <= kStateRegion, "saved state no longer fits its EEPROM region");
 static_assert(fw::kPatchSize + 1 <= kPatchRegion && fw::kPatchSize <= 255, "a patch no longer fits its EEPROM slot");
 static_assert(kStateRegion + fw::kPatchSlots * kPatchRegion <= 4284, "patch slots do not fit the EEPROM");
@@ -184,6 +184,11 @@ void setup() {
 }
 
 void loop() {
+  // Spare-time work: a slice of preparing a changed drawing, if there is one.
+  // Each slice is a fraction of a millisecond, so MIDI and the panel are
+  // still read every pass.
+  fw::work();
+
   // USB MIDI in: hand the firmware the same bytes a MIDI cable would carry.
   while (usbMIDI.read()) {
     uint8_t type = usbMIDI.getType();

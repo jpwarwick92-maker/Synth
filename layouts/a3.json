@@ -37,12 +37,12 @@
   "display": { "x": 331, "y": 90, "w": 48.96, "h": 36.72, "bezel": 1.6 },
 
   "controls": [
-    { "id": "osc1_wave", "type": "selector", "x": 33, "y": 35, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP"] },
+    { "id": "osc1_wave", "type": "selector", "x": 33, "y": 35, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP", "DRAW"], "icons": ["saw", "square", "triangle", "sine", "supersaw", "doodle"] },
     { "id": "osc1_octave", "type": "selector", "x": 63, "y": 35, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
     { "id": "osc1_macro", "type": "knob", "x": 33, "y": 60, "label": "Macro" },
     { "id": "btn_osc1_engine", "type": "button", "x": 58, "y": 61, "w": 10, "h": 5, "caption": "Engine" },
 
-    { "id": "osc2_wave", "type": "selector", "x": 112, "y": 35, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP"] },
+    { "id": "osc2_wave", "type": "selector", "x": 112, "y": 35, "label": "Wave", "stops": ["SAW", "SQR", "TRI", "SIN", "SUP", "DRAW"], "icons": ["saw", "square", "triangle", "sine", "supersaw", "doodle"] },
     { "id": "osc2_octave", "type": "selector", "x": 142, "y": 35, "label": "Octave", "stops": ["-2", "-1", "0", "+1", "+2"] },
     { "id": "osc_sync", "type": "toggle", "x": 172, "y": 33, "label": "Sync", "stops": ["OFF", "ON"] },
     { "id": "osc2_detune", "type": "knob", "x": 112, "y": 60, "label": "Detune" },
@@ -64,8 +64,8 @@
 
     { "id": "lfo_rate", "type": "knob", "x": 438, "y": 32, "label": "Rate" },
     { "id": "lfo_depth", "type": "knob", "x": 474, "y": 32, "label": "Depth" },
-    { "id": "lfo_shape", "type": "selector", "x": 438, "y": 60, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"] },
-    { "id": "lfo_destination", "type": "selector", "x": 474, "y": 60, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "PW"] },
+    { "id": "lfo_shape", "type": "selector", "x": 438, "y": 60, "label": "Shape", "stops": ["SIN", "TRI", "SAW", "SQR", "RND"], "icons": ["sine", "triangle", "sawdown", "square", "random"] },
+    { "id": "lfo_destination", "type": "selector", "x": 474, "y": 60, "label": "Destination", "stops": ["PITCH", "CUTOFF", "AMP", "MACRO"] },
     { "id": "lfo_sync", "type": "selector", "x": 500, "y": 47, "label": "Sync", "stops": ["FREE", "KEY", "VOICE"] },
 
     { "id": "fenv_attack", "type": "fader", "x": 22, "y": 109, "travel": 34, "label": "Attack" },

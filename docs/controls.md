@@ -15,10 +15,10 @@ follows that value until it is moved through it (pots and faders) or changed (se
 
 | Control id | Section | Name | Type | Stops | CC |
 |---|---|---|---|---|---|
-| `osc1_wave` | OSC 1 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER | 20 |
+| `osc1_wave` | OSC 1 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER, DRAW | 20 |
 | `osc1_octave` | OSC 1 | OCTAVE | selector | -2, -1, 0, +1, +2 | 21 |
 | `osc1_macro` | OSC 1 | PULSE WIDTH | pot |  | 22 |
-| `osc2_wave` | OSC 2 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER | 23 |
+| `osc2_wave` | OSC 2 | WAVE | selector | SAW, SQR, TRI, SIN, SUPER, DRAW | 23 |
 | `osc2_octave` | OSC 2 | OCTAVE | selector | -2, -1, 0, +1, +2 | 24 |
 | `osc2_detune` | OSC 2 | DETUNE | pot |  | 25 |
 | `mix_osc1` | MIXER | OSC 1 | pot |  | 26 |
@@ -45,7 +45,7 @@ follows that value until it is moved through it (pots and faders) or changed (se
 | `lfo_rate` | LFO | RATE | pot |  | 76 |
 | `lfo_depth` | LFO | DEPTH | pot |  | 77 |
 | `lfo_shape` | LFO | SHAPE | selector | SINE, TRI, SAW, SQUARE, RANDOM | 108 |
-| `lfo_destination` | LFO | DESTINATION | selector | PITCH, CUTOFF, AMP, PW | 109 |
+| `lfo_destination` | LFO | DESTINATION | selector | PITCH, CUTOFF, AMP, MACRO | 109 |
 | `volume` | OUTPUT | VOLUME | pot |  | 7 |
 | `arp_mode` | ARP | MODE | selector | OFF, UP, DOWN, UP-DOWN, RANDOM, PLAYED | 58 |
 | `arp_octaves` | ARP | OCTAVES | selector | 1, 2, 3, 4 | 60 |

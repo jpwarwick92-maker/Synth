@@ -104,6 +104,9 @@ scope and a visual for each control as it moves.
 - **Spread** fans the voices out between the two speakers.
 - **Supersaw** is the fifth stop on each Wave selector: seven saws, with Macro setting
   how far apart they are tuned.
+- **DRAW** is the sixth stop on each Wave selector: a wave you draw yourself (see
+  "The drawn wave" below). The Wave selectors and LFO Shape show a small picture of each
+  wave instead of its name, with a doodle line for DRAW and a stepped line for random.
 - **Sync** restarts oscillator 2 with every cycle of oscillator 1. With Sync on, the
   Mod page's Env>Pitch moves oscillator 2 only, which gives the classic sync sweep.
 - **X-Mod** lets oscillator 2 bend oscillator 1's phase, even with oscillator 2's
@@ -133,8 +136,8 @@ equal height on five shared columns, with the same gap between every pair of
 neighbours. The panel is 530 x 152 mm.
 
 **The display.** Every control has a picture that follows it: turn a control and its
-picture changes, or says in words why there is nothing to show (Macro on a saw wave,
-a delay with its mix at zero). The tests enforce this for every panel control and
+picture changes, or says in words why there is nothing to show (a delay with its mix
+at zero, an oscillator playing a flat drawing). The tests enforce this for every panel control and
 every value on the encoder pages, from the default settings, with further tests for
 the settings under which a control does nothing. On an encoder page the picture takes
 the place of the scope for a moment after an encoder is turned.
@@ -150,13 +153,51 @@ engines. The Wave selector and the timbre controls mean something different unde
 
 | Engine | Wave selector | Macro | Color |
 |---|---|---|---|
-| VA | saw, square, triangle, sine, supersaw | pulse width (supersaw: detune) | none |
-| FM | ratio 1:1, 2:1, 3:1, 3.5:1, 4:1 | FM amount | feedback |
-| Wavetable | table 1 to 5 | position in the table | none |
-| Pluck | exciter: noise, soft, snap, string, pick | damping | decay |
+| VA | saw, square, triangle, sine, supersaw, DRAW | shapes the wave (below) | none |
+| FM | ratio 1:1, 2:1, 3:1, 3.5:1, 4:1, 0.5:1 | FM amount | feedback |
+| Wavetable | table 1 to 5, and table 6: the drawing | position in the table | none |
+| Pluck | exciter: noise, soft, snap, string, pick, the drawing | damping | decay |
 
 Oscillator 1's Macro is the panel knob. Its Color, and oscillator 2's Macro and Color,
 are on page 2 of the Engine mode.
+
+**Macro shapes the wave** under the VA engine, whichever wave is selected. At zero each
+wave is exactly what it was before Macro shaped it (tested bit for bit), and costs no more.
+
+| Wave | Macro (display name) | What it does |
+|---|---|---|
+| Saw | SOFTEN | Rounds the corners, like the slower reset of an analogue oscillator: a filter that follows the note, from 256 times its pitch down to 1.5 times. |
+| Square | PULSE WIDTH | As before. |
+| Triangle | SHARK FIN | Bends the ramps into capacitor curves, from a triangle to a full shark fin (a filter that follows the note, from 0 to 1 times its pitch). |
+| Sine | SQUARE UP | Adds a square's odd harmonics (3rd to 15th), more of them as Macro rises: a pure sine at zero, close to a square at full. |
+| Supersaw | SPREAD | How far apart the seven saws are tuned, as before. |
+| DRAW | SOFTEN | Rounds the drawing's corners, as on the saw. |
+
+Each shape is held to the loudness of its Macro-zero wave as Macro turns, and each
+keeps high notes clean (nothing louder than -60 dB between the harmonics). On a
+patch, Macro now matters wherever it rests on a saw, triangle or sine.
+
+**The drawn wave.** Each patch has a drawing: 16 points joined by straight lines, one
+cycle of a wave, shared by both oscillators. A new patch starts with a saw. It is
+drawn on the third Engine page:
+
+| Encoder | Turn | Push |
+|---|---|---|
+| 1 | moves along the 16 points | paint mode on or off: moving along then copies the height onto each point passed |
+| 2 | raises or lowers the point | puts the point on the centre line |
+| 3 | chooses a starting shape: saw, square, triangle, sine, flat | replaces the drawing with it |
+| 4 | | smooths the drawing a little |
+
+The page shows the drawing with the point being edited picked out, and says so when
+neither oscillator is playing it. Notes that are sounding follow the drawing as it
+changes, a moment behind, with a 20 ms crossfade so nothing clicks. The drawing is
+turned into band-limited tables (one per octave) so it stays clean on high notes;
+that takes longer than an audio block, so it is done in spare time between other work
+(`fw::work()`, called by the Teensy's main loop and by the page between audio blocks).
+A drawing is played at about a saw's loudness, whatever its shape; a flat one is
+silent. Under the pluck engine the string is struck with the drawing's shape, at the
+other exciters' loudness. The drawing is never an FM modulator (its partials would
+spread far above the note and fold back), so under FM the sixth stop is a 0.5:1 ratio.
 
 **Soft-control modes.** A mode button puts four values on the encoders. Pressing the
 lit button steps to the mode's next page if it has one, then returns home. Pushing an
@@ -170,6 +211,7 @@ encoder restores its default.
 | Mod | Mod | LFO fade-in, velocity to cutoff, filter envelope to pitch, duck |
 | Engine | 1: Voice | unison detune, sub detune, bend range, filter slope (12 dB, 24 dB, ladder) |
 | Engine | 2: Osc engines | osc 1 Color, (empty), osc 2 Macro, osc 2 Color |
+| Engine | 3: Draw | the patch's drawing (see "The drawn wave") |
 | Patch | 1: Patch | slot (push to load), save here (push), guide lights, manual (push) |
 | Patch | 2: Name | cursor, (empty), letter, (empty) |
 | Patch | 3: Setup | display colours (amber, or white for behind amber acrylic); label lights (steady or dance) |
@@ -254,7 +296,9 @@ it can widen it again), and its four values are stored in patches.
 **Patches.** Sixteen slots. Every main control is a real pot, fader or switch, so
 loading a patch cannot move it. Instead:
 
-- **Saving** stores every value except master volume and Hold. An empty slot saves on
+- **Saving** stores every value except master volume and Hold, and the drawing.
+  Patches saved by builds before the drawing (patch version 1 or 2) are not loaded:
+  their slots read as empty. An empty slot saves on
   one push of encoder 2; a used slot asks for a second push within three seconds.
 - **Loading** (push encoder 1, or send a MIDI program change) sets the sound from the
   stored values. Any control that is somewhere else is then *following*: the sound uses
@@ -296,9 +340,10 @@ notes sounding after the keys are let go; the next chord replaces them. It works
 the arp on or off. While the arp runs, the sustain pedal acts as a temporary Hold.
 Neither Hold nor Chord comes back on by itself after a restart.
 
-**The LFO's PW destination** moves whatever Macro sets on that oscillator: pulse width
-on a square, the supersaw's detune, FM amount, wavetable position, pluck damping. It
-does nothing on a plain saw, triangle or sine.
+**The LFO's MACRO destination** (it was PW) moves whatever Macro does on that oscillator:
+pulse width on a square, the saw's softness, the shark fin, the sine's squaring, the
+supersaw's spread, the drawing's softness, FM amount, wavetable position, pluck damping.
+With Macro at zero only the upper half of the sweep acts.
 
 **When the processor is short of time.** A target that can time its audio (the Teensy)
 reports how much of each block's time was used. If that stays above about 85% the

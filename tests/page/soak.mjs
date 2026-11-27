@@ -134,5 +134,76 @@ for (const [sampleRate, minutes] of [[44100, fullMinutes], [48000, fullMinutes],
     + (notNumber >= 0 ? `, output stopped being a number at ${notNumber} s` : ''));
 }
 
+// And with the newest paths busy: oscillator 1 playing the drawing (softened),
+// oscillator 2 a squared-up sine, the LFO sweeping both Macros, and the
+// drawing redrawn every second on the DRAW page while the chord sounds, with
+// the spare-time work done between blocks as the page and the Teensy do it.
+{
+  const sampleRate = 48000, minutes = Math.min(5, fullMinutes);
+  const x = (await WebAssembly.instantiate(wasm, {})).instance.exports;
+  x.fw_init(sampleRate);
+  const block = x.fw_max_block();
+  const midi = (bytes) => {
+    new Uint8Array(x.memory.buffer, x.fw_midi_ptr(), bytes.length).set(bytes);
+    x.fw_midi(bytes.length);
+  };
+  const control = (name) => {
+    const mem = new Uint8Array(x.memory.buffer);
+    for (let i = 0; i < x.fw_control_count(); i++) {
+      let p = x.fw_control_name(i), s = '';
+      while (mem[p]) s += String.fromCharCode(mem[p++]);
+      if (s === name) return i;
+    }
+    throw new Error(`no control named ${name}`);
+  };
+  const press = (name) => { x.fw_control_set(control(name), 1); x.fw_control_set(control(name), 0); };
+  x.fw_control_set(control('osc1_wave'), 5);          // DRAW
+  x.fw_control_set(control('osc1_macro'), 1500);
+  x.fw_control_set(control('osc2_wave'), 3);          // SIN
+  x.fw_control_set(control('mix_osc2'), 3000);
+  x.fw_control_set(control('lfo_destination'), 3);    // MACRO
+  x.fw_control_set(control('lfo_depth'), 3000);
+  x.fw_control_set(control('lfo_rate'), 2500);
+  midi([0xb0, 63, 80, 0xb0, 49, 80, 0xb0, 53, 80]);   // oscillator 2's Macro, delay, reverb
+  for (let i = 0; i < 3; i++) press('btn_engine');     // the DRAW page
+  midi([0x90, 48, 100, 0x90, 55, 100, 0x90, 60, 100, 0x90, 63, 100]);
+
+  const perSecond = Math.round(sampleRate / block);
+  let normal = 0, worst = 0, notNumber = -1, sinceTick = 0, rng = 11;
+  for (let sec = 0; sec < minutes * 60; sec++) {
+    let sum = 0;
+    for (let b = 0; b < perSecond; b++) {
+      if (b % 40 === 0) {                              // a few strokes of drawing, as a hand would
+        rng = (Math.imul(rng, 1664525) + 1013904223) | 0;
+        x.fw_encoder_turn(control('enc1'), ((rng >>> 8) % 5) - 2);
+        x.fw_encoder_turn(control('enc2'), ((rng >>> 16) % 21) - 10);
+        if ((rng >>> 24) % 13 === 0) press('enc4');
+        if ((rng >>> 24) % 29 === 0) { x.fw_encoder_turn(control('enc3'), 1); press('enc3'); }
+      }
+      for (let k = 0; k < 12 && x.fw_work(); k++);
+      x.fw_process(block);
+      const l = new Float32Array(x.memory.buffer, x.fw_out_left_ptr(), block);
+      const r = new Float32Array(x.memory.buffer, x.fw_out_right_ptr(), block);
+      for (let i = 0; i < block; i++) {
+        if (!Number.isFinite(l[i]) || !Number.isFinite(r[i])) { if (notNumber < 0) notNumber = sec; continue; }
+        sum += l[i] * l[i] + r[i] * r[i];
+      }
+      sinceTick += block;
+      if (sinceTick >= sampleRate / 30) {
+        x.fw_tick(Math.round((sinceTick * 1000) / sampleRate));
+        sinceTick = 0;
+      }
+    }
+    const rms = Math.sqrt(sum / (2 * perSecond * block));
+    if (sec >= 3 && sec < 13) normal = Math.max(normal, rms);
+    else if (sec >= 13) worst = Math.max(worst, rms);
+  }
+  // (the drawing keeps changing, so the level may wander more than a steady sound's: three times the start is the limit)
+  const ok = notNumber < 0 && normal > 0.005 && worst < 3 * normal;
+  if (!ok) fails++;
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${minutes} minutes at ${sampleRate} Hz playing and redrawing the drawing, with Macro shapes swept: level ${normal.toFixed(3)} at the start, never above ${worst.toFixed(3)}`
+    + (notNumber >= 0 ? `, output stopped being a number at ${notNumber} s` : ''));
+}
+
 console.log(`long run of the browser build: ${fails ? 'FAILED' : 'passed'}`);
 process.exit(fails ? 1 : 0);

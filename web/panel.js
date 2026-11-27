@@ -27,6 +27,28 @@ function el(name, attrs, parent, text) {
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
+// Pictograms for selector stops that name a wave shape, in place of text.
+// Each is a path in a box 1 wide and 2 tall (x 0..1, y -1..1, down positive),
+// drawn ICON_W by ICON_H millimetres. A layout entry lists one name per stop in
+// "icons"; an unknown name falls back to the stop's text and is reported.
+const ICON_W = 4.4, ICON_H = 2.4;
+const sinePath = () => {
+  const pts = [];
+  for (let k = 0; k <= 16; k++) pts.push(`${(k / 16).toFixed(4)},${(-0.8 * Math.sin((2 * Math.PI * k) / 16)).toFixed(4)}`);
+  return `M${pts.join(' L')}`;
+};
+const ICONS = {
+  saw: 'M0,0.8 L0.5,-0.8 L0.5,0.8 L1,-0.8',
+  sawdown: 'M0,-0.8 L0.5,0.8 L0.5,-0.8 L1,0.8',
+  square: 'M0,0.8 L0,-0.8 L0.5,-0.8 L0.5,0.8 L1,0.8 L1,-0.8',
+  triangle: 'M0,0 L0.25,-0.8 L0.75,0.8 L1,0',
+  sine: sinePath(),
+  supersaw: 'M0,0.8 L0.5,-0.8 L0.5,0.8 L1,-0.8 M0.12,0.8 L0.62,-0.8 L0.62,0.8 L1,-0.4',
+  doodle: 'M0,0.2 L0.14,-0.6 L0.28,0.45 L0.42,-0.15 L0.57,0.75 L0.72,-0.8 L0.86,0.1 L1,-0.35',
+  random: 'M0,0.3 L0.25,0.3 L0.25,-0.6 L0.5,-0.6 L0.5,0.7 L0.75,0.7 L0.75,-0.2 L1,-0.2',
+};
+export const panelProblems = [];
+
 // One finger or the mouse dragging on one control. Every control captures
 // its own pointer, so several can be moved at once on a touch screen.
 function onDrag(target, handlers) {
@@ -180,12 +202,27 @@ function makeSelector(g, def, sizes, c, send) {
     ticks.push(el('line', { x1: sx * (r + 1.6), y1: cy * (r + 1.6), x2: sx * (r + 3.4), y2: cy * (r + 3.4), class: 'tick' }, g));
     const anchor = angle(i) < -10 ? 'end' : angle(i) > 10 ? 'start' : 'middle';
     const lr = r + (n >= 6 ? 8 : 5);   // six labels need a wider ring to keep clear of each other
-    const t = el('text', { x: sx * lr, y: cy * lr + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
-    labels.push(t);
-    // tapping a stop's label turns the switch straight to it
-    const w = Math.max(5, stops[i].length * 1.9 + 2);
+    const icon = def.icons ? def.icons[i] : undefined;
+    if (icon !== undefined && !ICONS[icon]) panelProblems.push(`"${def.id}" stop ${i + 1}: no pictogram called "${icon}"; its text is shown instead`);
+    let w;
+    if (icon !== undefined && ICONS[icon]) {
+      // a pictogram, placed where the text would be: its box ends at the ring on the side the text would start from
+      const bx = sx * lr - (anchor === 'end' ? ICON_W : anchor === 'start' ? 0 : ICON_W / 2);
+      const by = cy * lr - ICON_H / 2 - (anchor === 'middle' ? 0.9 : 0);
+      const p = el('g', { class: 'stop picto', transform: `translate(${bx.toFixed(3)} ${by.toFixed(3)})` }, g);
+      el('title', {}, p, stops[i]);
+      el('rect', { width: ICON_W, height: ICON_H, class: 'picto-box' }, p);   // measured by the page tests, never seen
+      el('path', { d: ICONS[icon], transform: `translate(0 ${ICON_H / 2}) scale(${ICON_W} ${ICON_H / 2})`, 'vector-effect': 'non-scaling-stroke' }, p);
+      labels.push(p);
+      w = ICON_W + 1;
+    } else {
+      const t = el('text', { x: sx * lr, y: cy * lr + (anchor === 'middle' ? -0.2 : 0.9), 'text-anchor': anchor, class: 'stop' }, g, stops[i]);
+      labels.push(t);
+      w = Math.max(5, stops[i].length * 1.9 + 2);
+    }
+    // tapping a stop's label (or pictogram) turns the switch straight to it
     const hx = sx * lr - (anchor === 'end' ? w - 1 : anchor === 'start' ? 1 : w / 2);
-    const stopHit = el('rect', { x: hx, y: cy * lr - 3.2, width: w, height: 5, class: 'hit' }, g);
+    const stopHit = el('rect', { x: hx, y: cy * lr - 3.2, width: w, height: 5, class: 'hit', 'data-stop': i }, g);
     stopHit.addEventListener('pointerdown', (e) => { e.preventDefault(); setStop(i); });
   }
   el('circle', { r, class: 'cap' }, g);

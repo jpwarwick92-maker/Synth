@@ -6,12 +6,12 @@ namespace fw {
 
 namespace {
 
-const char* const kWaveLabels[] = {"SAW", "SQR", "TRI", "SIN", "SUPER"};
+const char* const kWaveLabels[] = {"SAW", "SQR", "TRI", "SIN", "SUPER", "DRAW"};
 const char* const kArpOctaveLabels[] = {"1", "2", "3", "4"};
 const char* const kOctaveLabels[] = {"-2", "-1", "0", "+1", "+2"};
 const char* const kFilterLabels[] = {"LP", "BP", "HP"};
 const char* const kModeLabels[] = {"POLY", "MONO", "UNI"};
-const char* const kDestLabels[] = {"PITCH", "CUTOFF", "AMP", "PW"};
+const char* const kDestLabels[] = {"PITCH", "CUTOFF", "AMP", "MACRO"};
 const char* const kSubLabels[] = {"-2 OCT", "-1 OCT", "5TH UP", "+1 OCT"};
 const char* const kChorusLabels[] = {"CHORUS", "ENSEMBLE"};
 const char* const kSlopeLabels[] = {"12 dB", "24 dB", "LADDER"};
@@ -33,10 +33,10 @@ const char* const kEngineWaveName[ENG_COUNT] = {"WAVE", "RATIO", "TABLE", "EXCIT
 const char* const kEngineMacroName[ENG_COUNT] = {"PULSE WIDTH", "FM AMOUNT", "POSITION", "DAMPING"};
 const char* const kEngineColorName[ENG_COUNT] = {"", "FEEDBACK", "", "DECAY"};
 const char* const kEngineWaveLabels[ENG_COUNT][WAVE_COUNT] = {
-    {"SAW", "SQR", "TRI", "SIN", "SUPER"},
-    {"1:1", "2:1", "3:1", "3.5:1", "4:1"},
-    {"TABLE 1", "TABLE 2", "TABLE 3", "TABLE 4", "TABLE 5"},
-    {"NOISE", "SOFT", "SNAP", "STRING", "PICK"},
+    {"SAW", "SQR", "TRI", "SIN", "SUPER", "DRAW"},
+    {"1:1", "2:1", "3:1", "3.5:1", "4:1", "0.5:1"},
+    {"TABLE 1", "TABLE 2", "TABLE 3", "TABLE 4", "TABLE 5", "TABLE 6"},
+    {"NOISE", "SOFT", "SNAP", "STRING", "PICK", "DRAWN"},
 };
 
 // Control order. The first 32 are as in the first build; later panel
@@ -67,10 +67,10 @@ const char* const kLfoShapeNames[LFOS_COUNT] = {"SINE", "TRI", "SAW", "SQUARE", 
 // ranges 14-31, 46-63, 85-90 and 102-119. Hold is 69, the standard "hold 2".
 const ParamDef kParams[P_COUNT] = {
     // key            name          section     kind     steps def        cc   unit          labels         intMin
-    {"osc1_wave",     "WAVE",       SEC_OSC1,   PK_STEP, 5,    0,         20,  U_STEP,       kWaveLabels,   0},
+    {"osc1_wave",     "WAVE",       SEC_OSC1,   PK_STEP, 6,    0,         20,  U_STEP,       kWaveLabels,   0},
     {"osc1_octave",   "OCTAVE",     SEC_OSC1,   PK_STEP, 5,    2,         21,  U_STEP,       kOctaveLabels, 0},
     {"osc1_macro",    "PULSE WIDTH", SEC_OSC1,  PK_POT,  0,    pot(0.0f), 22,  U_PW,         nullptr,       0},
-    {"osc2_wave",     "WAVE",       SEC_OSC2,   PK_STEP, 5,    0,         23,  U_STEP,       kWaveLabels,   0},
+    {"osc2_wave",     "WAVE",       SEC_OSC2,   PK_STEP, 6,    0,         23,  U_STEP,       kWaveLabels,   0},
     {"osc2_octave",   "OCTAVE",     SEC_OSC2,   PK_STEP, 5,    2,         24,  U_STEP,       kOctaveLabels, 0},
     {"osc2_detune",   "DETUNE",     SEC_OSC2,   PK_POT,  0,    pot(0.62f), 25, U_CENTS,      nullptr,       0},
     {"mix_osc1",      "OSC 1",      SEC_MIXER,  PK_POT,  0,    pot(0.8f), 26,  U_PERCENT,    nullptr,       0},
