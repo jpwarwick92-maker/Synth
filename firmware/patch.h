@@ -26,8 +26,9 @@ namespace fw {
 
 constexpr int kPatchSlots = 16;
 constexpr int kPatchNameLen = 8;
-// One stored patch: "PAT", version, parameter count, name, every value, checksum.
-constexpr uint32_t kPatchSize = 5 + kPatchNameLen + P_COUNT * 2 + 2;
+constexpr int kPatchDrawBytes = 16;  // the drawing's 16 points (draw.h)
+// One stored patch: "PAT", version, parameter count, name, every value, the drawing, checksum.
+constexpr uint32_t kPatchSize = 5 + kPatchNameLen + P_COUNT * 2 + kPatchDrawBytes + 2;
 
 // What the label lights do for controls that are off the loaded patch.
 enum GuideMode : uint8_t {

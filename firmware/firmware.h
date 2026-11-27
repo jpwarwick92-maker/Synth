@@ -88,6 +88,12 @@ void lightsSetMode(int mode);
 // Read after each tick: the colour follows the control as it nears a loaded patch.
 uint32_t ledColour(int index);
 
+// Work done in spare time, a slice at a time: preparing a new or changed
+// drawing (draw.h) for the oscillators to play. Call it whenever nothing
+// else needs doing, as often as possible; each call takes a fraction of a
+// millisecond. Returns true while there is more to do.
+bool work();
+
 // Call about 30 times a second with the elapsed time. Returns true when the
 // display buffer has new content.
 bool tick(uint32_t dtMs);
@@ -113,7 +119,7 @@ bool patchLoad(int slot);
 // still following a loaded patch, the patch's name). A blob from an older
 // build, with fewer parameters, still loads: the ones it lacks keep their
 // defaults.
-constexpr uint32_t kStateSize = 6 + P_COUNT * 2 + kPanelStateSize + 2;
+constexpr uint32_t kStateSize = 6 + P_COUNT * 2 + kPatchDrawBytes + kPanelStateSize + 2;
 uint32_t stateWrite(uint8_t* dst);
 bool stateRead(const uint8_t* src, uint32_t len);
 

@@ -27,6 +27,8 @@
 #include "tables.h"
 #include "ui.h"
 #include "vocoder.h"
+#include "draw.h"
+#include "shapes.h"
 
 // ---------------------------------------------------------------- harness
 
@@ -142,11 +144,18 @@ static void midi(std::initializer_list<int> bytes) {
 // kept in gRight for the tests that look at stereo.
 static std::vector<float> gRight;
 
+// What a main loop does between audio blocks: a few slices of spare-time work.
+static void spareTime() {
+  for (int k = 0; k < 16 && fw::work(); ++k) {
+  }
+}
+
 static void render(std::vector<float>& out, double sec) {
   long n = std::lround(sec * gSr);
   float l[fw::kMaxBlock], r[fw::kMaxBlock];
   while (n > 0) {
     int len = n > fw::kMaxBlock ? fw::kMaxBlock : (int)n;
+    spareTime();
     fw::process(l, r, len);
     out.insert(out.end(), l, l + len);
     gRight.insert(gRight.end(), r, r + len);
@@ -830,7 +839,9 @@ static void testUi() {
   CHECK(fw::gUi.mode() == fw::MB_ENGINE && fw::gUi.page() == 1, "second press should show Engine page 2");
   CHECK(fw::controlGet(ctl("btn_engine")) == 1, "Engine light should stay on for page 2");
   press("btn_engine");
-  CHECK(fw::gUi.mode() == fw::MB_NONE, "third press should return to the home screen");
+  CHECK(fw::gUi.mode() == fw::MB_ENGINE && fw::gUi.page() == 2, "third press should show the DRAW page");
+  press("btn_engine");
+  CHECK(fw::gUi.mode() == fw::MB_NONE, "fourth press should return to the home screen");
 }
 
 static void testSoftPages() {
@@ -1676,7 +1687,7 @@ static void testPanelRegistry() {
   CHECK(fw::controlInfo(ctl("arp_octaves")).kind == fw::CK_SELECTOR && fw::controlInfo(ctl("arp_octaves")).steps == 4, "arp Octaves: a four-stop selector");
   CHECK(fw::controlInfo(ctl("arp_tempo")).kind == fw::CK_POT && fw::controlInfo(ctl("arp_gate")).kind == fw::CK_POT, "arp Tempo and Gate: knobs");
   CHECK(fw::controlInfo(ctl("osc_sync")).kind == fw::CK_SELECTOR && fw::controlInfo(ctl("osc_sync")).steps == 2, "Sync: a two-position switch");
-  CHECK(fw::controlInfo(ctl("osc1_wave")).steps == 5 && fw::controlInfo(ctl("osc2_wave")).steps == 5, "Wave selectors: five stops");
+  CHECK(fw::controlInfo(ctl("osc1_wave")).steps == 6 && fw::controlInfo(ctl("osc2_wave")).steps == 6, "Wave selectors: six stops, the sixth DRAW");
 }
 
 static void testDriftAndSpread() {
@@ -2504,13 +2515,16 @@ static void testPatches() {
         "the controls that were following should still be, at the same physical positions");
   CHECK(fw::gPatch.slotUsed(4) && fw::gPatch.slotUsed(6) && !fw::gPatch.slotUsed(0), "stored slots should be found again at start-up");
 
-  section("patches: a damaged slot reads as empty; a patch from an older build still loads");
+  section("patches: a damaged slot reads as empty; a patch with fewer parameters still loads; one saved before the drawing does not");
   gBank[4][20] ^= 0x40;
   boot(48000, true);
   CHECK(!fw::gPatch.slotUsed(4) && !fw::patchLoad(4), "a damaged patch must not load");
-  {
+  for (int version : {3, 2, 1}) {
+    // A version 3 patch from a build with four fewer parameters is a prefix, and loads.
+    // Versions 1 and 2 (saved before patches carried the drawing) read as empty slots.
     const int oldCount = fw::P_COUNT - 4;
-    uint8_t blob[fw::kPatchSize] = {'P', 'A', 'T', 1, (uint8_t)oldCount, 'O', 'L', 'D', ' ', ' ', ' ', ' ', ' '};
+    const int drawBytes = version >= 3 ? fw::kPatchDrawBytes : 0;
+    uint8_t blob[fw::kPatchSize] = {'P', 'A', 'T', (uint8_t)version, (uint8_t)oldCount, 'O', 'L', 'D', ' ', ' ', ' ', ' ', ' '};
     uint16_t sum = 0;
     for (int i = 0; i < fw::kPatchNameLen; ++i) sum = (uint16_t)(sum * 31u + blob[5 + i] + 1u);
     for (int i = 0; i < oldCount; ++i) {
@@ -2520,14 +2534,24 @@ static void testPatches() {
       blob[14 + i * 2] = (uint8_t)(v >> 8);
       sum = (uint16_t)(sum * 31u + v + 1u);
     }
-    blob[13 + oldCount * 2] = (uint8_t)(sum & 0xFF);
-    blob[14 + oldCount * 2] = (uint8_t)(sum >> 8);
-    std::memcpy(gBank[9], blob, 15 + oldCount * 2);
-    gBankLen[9] = 15 + oldCount * 2;
+    for (int i = 0; i < drawBytes; ++i) {
+      blob[13 + oldCount * 2 + i] = (uint8_t)(int8_t)(i * 16 - 120);
+      sum = (uint16_t)(sum * 31u + blob[13 + oldCount * 2 + i] + 1u);
+    }
+    int end = 13 + oldCount * 2 + drawBytes;
+    blob[end] = (uint8_t)(sum & 0xFF);
+    blob[end + 1] = (uint8_t)(sum >> 8);
+    std::memcpy(gBank[9], blob, end + 2);
+    gBankLen[9] = end + 2;
     boot(48000, true);
     setPot("voice_drift", 0.8);  // one of the four newest parameters
-    CHECK(fw::patchLoad(9), "an older, shorter patch should load");
+    if (version < 3) {
+      CHECK(!fw::gPatch.slotUsed(9) && !fw::patchLoad(9), "a version %d patch (saved before the drawing) should read as an empty slot", version);
+      continue;
+    }
+    CHECK(fw::patchLoad(9), "a shorter patch should load");
     CHECK(fw::gParams.val[fw::P_CUTOFF] == 700 + fw::P_CUTOFF * 9, "its values should be applied");
+    CHECK(fw::gDraw.point(3) == 3 * 16 - 120 && fw::gDraw.point(15) == 15 * 16 - 120, "and its drawing");
     wrong = 0;
     for (int i = oldCount; i < fw::P_COUNT; ++i) wrong += fw::gParams.val[i] != fw::kParams[i].def;
     CHECK(wrong == 0, "%d of the parameters it lacks are not at their defaults", wrong);
@@ -2658,16 +2682,26 @@ static void testPictures() {
   }
   CHECK(blind == 0, "%d panel controls have a picture that does not follow them", blind);
 
-  section("display: a control with nothing to do says so");
+  section("display: Macro's picture follows it on every wave, and a flat drawing says it is silent");
   boot(48000);
-  setPot("osc1_macro", 0.2);
+  for (int wave = 0; wave < fw::WAVE_COUNT; ++wave) {
+    setSel("osc1_wave", wave);
+    setPot("osc1_macro", 0.2);
+    fw::tick(33);
+    std::vector<uint8_t> low = pictureRows(48, 218);
+    setPot("osc1_macro", 0.8);
+    fw::tick(33);
+    CHECK(pictureRows(48, 218) != low, "Macro on %s: the picture should change with it", fw::kEngineWaveLabels[fw::ENG_VA][wave]);
+    CHECK(countColour(fw::kGrey, 54, 74) == 0, "Macro on %s: no note over the picture", fw::kEngineWaveLabels[fw::ENG_VA][wave]);
+    std::string shot = std::string("popup_macro_") + fw::kEngineWaveLabels[fw::ENG_VA][wave];
+    saveFrame(shot.c_str());
+    fw::tick(2000);
+  }
+  setSel("osc1_wave", fw::WAVE_DRAW);
+  fw::gDraw.startShape(fw::DRAWSHAPE_FLAT);
+  setPot("osc1_macro", 0.3);
   fw::tick(33);
-  std::vector<uint8_t> low = pictureRows(48, 218);
-  CHECK(countColour(fw::kGrey, 54, 74) > 150, "Macro on a saw should say it has no effect");
-  setPot("osc1_macro", 0.8);
-  fw::tick(33);
-  CHECK(pictureRows(48, 218) == low, "and the saw's picture should not pretend to change");
-  saveFrame("popup_macro_idle");
+  CHECK(countColour(fw::kGrey, 54, 74) > 150, "a flat drawing should say it makes no sound");
   setSel("osc1_wave", fw::WAVE_SQR);
   setPot("osc1_macro", 0.5);
   fw::tick(33);
@@ -3680,10 +3714,9 @@ static void testNewSoundFeatures() {
     patch[14 + oldParams * 2] = (uint8_t)(sum >> 8);
     std::memcpy(gBank[3], patch, 15 + oldParams * 2);
     gBankLen[3] = 15 + oldParams * 2;
-    CHECK(fw::patchLoad(3), "set-up: the old patch should load");
-    CHECK(fw::gParams.val[fw::P_CHORUS] == 35 * 4095 / 100 && fw::gParams.step(fw::P_SUB_OCTAVE) == fw::SUB_1_OCT_DOWN,
-          "an old patch's chorus and sub should keep their meaning (chorus %d, sub %d)", (int)fw::gParams.val[fw::P_CHORUS], fw::gParams.step(fw::P_SUB_OCTAVE));
-    CHECK(fw::gPatch.following(chorusKnob), "and the Chorus knob, which is elsewhere, should follow the patch");
+    // (patches saved before the drawing are not loaded at all: decided 2026-11-27)
+    CHECK(!fw::patchLoad(3), "a patch saved before patches carried the drawing should not load");
+    CHECK(!fw::gPatch.following(chorusKnob), "and nothing should be left following it");
   }
 }
 
@@ -4675,6 +4708,446 @@ static void testSecondReview() {
   CHECK(duckPicture[2] != duckPicture[0], "running, it follows the clock, and its picture shows the slower beat");
 }
 
+// ------------------------------------------------- Macro's wave shapes and the drawing (2026-11-27)
+
+// Lets a changed drawing be prepared and faded in, as a main loop and the audio would.
+static void settleDrawing() {
+  float l[fw::kMaxBlock], r[fw::kMaxBlock];
+  for (int i = 0; i < 400 && !fw::gDraw.settled(); ++i) {
+    spareTime();
+    fw::process(l, r, fw::kMaxBlock);
+  }
+}
+
+// Level of harmonic k of `f0`, relative to the fundamental, in dB (from 0.4 s on).
+static double harmonicDb(const std::vector<float>& x, double f0, double k) {
+  const size_t n = 32768;
+  std::vector<double> m = spectrum(x, (size_t)(0.4 * gSr), n);
+  double binHz = gSr / (double)n;
+  auto at = [&](double hz) {
+    size_t i = (size_t)std::lround(hz / binHz);
+    double v = 0;
+    for (size_t j = i - 3; j <= i + 3 && j < m.size(); ++j) v = std::max(v, m[j]);
+    return v;
+  };
+  return 20 * std::log10(at(k * f0) / at(f0) + 1e-300);
+}
+
+// The share of the sound's energy above `hz`, relative to all of it, in dB (from 0.4 s on).
+static double topShareDb(const std::vector<float>& x, double hz) {
+  const size_t n = 32768;
+  std::vector<double> m = spectrum(x, (size_t)(0.4 * gSr), n);
+  double all = 0, top = 0;
+  for (size_t i = 1; i < m.size(); ++i) {
+    double e = m[i] * m[i];
+    all += e;
+    if ((double)i * gSr / (double)n > hz) top += e;
+  }
+  return 10 * std::log10(top / all + 1e-300);
+}
+
+static double maxStep(const std::vector<float>& x, size_t from = 0) {
+  double w = 0;
+  for (size_t i = std::max<size_t>(from, 1); i < x.size(); ++i) w = std::max(w, (double)std::fabs(x[i] - x[i - 1]));
+  return w;
+}
+
+static void testWaveShapes() {
+  const double a3 = 220.0;
+
+  section("R3  every engine on all six Wave stops, on both oscillators, with their pictures");
+  {
+    boot(48000);
+    bool finite = true;
+    for (int e = 0; e < fw::ENG_COUNT; ++e) {
+      for (int w = 0; w < fw::WAVE_COUNT; ++w) {
+        setSel("osc1_wave", w);
+        setSel("osc2_wave", (w + 3) % fw::WAVE_COUNT);
+        setPot("osc1_macro", 0.7);
+        setStep(fw::P_OSC2_MACRO, 60);
+        midi({0x90, 40 + w * 9, 100, 0x90, 64, 90});
+        auto x = renderNew(0.08);
+        for (float v : x) finite = finite && std::isfinite(v) && std::fabs(v) <= 1.0f;
+        fw::tick(33);
+        setPot("osc1_macro", 0.2);
+        fw::tick(33);
+        midi({0xB0, 123, 0});
+      }
+      press("btn_osc1_engine");
+      press("btn_osc2_engine");
+    }
+    CHECK(finite, "the output should stay finite and in range throughout");
+  }
+  auto tone = [&](int wave, double macro, int note = 57) {
+    boot(48000);
+    cleanTone(wave);
+    setPot("osc1_macro", macro);
+    renderNew(0.05);
+    midi({0x90, note, 100});
+    return renderNew(1.3);
+  };
+
+  section("AC1  Macro softens the saw: duller as it rises, the level kept within about 1 dB");
+  {
+    auto plain = tone(fw::WAVE_SAW, 0.0), half = tone(fw::WAVE_SAW, 0.5), full = tone(fw::WAVE_SAW, 1.0);
+    double t0 = topShareDb(plain, 2000), t5 = topShareDb(half, 2000), t1 = topShareDb(full, 2000);
+    CHECK(t5 < t0 - 2 && t1 < t5 - 10, "energy above 2 kHz should fall as Macro rises: %.1f, %.1f, %.1f dB", t0, t5, t1);
+    double l0 = rmsOf(plain, 0.4, 1.2);
+    for (double m : {0.25, 0.5, 0.75, 1.0}) {
+      double lm = rmsOf(tone(fw::WAVE_SAW, m), 0.4, 1.2);
+      CHECK(std::fabs(20 * std::log10(lm / l0)) < 1.0, "soft saw at Macro %.2f: level %.2f dB from the plain saw", m, 20 * std::log10(lm / l0));
+    }
+    std::printf("    energy above 2 kHz: %.1f dB plain, %.1f at half, %.1f at full\n", t0, t5, t1);
+  }
+
+  section("AC2  Macro bends the triangle into a shark fin");
+  {
+    auto plain = tone(fw::WAVE_TRI, 0.0), fin = tone(fw::WAVE_TRI, 1.0);
+    double h3p = harmonicDb(plain, a3, 3), h3f = harmonicDb(fin, a3, 3), h2f = harmonicDb(fin, a3, 2);
+    // A square through a low-pass at its own pitch: the 3rd harmonic at 1/3 * |H(3)| / |H(1)|, about -16.5 dB.
+    CHECK(std::fabs(h3p + 19.1) < 1.0, "the plain triangle's 3rd harmonic should be about -19 dB, got %.1f", h3p);
+    CHECK(h3f > -18.0 && h3f < -15.0, "the fin's 3rd harmonic should be about -16.5 dB (a square softened at its own pitch), got %.1f", h3f);
+    CHECK(h2f < -50.0, "a fin rises and falls alike: no even harmonics (2nd at %.1f dB)", h2f);
+  }
+
+  section("AC3  Macro squares the sine up: pure at zero, close to a square at full");
+  {
+    auto plain = tone(fw::WAVE_SIN, 0.0), full = tone(fw::WAVE_SIN, 1.0);
+    AliasResult p = aliasCheck(plain, a3);
+    CHECK(harmonicDb(plain, a3, 3) < -80 && p.worstDb < -80, "at zero a pure sine (3rd harmonic %.1f dB)", harmonicDb(plain, a3, 3));
+    double h3 = harmonicDb(full, a3, 3), h5 = harmonicDb(full, a3, 5), h2 = harmonicDb(full, a3, 2);
+    CHECK(h3 > -13.0 && h3 < -8.0 && h5 > -19.0 && h5 < -12.0, "at full a square's odd harmonics (3rd %.1f, 5th %.1f dB; a square has -9.5, -14)", h3, h5);
+    CHECK(h2 < -60.0, "and no even ones (2nd at %.1f dB)", h2);
+    CHECK(std::fabs(20 * std::log10(rmsOf(full, 0.4, 1.2) / rmsOf(plain, 0.4, 1.2))) < 1.0, "as loud as the sine");
+  }
+
+  section("R7  each shape keeps its level as Macro turns, and never goes infinite");
+  for (int wave : {fw::WAVE_SAW, fw::WAVE_TRI, fw::WAVE_SIN})
+    for (int note : {45, 96}) {
+      double l0 = rmsOf(tone(wave, 0.0, note), 0.4, 1.2), worst = 0;
+      bool finite = true;
+      for (int k = 1; k <= 20; ++k) {
+        auto x = tone(wave, k / 20.0, note);
+        for (float v : x) finite = finite && std::isfinite(v);
+        worst = std::max(worst, std::fabs(20 * std::log10(rmsOf(x, 0.4, 1.2) / l0)));
+      }
+      CHECK(finite && worst < 3.0, "%s note %d: level within 3 dB over Macro 0 to 100%% (worst %.2f dB)", fw::kEngineWaveLabels[fw::ENG_VA][wave], note, worst);
+    }
+
+  section("R6  at Macro zero nothing new is in the path");
+  {
+    // (The build's own reference: these renders are bit for bit the build before Macro shaped waves.
+    // Here: a Macro just above zero is a different, shaped sound; at zero the plain one is untouched.)
+    for (int wave : {fw::WAVE_SAW, fw::WAVE_TRI, fw::WAVE_SIN}) {
+      auto zero = tone(wave, 0.0), again = tone(wave, 0.0), tiny = tone(wave, 0.002);
+      CHECK(zero == again, "%s: the same at zero every time", fw::kEngineWaveLabels[fw::ENG_VA][wave]);
+      CHECK(zero != tiny, "%s: and shaped as soon as Macro leaves zero", fw::kEngineWaveLabels[fw::ENG_VA][wave]);
+      CHECK(rmsDiff(zero, tiny) < 0.01, "%s: by only a little, just above zero (%.4f)", fw::kEngineWaveLabels[fw::ENG_VA][wave], rmsDiff(zero, tiny));
+    }
+  }
+
+  section("R2  the LFO sweeping Macro through zero adds no clicks");
+  for (int wave : {fw::WAVE_SAW, fw::WAVE_TRI, fw::WAVE_SIN}) {
+    // the sweep reaches Macro 0.48 at full depth; its steepest steps are compared with Macro held at either end
+    auto held0 = tone(wave, 0.0), held1 = tone(wave, 0.48);
+    double ref = std::max(maxStep(held0, 4800), maxStep(held1, 4800));
+    boot(48000);
+    cleanTone(wave);
+    setSel("lfo_destination", fw::LFO_MACRO);
+    setSel("lfo_shape", fw::LFOS_SINE);
+    setPot("lfo_rate", 0.75);
+    setPot("lfo_depth", 1.0);
+    midi({0x90, 57, 100});
+    auto swept = renderNew(1.5);
+    double worst = maxStep(swept, 4800);
+    CHECK(worst <= 1.1 * ref, "%s: steepest step %.4f during the sweep, %.4f with Macro held", fw::kEngineWaveLabels[fw::ENG_VA][wave], worst, ref);
+    CHECK(rmsDiff(swept, held0) > 1e-3, "%s: and the sweep is heard", fw::kEngineWaveLabels[fw::ENG_VA][wave]);
+  }
+  CHECK(!std::strcmp(fw::kParams[fw::P_LFO_DEST].labels[fw::LFO_MACRO], "MACRO"), "AC6  the LFO destination stop is called MACRO");
+
+  section("R1  with sync on, oscillator 2's softening is just as soft (its filter runs once a sample)");
+  {
+    double softening[2];
+    for (int sync = 0; sync < 2; ++sync) {
+      double top[2];
+      for (int soft = 0; soft < 2; ++soft) {
+        boot(48000);
+        cleanTone(fw::WAVE_SAW);
+        setPot("mix_osc1", 0.0);
+        setPot("mix_osc2", 1.0);
+        setSel("osc2_wave", fw::WAVE_SAW);
+        setSel("osc2_octave", 3);
+        setSel("osc_sync", sync);
+        setStep(fw::P_OSC2_MACRO, soft ? 70 : 0);
+        midi({0x90, 45, 100});
+        top[soft] = topShareDb(renderNew(1.3), 3000);
+      }
+      softening[sync] = top[0] - top[1];
+    }
+    CHECK(softening[0] > 6 && std::fabs(softening[1] - softening[0]) < 3.0,
+          "AC5 oscillator 2's Macro softens its saw by %.1f dB above 3 kHz with sync off, %.1f with it on", softening[0], softening[1]);
+  }
+
+  section("R5  high notes stay clean for every shape, the drawing, table 6 and the 0.5:1 ratio");
+  {
+    struct Case {
+      const char* name;
+      int engine, wave;
+      double macro;
+      int shape;  // a starting shape for the drawing, or -1 for a jagged one
+    };
+    const Case cases[] = {
+        {"soft saw", fw::ENG_VA, fw::WAVE_SAW, 0.6, 0},     {"shark fin", fw::ENG_VA, fw::WAVE_TRI, 1.0, 0},
+        {"square-up", fw::ENG_VA, fw::WAVE_SIN, 1.0, 0},    {"square-up", fw::ENG_VA, fw::WAVE_SIN, 0.5, 0},
+        {"drawn saw", fw::ENG_VA, fw::WAVE_DRAW, 0.0, 0},   {"drawn square", fw::ENG_VA, fw::WAVE_DRAW, 0.0, 1},
+        {"jagged drawing", fw::ENG_VA, fw::WAVE_DRAW, 0.0, -1}, {"soft jagged", fw::ENG_VA, fw::WAVE_DRAW, 0.5, -1},
+        {"table 6", fw::ENG_WAVETABLE, fw::WAVE_DRAW, 0.0, -1}, {"table 6 half", fw::ENG_WAVETABLE, fw::WAVE_DRAW, 0.5, -1},
+        {"FM 0.5:1", fw::ENG_FM, fw::WAVE_DRAW, 0.6, 0},
+    };
+    for (double sr : {48000.0, 44100.0})
+      for (const Case& c : cases)
+        for (int note : {36, 72, 96, 108}) {
+          boot(sr);
+          cleanTone(fw::WAVE_SAW);
+          for (int e = 0; e < c.engine; ++e) press("btn_osc1_engine");
+          setSel("osc1_wave", c.wave);
+          if (c.shape >= 0) fw::gDraw.startShape(c.shape);
+          else {
+            static const int8_t kJagged[16] = {127, -127, 90, -40, 0, 127, -127, 60, -90, 30, 127, 127, -127, -127, 10, -60};
+            fw::gDraw.setPoints(kJagged);
+          }
+          settleDrawing();
+          setPot("osc1_macro", c.macro);
+          renderNew(0.05);
+          midi({0x90, note, 127});
+          auto x = renderNew(1.3);
+          double f0 = 440.0 * std::pow(2.0, (note - 69) / 12.0);
+          AliasResult a = aliasCheck(x, c.engine == fw::ENG_FM ? f0 * 0.5 : f0);
+          CHECK(a.worstDb <= -60.0, "%s note %d at %.0f Hz: %.1f dB at %.0f Hz", c.name, note, sr, a.worstDb, a.worstHz);
+        }
+  }
+
+  section("AC9  DRAW under the plain engine: the INIT drawing is a saw, about as loud as the saw");
+  {
+    boot(48000);
+    const int8_t* p = fw::gDraw.points();
+    CHECK(p[0] == -127 && p[15] == 127 && p[7] < 0 && p[8] > 0, "AC20 the INIT drawing should rise from bottom to top like a saw");
+    double saw = rmsOf(tone(fw::WAVE_SAW, 0.0), 0.4, 1.2), drawn = rmsOf(tone(fw::WAVE_DRAW, 0.0), 0.4, 1.2);
+    CHECK(std::fabs(20 * std::log10(drawn / saw)) < 1.5, "the drawn saw is %.2f dB from the saw", 20 * std::log10(drawn / saw));
+    auto softDrawn = tone(fw::WAVE_DRAW, 0.8);
+    CHECK(topShareDb(softDrawn, 2000) < topShareDb(tone(fw::WAVE_DRAW, 0.0), 2000) - 6, "Macro softens the drawing");
+    CHECK(std::fabs(20 * std::log10(rmsOf(softDrawn, 0.4, 1.2) / drawn)) < 3.0, "and keeps its level");
+    boot(48000);
+    cleanTone(fw::WAVE_DRAW);
+    fw::gDraw.startShape(fw::DRAWSHAPE_FLAT);
+    settleDrawing();
+    midi({0x90, 57, 100});
+    CHECK(peakOf(renderNew(0.5)) < 1e-6, "a flat drawing is silent");
+  }
+
+  section("R8  odd drawings stay finite and no louder at their peak than a saw");
+  {
+    static const int8_t kSpike[16] = {0, 0, 0, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0};
+    static const int8_t kOffset[16] = {127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, -127};
+    static const int8_t kTiny[16] = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const int8_t* kinds[] = {kSpike, kOffset, kTiny};
+    for (const int8_t* k : kinds) {
+      boot(48000);
+      fw::gDraw.setPoints(k);
+      settleDrawing();
+      const fw::DrawCopy& d = fw::gDraw.live();
+      double peak = 0;
+      for (int l = 0; l < fw::kDrawLevels; ++l)
+        for (int i = 0; i < fw::kTabLen; ++i) peak = std::max(peak, std::fabs((double)d.tab[l][i] / fw::kTabScale * d.gain));
+      CHECK(std::isfinite(peak) && peak <= 1.181, "a drawing's tables peak at %.3f (at most 1.18)", peak);
+      CHECK(std::isfinite(d.pluckGain) && std::isfinite(d.gain) && d.gain >= 0, "and its gains are finite");
+    }
+  }
+
+  section("AC11  the pluck engine struck with the drawing is about as loud as its other exciters");
+  {
+    auto pluck = [&](int wave, int shape) {
+      boot(48000);
+      cleanTone(fw::WAVE_SAW);
+      for (int e = 0; e < fw::ENG_PLUCK; ++e) press("btn_osc1_engine");
+      setSel("osc1_wave", wave);
+      if (shape >= 0) fw::gDraw.startShape(shape);
+      settleDrawing();
+      midi({0x90, 57, 100});
+      auto x = renderNew(0.3);
+      bool finite = true;
+      for (float v : x) finite = finite && std::isfinite(v);
+      return finite ? rmsOf(x, 0.0, 0.1) : -1.0;
+    };
+    double lo = 1e9, hi = 0;
+    for (int w = 0; w < fw::WAVE_DRAW; ++w) {
+      double l = pluck(w, -1);
+      lo = std::min(lo, l);
+      hi = std::max(hi, l);
+    }
+    for (int shape : {fw::DRAWSHAPE_SAW, fw::DRAWSHAPE_SQUARE, fw::DRAWSHAPE_TRI, fw::DRAWSHAPE_SINE}) {
+      double l = pluck(fw::WAVE_DRAW, shape);
+      CHECK(l >= lo / 1.41 && l <= hi * 1.41, "struck with a %s drawing: %.4f, the other exciters %.4f to %.4f", fw::kDrawShapeNames[shape], l, lo, hi);
+    }
+    CHECK(pluck(fw::WAVE_DRAW, fw::DRAWSHAPE_FLAT) >= 0, "a flat drawing as the exciter stays finite");
+  }
+
+  section("AC10  table 6 is the drawing, morphing towards a sine as Macro rises");
+  {
+    auto wt = [&](double macro) {
+      boot(48000);
+      cleanTone(fw::WAVE_SAW);
+      for (int e = 0; e < fw::ENG_WAVETABLE; ++e) press("btn_osc1_engine");
+      setSel("osc1_wave", fw::WAVE_DRAW);
+      setPot("osc1_macro", macro);
+      renderNew(0.05);
+      midi({0x90, 57, 100});
+      return renderNew(1.3);
+    };
+    auto at0 = wt(0.0), at1 = wt(1.0);
+    CHECK(std::fabs(harmonicDb(at0, a3, 2) + 6.0) < 1.5, "at zero the saw drawing's 2nd harmonic is about -6 dB, got %.1f", harmonicDb(at0, a3, 2));
+    CHECK(harmonicDb(at1, a3, 2) < -50 && harmonicDb(at1, a3, 3) < -50, "at full a sine (2nd %.1f, 3rd %.1f dB)", harmonicDb(at1, a3, 2), harmonicDb(at1, a3, 3));
+  }
+
+  section("AC12  under FM the sixth stop is a 0.5:1 ratio: a partial an octave below the note");
+  {
+    boot(48000);
+    cleanTone(fw::WAVE_SAW);
+    for (int e = 0; e < fw::ENG_FM; ++e) press("btn_osc1_engine");
+    setSel("osc1_wave", fw::WAVE_DRAW);
+    setPot("osc1_macro", 0.5);
+    renderNew(0.05);
+    midi({0x90, 57, 100});
+    auto x = renderNew(1.3);
+    CHECK(harmonicDb(x, a3, 0.5) > -30 && harmonicDb(x, a3, 1.5) > -30, "partials at half and one and a half times the note (%.1f, %.1f dB)",
+          harmonicDb(x, a3, 0.5), harmonicDb(x, a3, 1.5));
+  }
+
+  section("AC14-17, AC19  the DRAW page's encoders");
+  {
+    boot(48000);
+    for (int i = 0; i < 3; ++i) press("btn_engine");
+    CHECK(fw::gUi.mode() == fw::MB_ENGINE && fw::gUi.page() == 2, "the third Engine page is DRAW");
+    fw::tick(33);
+    saveFrame("mode_draw");
+    CHECK(countColour(fw::kGrey, 139, 159) > 150, "AC19 with neither oscillator on DRAW, the page says so");
+    int saves = gSaveCount;
+    fw::encoderTurn(ctl("enc1"), 3);  // to point 4
+    int before = fw::gDraw.point(3);
+    fw::encoderTurn(ctl("enc2"), 5);  // raise it
+    CHECK(fw::gDraw.point(3) > before, "encoder 2 raises the selected point (%d -> %d)", before, fw::gDraw.point(3));
+    CHECK(fw::gPatch.edited(), "a change to the drawing marks the patch changed");
+    press("enc2");
+    CHECK(fw::gDraw.point(3) == 0, "pushing encoder 2 puts the point on the centre line");
+    fw::encoderTurn(ctl("enc2"), 20);
+    int h = fw::gDraw.point(3);
+    press("enc1");  // paint mode
+    fw::encoderTurn(ctl("enc1"), 4);
+    bool painted = true;
+    for (int i = 3; i <= 7; ++i) painted = painted && fw::gDraw.point(i) == h;
+    CHECK(painted, "AC14 in paint mode, moving along copies the height onto each point passed");
+    fw::tick(33);
+    saveFrame("mode_draw_paint");
+    press("enc1");
+    fw::encoderTurn(ctl("enc1"), 2);
+    CHECK(fw::gDraw.point(9) != h, "with paint mode off again, moving along leaves the points alone");
+    fw::encoderTurn(ctl("enc3"), 3);  // to SINE
+    press("enc3");
+    CHECK(fw::gDraw.point(4) == 127 && fw::gDraw.point(12) == -127 && fw::gDraw.point(0) == 0, "AC16 encoder 3 replaces the drawing with a sine");
+    fw::encoderTurn(ctl("enc3"), -3);  // back to SAW
+    press("enc3");
+    int jump = std::abs(fw::gDraw.point(15) - fw::gDraw.point(0));
+    press("enc4");
+    CHECK(std::abs(fw::gDraw.point(15) - fw::gDraw.point(0)) < jump, "AC17 encoder 4 smooths the drawing (the saw's drop is gentler)");
+    setSel("osc2_wave", fw::WAVE_DRAW);
+    fw::tick(33);
+    CHECK(countColour(fw::kGrey, 139, 159) < 50, "with an oscillator on DRAW, no such note");
+    saveFrame("mode_draw_playing");
+    fw::tick(1200);
+    CHECK(gSaveCount > saves, "and the change is saved");
+  }
+
+  section("AC20, AC21  a patch keeps its drawing; so does a restart");
+  {
+    boot(48000);
+    fw::gDraw.startShape(fw::DRAWSHAPE_TRI);
+    savePatchTo(5);
+    fw::gDraw.startShape(fw::DRAWSHAPE_SQUARE);
+    CHECK(fw::patchLoad(5), "the patch should load");
+    CHECK(fw::gDraw.point(8) == 127 && fw::gDraw.point(0) == -127, "and bring its triangle drawing back");
+    fw::gDraw.startShape(fw::DRAWSHAPE_SINE);
+    fw::stateTouched();
+    fw::tick(1200);
+    boot(48000, true);
+    CHECK(fw::gDraw.point(4) == 127 && fw::gDraw.point(12) == -127, "the drawing being played survives a restart");
+    CHECK(fw::gDraw.settled(), "and is ready to play at once");
+  }
+
+  section("R9  state saved before the drawing still loads, with the INIT drawing");
+  {
+    boot(48000);
+    fw::gDraw.startShape(fw::DRAWSHAPE_SINE);
+    setPot("filter_cutoff", 0.321);
+    fw::stateTouched();
+    fw::tick(1200);
+    // Rewrite the blob as version 5: no drawing between the values and the panel's part.
+    uint8_t old[2048];
+    uint32_t params = 6 + fw::P_COUNT * 2;
+    std::memcpy(old, gStore, params);
+    std::memcpy(old + params, gStore + params + fw::kDrawPoints, gStoreLen - params - fw::kDrawPoints);
+    uint32_t n = gStoreLen - fw::kDrawPoints;
+    old[4] = 5;
+    uint16_t sum = 0;
+    for (int i = 0; i < fw::P_COUNT; ++i) sum = (uint16_t)(sum * 31u + (old[6 + i * 2] | (old[7 + i * 2] << 8)) + 1u);
+    for (uint32_t i = params; i < n - 2; ++i) sum = (uint16_t)(sum * 31u + old[i] + 1u);
+    old[n - 2] = (uint8_t)(sum & 0xFF);
+    old[n - 1] = (uint8_t)(sum >> 8);
+    std::memcpy(gStore, old, n);
+    gStoreLen = n;
+    boot(48000, true);
+    CHECK(fw::gParams.val[fw::P_CUTOFF] == std::lround(0.321 * 4095), "a version 5 state's values load");
+    CHECK(fw::gDraw.point(0) == -127 && fw::gDraw.point(15) == 127, "with the INIT (saw) drawing");
+  }
+
+  section("R4  editing the drawing on every block while notes sound: no jumps, no stale tables");
+  {
+    double ref = 0;
+    for (int shape : {fw::DRAWSHAPE_SAW, fw::DRAWSHAPE_SINE}) {
+      boot(48000);
+      cleanTone(fw::WAVE_DRAW);
+      fw::gDraw.startShape(shape);
+      settleDrawing();
+      midi({0x90, 57, 100});
+      ref = std::max(ref, maxStep(renderNew(0.5), 2400));
+    }
+    boot(48000);
+    cleanTone(fw::WAVE_DRAW);
+    setSel("osc2_wave", fw::WAVE_DRAW);
+    for (int e = 0; e < fw::ENG_WAVETABLE; ++e) press("btn_osc2_engine");
+    setPot("mix_osc2", 0.0);  // the wavetable copy is read too, unheard
+    midi({0x90, 57, 100});
+    std::vector<float> x;
+    float l[fw::kMaxBlock], r[fw::kMaxBlock];
+    int swaps = 0;
+    const fw::DrawCopy* last = &fw::gDraw.live();
+    for (int b = 0; b < 1500; ++b) {
+      fw::gDraw.startShape(b / 7 % 2 ? fw::DRAWSHAPE_SINE : fw::DRAWSHAPE_SAW);  // a new drawing every few blocks
+      spareTime();
+      fw::process(l, r, fw::kMaxBlock);
+      x.insert(x.end(), l, l + fw::kMaxBlock);
+      if (&fw::gDraw.live() != last) {
+        ++swaps;
+        last = &fw::gDraw.live();
+      }
+    }
+    bool finite = true;
+    for (float v : x) finite = finite && std::isfinite(v);
+    double worst = maxStep(x, 2400);
+    CHECK(finite && worst <= 1.1 * ref, "steepest step %.4f while editing, %.4f for either drawing held", worst, ref);
+    CHECK(swaps > 20, "and the new drawings were taken into use (%d times)", swaps);
+  }
+}
+
 static void benchmark() {
   section("speed on this machine (information only; says nothing about the Teensy)");
   boot(48000);
@@ -4803,6 +5276,7 @@ int main(int argc, char** argv) {
   testAudioInput();
   testVocoder();
   testSecondReview();
+  testWaveShapes();
   testLfoShapes();
   testFilterControls();
   testArpAndHold();

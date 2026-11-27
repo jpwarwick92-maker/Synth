@@ -148,7 +148,8 @@ enum Unit : uint8_t {
   U_FADE_TIME,
 };
 
-enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN, WAVE_SUPER, WAVE_COUNT };
+// The Wave selector's stops. The sixth plays the patch's drawing (draw.h).
+enum Wave : uint8_t { WAVE_SAW, WAVE_SQR, WAVE_TRI, WAVE_SIN, WAVE_SUPER, WAVE_DRAW, WAVE_COUNT };
 enum FilterType : uint8_t { FILT_LP, FILT_BP, FILT_HP };
 enum FilterSlope : uint8_t { SLOPE_12, SLOPE_24, SLOPE_LADDER };
 // How the LFO runs: free, restarted by a note played from silence, or one
@@ -160,7 +161,9 @@ enum SubInterval : uint8_t { SUB_2_OCT_DOWN, SUB_1_OCT_DOWN, SUB_FIFTH_UP, SUB_1
 float mapSubRatio(int interval, float detuneCents);  // the sub's frequency as a multiple of oscillator 1's
 float mapLadderFeedback(float n);  // 0 .. 3.9; the ladder whistles on its own at 4
 enum VoiceMode : uint8_t { MODE_POLY, MODE_MONO, MODE_UNI };
-enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_PW };
+// LFO_MACRO moves each oscillator's Macro: pulse width on the square, and
+// whatever Macro does on every other wave and engine.
+enum LfoDest : uint8_t { LFO_PITCH, LFO_CUTOFF, LFO_AMP, LFO_MACRO };
 enum LfoShape : uint8_t { LFOS_SINE, LFOS_TRI, LFOS_SAW, LFOS_SQUARE, LFOS_RANDOM, LFOS_COUNT };
 enum Engine : uint8_t { ENG_VA, ENG_FM, ENG_WAVETABLE, ENG_PLUCK, ENG_COUNT };
 enum ArpMode : uint8_t { ARP_OFF, ARP_UP, ARP_DOWN, ARP_UPDOWN, ARP_RANDOM, ARP_PLAYED };

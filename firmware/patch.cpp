@@ -1,5 +1,6 @@
 #include "patch.h"
 
+#include "draw.h"
 #include "firmware.h"
 #include "fw_math.h"
 #include "gfx.h"
@@ -26,7 +27,11 @@ int nameCharIndex(char c) {
 namespace {
 
 // Version 2: Chorus is a pot and the sub has four pitches (see upgradeOldValue).
-constexpr uint8_t kPatchVersion = 2;
+// Version 3: the drawing is stored after the values. Patches saved before
+// it are not loaded: the slots holding them read as empty (decided
+// 2026-11-27; they were test patches, and Macro now shapes waves it did not).
+constexpr uint8_t kPatchVersion = 3;
+static_assert(kPatchDrawBytes == kDrawPoints, "a patch stores every point of the drawing");
 constexpr int kTolerance = 102;      // 2.5% of a pot's travel counts as "at the patch"
 constexpr int kToleranceFine = 41;   // 1% for pitch
 
@@ -46,14 +51,14 @@ void setName(char* dst, const char* src) {
 
 uint16_t rolling(uint16_t sum, uint16_t v) { return (uint16_t)(sum * 31u + v + 1u); }
 
-// Checks a stored patch and, if `vals` is given, unpacks it. Parameters are
-// only ever added at the end, so an older patch is a prefix: the ones it
-// lacks come back as their defaults.
-bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
-  if (len < 5u + kPatchNameLen + 2u + 2u || len > kPatchSize) return false;
-  if (src[0] != 'P' || src[1] != 'A' || src[2] != 'T' || src[3] < 1 || src[3] > kPatchVersion) return false;
+// Checks a stored patch and, if `vals` is given, unpacks it (and the
+// drawing into `drawing`). Parameters are only ever added at the end, so a
+// patch with fewer is a prefix: the ones it lacks come back as their defaults.
+bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name, int8_t* drawing = nullptr) {
+  if (len < 5u + kPatchNameLen + 2u + kPatchDrawBytes + 2u || len > kPatchSize) return false;
+  if (src[0] != 'P' || src[1] != 'A' || src[2] != 'T' || src[3] != kPatchVersion) return false;
   int count = src[4];
-  if (count < 1 || count > P_COUNT || len != 5u + kPatchNameLen + (uint32_t)count * 2u + 2u) return false;
+  if (count < 1 || count > P_COUNT || len != 5u + kPatchNameLen + (uint32_t)count * 2u + kPatchDrawBytes + 2u) return false;
   uint16_t sum = 0;
   const uint8_t* p = src + 5;
   for (int i = 0; i < kPatchNameLen; ++i) sum = rolling(sum, *p++);
@@ -61,7 +66,10 @@ bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
     sum = rolling(sum, (uint16_t)(p[0] | (p[1] << 8)));
     p += 2;
   }
+  for (int i = 0; i < kPatchDrawBytes; ++i) sum = rolling(sum, *p++);
   if ((uint16_t)(p[0] | (p[1] << 8)) != sum) return false;
+  if (drawing)
+    for (int i = 0; i < kPatchDrawBytes; ++i) drawing[i] = (int8_t)src[5 + kPatchNameLen + count * 2 + i];
   if (name) {
     char raw[kPatchNameLen + 1];
     for (int i = 0; i < kPatchNameLen; ++i) raw[i] = (char)src[5 + i];
@@ -73,7 +81,7 @@ bool patchRead(const uint8_t* src, uint32_t len, uint16_t* vals, char* name) {
     for (int i = 0; i < P_COUNT; ++i) {
       if (i < count) {
         int v = p[0] | (p[1] << 8);
-        vals[i] = (uint16_t)(src[3] < 2 ? upgradeOldValue(i, v) : v);
+        vals[i] = (uint16_t)v;
         p += 2;
       } else {
         vals[i] = kParams[i].def;
@@ -230,10 +238,12 @@ bool PatchPanel::load(int slot) {
   uint8_t blob[kPatchSize];
   uint16_t vals[P_COUNT];
   char nm[kPatchNameLen + 1];
+  int8_t drawing[kPatchDrawBytes];
   uint32_t n = fw_hal_patch_load((uint32_t)slot, blob, kPatchSize);
-  if (n == 0 || !patchRead(blob, n, vals, nm)) return false;
+  if (n == 0 || !patchRead(blob, n, vals, nm, drawing)) return false;
   for (int i = 0; i < P_COUNT; ++i)
     if (inPatch(i)) gParams.set(i, vals[i]);
+  gDraw.setPoints(drawing);
   for (int i = 0; i < kPanelCount; ++i) retarget(i);
   setName(name_, nm);
   slot_ = (int8_t)slot;
@@ -261,6 +271,10 @@ void PatchPanel::save(int slot) {
     *p++ = (uint8_t)(v & 0xFF);
     *p++ = (uint8_t)(v >> 8);
     sum = rolling(sum, v);
+  }
+  for (int i = 0; i < kPatchDrawBytes; ++i) {
+    *p++ = (uint8_t)gDraw.point(i);
+    sum = rolling(sum, (uint8_t)gDraw.point(i));
   }
   *p++ = (uint8_t)(sum & 0xFF);
   *p++ = (uint8_t)(sum >> 8);

@@ -44,6 +44,11 @@ class Ui {
   void drawSetupPage();
   void drawMidiPage();
   void drawInputPage();
+  void drawDrawPage();
+  void drawTurn(int enc, int delta);
+  void drawPush(int enc);
+  void drawEdited();
+  bool onDrawPage() const;
   void drawPickup(int id);
   void patchTurn(int enc, int delta);
   void patchPush(int enc);
@@ -62,6 +67,10 @@ class Ui {
   // the Patch pages
   int8_t browse_;        // the slot the Patch page is showing
   uint8_t cursor_;       // which letter of the name is being edited
+  // the DRAW page
+  uint8_t drawCursor_;   // the point being edited, 0..15
+  bool drawPaint_;       // paint mode: moving along copies the height onto each point passed
+  uint8_t drawShape_;    // the starting shape encoder 3 has chosen
   uint16_t armMs_;       // overwriting a used slot needs a second push within this time
   uint16_t noteMs_;      // how long the line of feedback ("SAVED") stays
   const char* note_;

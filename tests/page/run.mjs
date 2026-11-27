@@ -119,7 +119,9 @@ const findClashes = (page) => page.evaluate(() => {
   const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left * mm, t: r.top * mm, r: r.right * mm, b: r.bottom * mm }; };
   const owner = (e) => e.closest('.ctl')?.dataset.id || '';
   const hits = (a, b, gap) => a.l < b.r - gap && b.l < a.r - gap && a.t < b.b - gap && b.t < a.b - gap;
-  const texts = [...svg.querySelectorAll('text')].map((e) => ({ what: `"${e.textContent}"`, id: owner(e), ...box(e) }));
+  // lettering: every text, and every pictogram that stands in for a stop's text (by its fixed box)
+  const texts = [...svg.querySelectorAll('text'), ...svg.querySelectorAll('.picto-box')]
+    .map((e) => ({ what: e.tagName === 'text' ? `"${e.textContent}"` : `pictogram "${e.parentNode.querySelector('title').textContent}"`, id: owner(e), ...box(e) }));
   const bodies = [...svg.querySelectorAll('.cap, .enc, .btn, .tslot, .fcap, .bezel')].map((e) => ({ what: owner(e) || 'display', id: owner(e), ...box(e) }));
   const frame = box(svg.querySelector('.plate'));
   const out = [];
@@ -231,6 +233,22 @@ try {
     const found = await findClashes(broken.page);
     check(found.length > 0, 'the overlap check notices a knob moved onto its neighbour', found.slice(0, 3).join('; '));
     await broken.page.close();
+
+    // and pictograms count as lettering: push a Wave selector, which has them, onto its Octave neighbour
+    const brokenPicto = await open(context, {
+      start: false,
+      tweak: (p) => p.route('**/layouts/a3.json', async (route) => {
+        const res = await route.fetch();
+        const json = await res.json();
+        json.controls.find((c) => c.id === 'osc1_wave').x += 16;
+        await route.fulfill({ response: res, json });
+      }),
+    });
+    const foundPicto = (await findClashes(brokenPicto.page)).filter((f) => f.includes('pictogram'));
+    check(foundPicto.length > 0, 'the overlap check notices a pictogram pushed onto a neighbour', foundPicto.slice(0, 3).join('; '));
+    check(await brokenPicto.page.locator('[data-id="osc1_wave"] .picto').count() === 6 && await brokenPicto.page.locator('[data-id="lfo_shape"] .picto').count() === 5,
+      'the Wave selectors show six pictograms and LFO Shape five');
+    await brokenPicto.page.close();
 
     // change one position in the layout file only: the control moves
     const moved = await open(context, {
@@ -467,6 +485,28 @@ try {
   }
 
   // ------------------------------------------------------------------ MIDI
+  section('pictograms: tapping a Wave pictogram turns the selector to it, and DRAW is heard');
+  {
+    const tap = async (id, stop) => {
+      const box = await page.locator(`[data-id="${id}"] rect.hit[data-stop="${stop}"]`).boundingBox();
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    };
+    const before = await pos(page, 'osc1_wave');
+    await tap('osc1_wave', 5);
+    await sleep(300);
+    check(await pos(page, 'osc1_wave') === 5, 'tapping the doodle turns oscillator 1 to DRAW', String(await pos(page, 'osc1_wave')));
+    check(await page.locator('[data-id="osc1_wave"] .picto.on title').textContent() === 'DRAW', 'and its pictogram is the one lit');
+    await page.click('#test-note');
+    await sleep(1700);
+    check(await lcdCount(page, LINE, 40, 208) > 400, 'the drawing is heard: the scope shows it', String(await lcdCount(page, LINE, 40, 208)));
+    await page.screenshot({ path: path.join(shotDir, 'page_draw.png') });
+    await page.click('#test-note');
+    await tap('osc1_wave', before);
+    await sleep(300);
+    check(await pos(page, 'osc1_wave') === before, 'and tapping the stop it was on turns it back');
+    await sleep(1500);
+  }
+
   section('AC9  a MIDI controller number sets the value shown; the real control stays put and its label lights');
   const IDLE = 0x96876a;                                // the firmware's plain label light
   const led = (pg, id) => pg.evaluate((i) => window.__synth.led(i), id);

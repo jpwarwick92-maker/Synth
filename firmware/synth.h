@@ -50,6 +50,11 @@ struct Osc {
                         // fractions of a cycle. They wrap by themselves and are read with integer
                         // arithmetic, which is a good deal cheaper on the Teensy than six float reads.
   float blep;           // Sync: second half of the correction that smooths a reset, due next sample
+  float shz;            // VA: the memory of the filter Macro shapes the saw, triangle or drawing with
+  uint8_t shKind;       // VA: which shaping that filter did last block (ShapeKind)
+  bool shPrime;         // VA: the shaping has just begun: start its filter where the wave is
+  int8_t dlvl;          // DRAW: the table level being read
+  float dfade;          // DRAW: how much of the drawing's previous version is still heard, 1..0
 };
 
 struct Voice {

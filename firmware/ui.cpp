@@ -1,10 +1,12 @@
 #include "ui.h"
 
+#include "draw.h"
 #include "firmware.h"
 #include "fw_math.h"
 #include "gfx.h"
 #include "midi.h"
 #include "params.h"
+#include "shapes.h"
 #include "synth.h"
 #include "tables.h"
 #include "vocoder.h"
@@ -29,7 +31,9 @@ const Page kPages[MB_COUNT][kMaxPages] = {
                   {"VOCODER", {P_VOCODER, P_VOC_FORMANT, P_VOC_CONSONANTS, P_VOC_SMOOTH}}},
     /* MOD    */ {{"MOD", {P_LFO_FADE, P_VEL_CUTOFF, P_FENV_PITCH, P_DUCK}}, {nullptr, {}}},
     /* ENGINE */ {{"VOICE", {P_UNI_DETUNE, P_SUB_DETUNE, P_BEND_RANGE, P_FILT_SLOPE}},
-                  {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}}},
+                  {"OSC ENGINES", {P_OSC1_COLOR, kNone, P_OSC2_MACRO, P_OSC2_COLOR}},
+                  // The DRAW page edits the patch's drawing: handled by drawTurn and drawPush.
+                  {"DRAW", {kNone, kNone, kNone, kNone}}},
     // The Patch pages have actions, not parameters: they are handled by patchTurn and patchPush.
     /* PATCH  */ {{"PATCH", {kNone, kNone, kNone, kNone}}, {"NAME", {kNone, kNone, kNone, kNone}},
                   {"SETUP", {kNone, kNone, kNone, kNone}}, {"MIDI", {kNone, kNone, kNone, kNone}},
@@ -72,8 +76,11 @@ const char* paramName(int id) {
     int e = engineOf(osc);
     if (id == P_OSC1_WAVE || id == P_OSC2_WAVE) return kEngineWaveName[e];
     if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) {
-      bool super = e == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
-      return super ? "SAW DETUNE" : kEngineMacroName[e];  // under the supersaw, Macro spreads the seven saws
+      if (e != ENG_VA) return kEngineMacroName[e];
+      // Under the plain engine Macro shapes whichever wave is selected.
+      static const char* const kVaMacro[WAVE_COUNT] = {"SOFTEN", "PULSE WIDTH", "SHARK FIN", "SQUARE UP", "SPREAD", "SOFTEN"};
+      int wave = gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE);
+      return kVaMacro[wave < WAVE_COUNT ? wave : 0];
     }
     if (id == P_OSC1_COLOR || id == P_OSC2_COLOR) return kEngineColorName[e];
   }
@@ -143,19 +150,11 @@ void formatParam(int id, Str& s) {
     s.add(kEngineWaveLabels[engine][st < WAVE_COUNT ? st : 0]);
     return;
   }
-  bool superSaw = osc >= 0 && engine == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SUPER;
-  if ((id == P_OSC1_MACRO || id == P_OSC2_MACRO) && superSaw) {
-    s.addInt((int)((id == P_OSC1_MACRO ? n : gParams.frac(id)) * 100.0f + 0.5f));
-    s.add('%');
-    return;
-  }
-  if (id == P_OSC1_MACRO && engine != ENG_VA) {
-    s.addInt((int)(n * 100.0f + 0.5f));
-    s.add('%');
-    return;
-  }
-  if (id == P_OSC2_MACRO && engine == ENG_VA) {
-    s.addInt((int)(mapPulseWidth(gParams.frac(id)) * 100.0f + 0.5f));
+  if (id == P_OSC1_MACRO || id == P_OSC2_MACRO) {
+    // pulse width on the plain engine's square; elsewhere how far Macro is turned
+    float m = id == P_OSC1_MACRO ? n : gParams.frac(id);
+    bool square = engine == ENG_VA && gParams.step(osc == 0 ? P_OSC1_WAVE : P_OSC2_WAVE) == WAVE_SQR;
+    s.addInt((int)((square ? mapPulseWidth(m) : m) * 100.0f + 0.5f));
     s.add('%');
     return;
   }
@@ -354,8 +353,74 @@ int waveOf(int osc) {
 }
 float octaveOf(int osc) { return (float)(gParams.step(osc == 0 ? P_OSC1_OCTAVE : P_OSC2_OCTAVE) - 2); }
 bool isSuper(int osc) { return engineOf(osc) == ENG_VA && waveOf(osc) == WAVE_SUPER; }
-// Macro only does something under some waves of the plain engine.
-bool macroIdle(int osc) { return engineOf(osc) == ENG_VA && waveOf(osc) != WAVE_SQR && waveOf(osc) != WAVE_SUPER; }
+
+// The drawing as a wave, 0..1 through its cycle: its points joined by straight lines.
+float drawnAt(const int8_t* pts, float ph) {
+  float pos = frac01(ph) * (float)kDrawPoints;
+  int i = (int)pos;
+  float a = (float)pts[i & (kDrawPoints - 1)], b = (float)pts[(i + 1) & (kDrawPoints - 1)];
+  return (a + (b - a) * (pos - (float)i)) * (1.0f / 127.0f);
+}
+
+// Does this oscillator play the drawing? (Under FM the sixth stop is a ratio.)
+bool playsDrawing(int osc) { return waveOf(osc) == WAVE_DRAW && engineOf(osc) != ENG_FM; }
+
+// One cycle of a plain-engine wave as Macro shapes it, worked out by running
+// the oscillator's own shaping on it (shapes.h), at 256 points a cycle.
+// Kept for each oscillator until its wave, Macro or the drawing changes.
+constexpr int kCycle = 256;
+float gCycle[2][kCycle];
+float gCycleMacro[2] = {-1.0f, -1.0f};
+int gCycleWave[2] = {-1, -1};
+uint32_t gCycleDraw[2];
+
+uint32_t drawingHash() {
+  uint32_t h = 2166136261u;
+  for (int i = 0; i < kDrawPoints; ++i) h = (h ^ (uint8_t)gDraw.point(i)) * 16777619u;
+  return h;
+}
+
+const float* shapedCycle(int osc, int wave, float macro) {
+  uint32_t dh = wave == WAVE_DRAW ? drawingHash() : 0;
+  if (gCycleWave[osc] == wave && gCycleMacro[osc] == macro && gCycleDraw[osc] == dh) return gCycle[osc];
+  gCycleWave[osc] = wave;
+  gCycleMacro[osc] = macro;
+  gCycleDraw[osc] = dh;
+  float mean = 0.0f;
+  if (wave == WAVE_DRAW) {  // a drawing is heard with its mean taken off
+    for (int i = 0; i < kDrawPoints; ++i) mean += (float)gDraw.point(i) * (1.0f / 127.0f);
+    mean *= 1.0f / (float)kDrawPoints;
+  }
+  const float inc = 1.0f / (float)kCycle;
+  float coef[kSquarePoly];
+  if (wave == WAVE_SIN) squareUp(macro, inc, coef);
+  bool shaped = macro > 0.0f;
+  bool fin = wave == WAVE_TRI;
+  float a = shaped ? onePole(inc, fin ? finCutoff(macro) : softCutoff(macro)) : 1.0f;
+  float g = !shaped ? 1.0f : fin ? finGain(macro) : softGain(macro);
+  float z = 0.0f;
+  for (int rep = 0; rep < 4; ++rep)  // a few cycles, so the filter has settled by the last
+    for (int i = 0; i < kCycle; ++i) {
+      float ph = (float)i * inc, x;
+      switch (wave) {
+        case WAVE_SAW: x = 2.0f * ph - 1.0f; break;
+        case WAVE_TRI: x = ph < 0.25f ? 4.0f * ph : (ph < 0.75f ? 2.0f - 4.0f * ph : 4.0f * ph - 4.0f); break;
+        case WAVE_DRAW: x = drawnAt(gDraw.points(), ph) - mean; break;
+        default: {
+          float s = tabRead(gSine, ph);
+          x = shaped ? squareUpAt(coef, s) : s;
+          break;
+        }
+      }
+      float y = x;
+      if (shaped && wave != WAVE_SIN) {
+        z += a * (x - z);
+        y = (fin ? x - z : z) * g;
+      }
+      gCycle[osc][i] = y;
+    }
+  return gCycle[osc];
+}
 // How many times oscillator 2 goes round for one cycle of oscillator 1.
 float oscRatio() { return exp2f_(octaveOf(1) - octaveOf(0) + mapDetuneCents(gParams.norm(P_OSC2_DETUNE)) * (1.0f / 1200.0f)); }
 
@@ -374,9 +439,10 @@ float oscShape(int osc, float ph) {
         float p2 = frac01(ph * (1.0f + 0.11f * spread) + 0.31f), p3 = frac01(ph * (1.0f - 0.11f * spread) + 0.67f);
         return ((2.0f * cyc - 1.0f) + 0.6f * (2.0f * p2 - 1.0f) + 0.6f * (2.0f * p3 - 1.0f)) * 0.5f;
       }
-      return waveShape(wave, cyc, mapPulseWidth(macro));
+      if (wave == WAVE_SQR) return waveShape(wave, cyc, mapPulseWidth(macro));
+      return shapedCycle(osc, wave, macro)[(int)(cyc * (float)kCycle) & (kCycle - 1)];
     case ENG_FM: {
-      static const float kRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f};
+      static const float kRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f, 0.5f};
       // Feedback bends the modulator with its own output; two rounds of that are close enough to draw.
       float th = kTwoPi * ph * kRatios[wave], fb = color * 1.25f;
       float m = sinf_(th + fb * sinf_(th + fb * sinf_(th)));
@@ -386,7 +452,9 @@ float oscShape(int osc, float ph) {
       float pos = macro * (float)(kWtFrames - 1);
       int f0 = pos >= (float)(kWtFrames - 1) ? kWtFrames - 2 : (int)pos;
       int i = (int)(cyc * (float)kWtLen) & (kWtLen - 1);
-      float a = (float)gWt[wave][f0][0][i], b = (float)gWt[wave][f0 + 1][0][i];
+      const int16_t* fa = wave == WAVE_DRAW ? gDraw.live().wt[f0][0] : gWt[wave][f0][0];  // table 6 is the drawing
+      const int16_t* fb = wave == WAVE_DRAW ? gDraw.live().wt[f0 + 1][0] : gWt[wave][f0 + 1][0];
+      float a = (float)fa[i], b = (float)fb[i];
       return (a + (b - a) * (pos - (float)f0)) * (1.0f / 32000.0f);
     }
     default: {  // pluck: a wave that dies away, faster and duller with more damping
@@ -406,6 +474,7 @@ float oscShape(int osc, float ph) {
         case 1: return body + 0.2f * hiss * exp2f_(-t * 16.0f);
         case 2: return body + (t < 0.03f ? 0.9f * hiss : 0.0f);
         case 3: return body + 0.5f * (2.0f * frac01(t * 14.0f) - 1.0f) * burst;
+        case WAVE_DRAW: return body + 0.5f * drawnAt(gDraw.points(), t * 14.0f) * burst;  // struck with the drawing
         default: return body + 0.35f * sinf_(th * 6.0f) * burst;
       }
     }
@@ -435,13 +504,9 @@ void drawOscWave(int osc, const Box& b = kPic) {
   plotWave(b, span, kLine, [osc](float t) { return oscShape(osc, t); });
 }
 
-// Shown when Macro is turned under a wave it does nothing to.
-void drawMacroIdle(int osc, const Box& b) {
-  Str s;
-  s.add("NO EFFECT ON ");
-  s.add(kEngineWaveLabels[ENG_VA][waveOf(osc)]);
-  hint(b.y + 2, s.b);
-  if (b.h > 100) hint(b.y + b.h - 16, "SQR AND SUPER USE IT");
+// Shown over an oscillator's picture when it plays the drawing and the drawing is flat.
+void drawFlatHint(int osc, const Box& b) {
+  if (playsDrawing(osc) && engineOf(osc) == ENG_VA && gDraw.silent()) hint(b.y + 2, "THE DRAWING IS FLAT: SILENT");
 }
 
 // Detune: two oscillators a little apart beat against each other. The
@@ -1212,7 +1277,7 @@ bool drawSoftPicture(int id, const Box& b) {
     }
     case P_OSC2_MACRO:
       drawOscWave(1, b);
-      if (macroIdle(1)) drawMacroIdle(1, b);
+      drawFlatHint(1, b);
       return true;
     default: return false;
   }
@@ -1230,6 +1295,9 @@ void Ui::init() {
   softMs_ = 0;
   for (int i = 0; i < 4; ++i) burst_[i] = 0;
   browse_ = 0;
+  drawCursor_ = 0;
+  drawPaint_ = false;
+  drawShape_ = DRAWSHAPE_SAW;
   cursor_ = 0;
   armMs_ = 0;
   noteMs_ = 0;
@@ -1389,9 +1457,15 @@ void Ui::modeButton(int which) {
   dirty_ = true;
 }
 
+bool Ui::onDrawPage() const { return mode_ == MB_ENGINE && page_ == 2; }
+
 void Ui::encoderTurn(int enc, int delta) {
   if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
     patchTurn(enc, delta);
+    return;
+  }
+  if (onDrawPage() && enc >= 0 && enc < 4) {
+    drawTurn(enc, delta);
     return;
   }
   int id = pageParam(enc);
@@ -1411,6 +1485,10 @@ void Ui::encoderTurn(int enc, int delta) {
 void Ui::encoderPush(int enc) {
   if (mode_ == MB_PATCH && enc >= 0 && enc < 4) {
     patchPush(enc);
+    return;
+  }
+  if (onDrawPage() && enc >= 0 && enc < 4) {
+    drawPush(enc);
     return;
   }
   int id = pageParam(enc);
@@ -1597,6 +1675,93 @@ void Ui::drawMidiPage() {
   drawStatus();
 }
 
+// ---- the DRAW page (Engine, third page): the patch's drawing ----
+
+// A change to the drawing: like any change to the sound, it marks the patch edited and is saved.
+void Ui::drawEdited() {
+  gPatch.markEdited();
+  stateTouched();
+  dirty_ = true;
+}
+
+// Encoder 1 moves along the points (in paint mode, carrying the height
+// with it); encoder 2 raises or lowers the point; encoder 3 picks a
+// starting shape. Encoder 4 only pushes.
+void Ui::drawTurn(int enc, int delta) {
+  popupParam_ = -1;
+  popupMs_ = 0;
+  bool changed = false;
+  if (enc == 0) {
+    int h = gDraw.point(drawCursor_);
+    int step = delta > 0 ? 1 : -1;
+    for (int n = delta > 0 ? delta : -delta; n > 0; --n) {
+      int next = clampi((int)drawCursor_ + step, 0, kDrawPoints - 1);
+      if (next == drawCursor_) break;
+      drawCursor_ = (uint8_t)next;
+      if (drawPaint_) changed |= gDraw.setPoint(drawCursor_, h);
+    }
+  } else if (enc == 1) {
+    int n = burst_[enc] < 250 ? ++burst_[enc] : 250;  // a fast spin moves further
+    int step = n >= 4 ? 10 : n >= 2 ? 4 : 2;
+    changed = gDraw.setPoint(drawCursor_, gDraw.point(drawCursor_) + delta * step);
+  } else if (enc == 2) {
+    int s = ((int)drawShape_ + delta) % DRAWSHAPE_COUNT;
+    drawShape_ = (uint8_t)(s < 0 ? s + DRAWSHAPE_COUNT : s);
+  }
+  if (changed) drawEdited();
+  dirty_ = true;
+}
+
+void Ui::drawPush(int enc) {
+  popupParam_ = -1;
+  popupMs_ = 0;
+  bool changed = false;
+  if (enc == 0) drawPaint_ = !drawPaint_;
+  else if (enc == 1) changed = gDraw.setPoint(drawCursor_, 0);
+  else if (enc == 2) changed = gDraw.startShape(drawShape_);
+  else changed = gDraw.smooth();
+  if (changed) drawEdited();
+  dirty_ = true;
+}
+
+void Ui::drawDrawPage() {
+  int pages = pageCount(MB_ENGINE);
+  Str title;
+  title.add("DRAW ");
+  title.addInt(page_ + 1);
+  title.add('/');
+  title.addInt(pages);
+  gfxTextCentre(160, 6, title.b, kAccent, 2);
+
+  Str point, height;
+  if (drawCursor_ + 1 < 10) point.add('0');
+  point.addInt(drawCursor_ + 1);
+  int h = gDraw.point(drawCursor_);
+  if (h > 0) height.add('+');
+  height.addInt(h);
+  const char* const label[4] = {drawPaint_ ? "PAINT" : "POINT", "HEIGHT", "START", "SMOOTH"};
+  const char* const value[4] = {point.b, height.b, kDrawShapeNames[drawShape_], "PUSH"};
+  drawCorners(label, value);
+
+  // The drawing, one cycle across the box and back to its first point, the point being edited picked out.
+  const int x0 = 16, w = 288, top = 76, bottom = 134, mid = (top + bottom) / 2, amp = (bottom - top) / 2;
+  gfxHLine(x0, mid, w, kGrid);
+  auto xAt = [&](int i) { return x0 + i * w / kDrawPoints; };
+  auto yAt = [&](int i) { return mid - gDraw.point(i & (kDrawPoints - 1)) * amp / 127; };
+  for (int i = 0; i < kDrawPoints; ++i) gfxPlotLine(xAt(i), yAt(i), xAt(i + 1), yAt(i + 1), drawPaint_ ? kAccent : kLine);
+  for (int i = 0; i < kDrawPoints; ++i) {
+    bool here = i == drawCursor_;
+    int s = here ? 7 : 3;
+    gfxFill(xAt(i) - s / 2, yAt(i) - s / 2, s, s, here ? kInk : kLineDim);
+  }
+  gfxVLine(xAt(drawCursor_), top - 4, 3, kAccent);
+
+  bool heard = playsDrawing(0) || playsDrawing(1);
+  if (!heard) hint(141, "NO OSCILLATOR PLAYS IT");
+  else if (gDraw.silent()) hint(141, "FLAT: IT MAKES NO SOUND");
+  drawStatus();
+}
+
 // Input: the audio input's level against the converter's limit, and where it is sent.
 void Ui::drawInputPage() {
   gfxTextCentre(160, 6, "INPUT 5/5", kAccent, 2);
@@ -1641,6 +1806,10 @@ void Ui::drawPickup(int id) {
 }
 
 void Ui::drawModePage() {
+  if (onDrawPage()) {
+    drawDrawPage();
+    return;
+  }
   if (mode_ == MB_PATCH) {
     if (page_ == 0) drawPatchPage();
     else if (page_ == 1) drawNamePage();
@@ -1714,11 +1883,11 @@ void Ui::drawParamPopup(int id) {
     // ---- oscillators ----
     case P_OSC1_WAVE: case P_OSC1_OCTAVE: case P_OSC1_MACRO: case P_OSC1_COLOR: case P_OSC1_ENGINE:
       drawOscWave(0);
-      if (id == P_OSC1_MACRO && macroIdle(0)) drawMacroIdle(0, kPic);
+      drawFlatHint(0, kPic);
       return;
     case P_OSC2_WAVE: case P_OSC2_OCTAVE: case P_OSC2_MACRO: case P_OSC2_COLOR: case P_OSC2_ENGINE:
       drawOscWave(1);
-      if (id == P_OSC2_MACRO && macroIdle(1)) drawMacroIdle(1, kPic);
+      drawFlatHint(1, kPic);
       return;
     case P_OSC2_DETUNE: drawDetune(); return;
     // ---- panel controls whose section would otherwise give them another control's picture ----

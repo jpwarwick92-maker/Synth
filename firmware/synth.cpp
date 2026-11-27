@@ -1,8 +1,10 @@
 #include "synth.h"
 
 #include "fw_math.h"
+#include "draw.h"
 #include "fx.h"
 #include "midi.h"
+#include "shapes.h"
 #include "tables.h"
 #include "vocoder.h"
 
@@ -16,7 +18,10 @@ namespace {
 // this to 64 KB; the string's own decay hides the rounding.
 int16_t gStrings[kNumVoices][2][kKsLen];
 
-const float kFmRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f};
+// FM ratios, one per Wave stop. The sixth puts the modulator an octave
+// below the note (the drawing is never an FM modulator: its rich partials
+// would spread far above the note and fold back).
+const float kFmRatios[WAVE_COUNT] = {1.0f, 2.0f, 3.0f, 3.5f, 4.0f, 0.5f};
 
 // Supersaw: how far each of the six side saws sits from the centre one at
 // full detune (as a fraction of its frequency), and how loud the sides are.
@@ -90,6 +95,17 @@ struct OscRun {
   float wtMix;
   float ksDelay, ksDamp, ksGain;
   uint32_t ssInc[6];  // supersaw: the six side saws' speeds, as 32-bit fractions of a cycle per sample
+  // Macro's shaping of the plain engine's waves (shapes.h)
+  uint8_t shape;      // ShapeKind: a filter on the saw, triangle or drawing
+  float shA, shG;     // its coefficient, and the gain that keeps the level
+  bool squared;       // the sine is being squared up
+  float poly[kSquarePoly];
+  // the drawing (draw.h)
+  float drawGain, drawGainOld;  // readings of the live and previous versions times these
+  const int16_t* drawOld;       // the previous version's table, while the crossfade runs
+  const int16_t* wtA2;          // the wavetable engine's frames of the previous version
+  const int16_t* wtB2;
+  float dfadeStep;              // how far the crossfade moves each sample
 };
 
 namespace {
@@ -192,6 +208,14 @@ inline float exciteSample(Osc& o, uint8_t type, uint32_t& rng) {
       return o.fb * 2.0f;
     case 2: return n * 4 < o.exciteLen ? nextNoise(rng) * 1.5f : 0.0f;   // a short snap
     case 3: return 2.0f * (float)n / (float)o.exciteLen - 1.0f;        // a ramp: pitched, string-like
+    case WAVE_DRAW: {                                                  // the drawing: the string struck with its shape
+      const DrawCopy& d = gDraw.live();
+      float pos = (float)n * (float)kDrawPoints / (float)o.exciteLen;
+      int i = (int)pos;
+      float f = pos - (float)i;
+      float a = (float)d.pts[i & (kDrawPoints - 1)], b = (float)d.pts[(i + 1) & (kDrawPoints - 1)];
+      return ((a + (b - a) * f) * (1.0f / 127.0f) - d.pluckMean) * d.pluckGain;
+    }
     default: {                                                         // a thin, bright pick
       float nz = nextNoise(rng);
       float y = nz - o.fb;
@@ -199,6 +223,36 @@ inline float exciteSample(Osc& o, uint8_t type, uint32_t& rng) {
       return y * 0.7f;
     }
   }
+}
+
+// The wavetable engine's reading: two neighbouring frames blended, at `p`
+// samples into the frame. The frames are blended first, then read through
+// four points: the short tables need the smoother curve to stay clean on rich waves.
+inline float wtRead(const int16_t* a, const int16_t* b, float mix, float p) {
+  int i = (int)p;
+  float f = p - (float)i;
+  const int m = kWtLen - 1;
+  int i0 = (i - 1) & m, i1 = i & m, i2 = (i + 1) & m, i3 = (i + 2) & m;
+  float y0 = (float)a[i0] + (float)(b[i0] - a[i0]) * mix;
+  float y1 = (float)a[i1] + (float)(b[i1] - a[i1]) * mix;
+  float y2 = (float)a[i2] + (float)(b[i2] - a[i2]) * mix;
+  float y3 = (float)a[i3] + (float)(b[i3] - a[i3]) * mix;
+  float c1 = 0.5f * (y2 - y0);
+  float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+  float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+  return (((c3 * f + c2) * f + c1) * f + y1) * (1.0f / 32000.0f);
+}
+
+// Macro's shaping of a plain-engine wave, applied once a sample to what
+// the oscillator gave (never inside oscValue: with sync on, that is read
+// more than once a sample, and the filter would run too fast).
+inline float shapeTick(Osc& o, const OscRun& r, float x) {
+  if (o.shPrime) {  // just begun: no jump from where the wave is
+    o.shPrime = false;
+    o.shz = r.shape == SHAPE_SOFT ? x : 0.0f;
+  }
+  o.shz += r.shA * (x - o.shz);
+  return (r.shape == SHAPE_SOFT ? o.shz : x - o.shz) * r.shG;
 }
 
 // An oscillator's output now, whichever engine it is running. `pm` shifts
@@ -212,6 +266,11 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
         case WAVE_SAW:
         case WAVE_TRI: return readTable(o, ph);
         case WAVE_SQR: return pulseAt(o, ph, r.pw);
+        case WAVE_DRAW: {
+          float y = readTable(o, ph) * r.drawGain;
+          if (o.dfade > 0.0f) y += (tabRead16(r.drawOld, ph) * r.drawGainOld - y) * o.dfade;  // still fading from the last version
+          return y;
+        }
         case WAVE_SUPER: {  // seven saws: one in tune, three either side
           // The six side saws, read with integer arithmetic throughout:
           // the phase is a 32-bit fraction of a cycle, its top 11 bits pick
@@ -229,7 +288,10 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
           float sides = (float)acc * (1.0f / kTabScale);
           return (readTable(o, ph) + kSuperSide * sides) * kSuperGain;
         }
-        default: return tabRead(gSine, ph);
+        default: {
+          float s = tabRead(gSine, ph);
+          return r.squared ? squareUpAt(r.poly, s) : s;
+        }
       }
     }
     case ENG_FM: {  // one sine bending the phase of another
@@ -239,20 +301,9 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
     }
     case ENG_WAVETABLE: {  // morph between two neighbouring frames
       float p = (pm == 0.0f ? o.phase : wrap01(o.phase + pm)) * (float)kWtLen;
-      int i = (int)p;
-      float f = p - (float)i;
-      const int m = kWtLen - 1;
-      int i0 = (i - 1) & m, i1 = i & m, i2 = (i + 1) & m, i3 = (i + 2) & m;
-      // blend the frames first, then read through four points: the short
-      // tables need the smoother curve to stay clean on rich waves
-      float y0 = (float)r.wtA[i0] + (float)(r.wtB[i0] - r.wtA[i0]) * r.wtMix;
-      float y1 = (float)r.wtA[i1] + (float)(r.wtB[i1] - r.wtA[i1]) * r.wtMix;
-      float y2 = (float)r.wtA[i2] + (float)(r.wtB[i2] - r.wtA[i2]) * r.wtMix;
-      float y3 = (float)r.wtA[i3] + (float)(r.wtB[i3] - r.wtA[i3]) * r.wtMix;
-      float c1 = 0.5f * (y2 - y0);
-      float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
-      float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-      return (((c3 * f + c2) * f + c1) * f + y1) * (1.0f / 32000.0f);
+      float y = wtRead(r.wtA, r.wtB, r.wtMix, p);
+      if (o.dfade > 0.0f) y += (wtRead(r.wtA2, r.wtB2, r.wtMix, p) - y) * o.dfade;  // table 6: fading from the drawing's last version
+      return y;
     }
     default: {  // pluck: a delay line fed back through a gentle filter
       float rp = (float)o.ksPos - r.ksDelay;
@@ -279,6 +330,10 @@ inline float oscValue(Osc& o, const OscRun& r, float pm, uint32_t& rng) {
 
 // Moves an oscillator on by one sample.
 inline void oscStep(Osc& o, const OscRun& r) {
+  if (o.dfade > 0.0f) {
+    o.dfade -= r.dfadeStep;
+    if (o.dfade < 0.0f) o.dfade = 0.0f;
+  }
   if (r.engine == ENG_FM) {
     o.phase2 = wrap01(o.phase2 + r.inc * r.fmRatio);
   } else if (r.engine == ENG_VA && r.wave == WAVE_SUPER) {
@@ -398,9 +453,9 @@ void Synth::init(float sampleRate) {
     v.vel = 0.0f;
     v.age = 0;
     v.pitch = v.target = 60.0f;
-    v.o1 = Osc{(float)i * 0.123f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][0], 0, 0, 1, false, {}, 0.0f};
-    v.o2 = Osc{(float)i * 0.071f + 0.3f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][1], 0, 0, 1, false, {}, 0.0f};
-    v.sub = Osc{0.0f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, nullptr, 0, 0, 1, false, {}, 0.0f};
+    v.o1 = Osc{(float)i * 0.123f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][0], 0, 0, 1, false, {}, 0.0f, 0.0f, SHAPE_NONE, false, 0, 0.0f};
+    v.o2 = Osc{(float)i * 0.071f + 0.3f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, gStrings[i][1], 0, 0, 1, false, {}, 0.0f, 0.0f, SHAPE_NONE, false, 0, 0.0f};
+    v.sub = Osc{0.0f, rest, rest, 0.0f, 0.0f, 0.0f, 0.0f, nullptr, 0, 0, 1, false, {}, 0.0f, 0.0f, SHAPE_NONE, false, 0, 0.0f};
     for (int k = 0; k < 6; ++k) {  // the supersaw's saws start scattered, so they never line up into one
       v.o1.ss[k] = (uint32_t)(wrap01(0.137f * (float)(k + 1) + 0.071f * (float)i) * 4294967296.0f);
       v.o2.ss[k] = (uint32_t)(wrap01(0.211f * (float)(k + 1) + 0.053f * (float)i + 0.4f) * 4294967296.0f);
@@ -1267,9 +1322,38 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
   r.wave = wave;
   r.inc = inc;
   r.pw = pw;
+  r.shape = SHAPE_NONE;
+  r.squared = false;
+  r.drawOld = nullptr;
+  r.wtA2 = r.wtB2 = nullptr;
+  r.dfadeStep = gDraw.fadeStep();
+  o.dfade = 0.0f;
+  bool drawing = wave == WAVE_DRAW && (engine == ENG_VA || engine == ENG_WAVETABLE);
+  if (drawing) o.dfade = gDraw.fade();
   switch (engine) {
     case ENG_VA:
-      if (wave == WAVE_SUPER) {
+      if (wave == WAVE_DRAW) {
+        const DrawCopy& d = gDraw.live();
+        int lvl = drawLevelFor(inc);
+        const int16_t* t = d.tab[lvl];
+        // A new version of the drawing at the same level is faded in over
+        // 20 ms (below), not in the 16 samples a change of level gets.
+        setTable(o, t, sameSound && lvl != o.dlvl);
+        o.dlvl = (int8_t)lvl;
+        r.drawGain = d.gain;
+        if (o.dfade > 0.0f) {
+          const DrawCopy& old = gDraw.old();
+          r.drawOld = old.tab[lvl];
+          r.drawGainOld = old.gain;
+        }
+        if (macro > 0.0f) {
+          r.shape = SHAPE_SOFT;
+          r.shA = onePole(inc, softCutoff(macro));
+          float gp = macro * (float)(kDrawGainPoints - 1);
+          int gi = gp >= (float)(kDrawGainPoints - 1) ? kDrawGainPoints - 2 : (int)gp;
+          r.shG = d.softGain[gi] + (d.softGain[gi + 1] - d.softGain[gi]) * (gp - (float)gi);
+        }
+      } else if (wave == WAVE_SUPER) {
         // Macro is the detune. Never quite zero, so it always sounds like more than one saw.
         float amount = 0.05f + 0.95f * macro * macro;
         for (int k = 0; k < 6; ++k)
@@ -1277,6 +1361,21 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
         setTable(o, sawTableFor(minf(inc * 1.11f, 0.45f)), sameSound);  // clean for the sharpest of the seven
       } else {
         setTable(o, wave == WAVE_TRI ? triTableFor(inc) : sawTableFor(inc), sameSound);
+        // Macro shapes the saw, triangle and sine; at zero each is exactly as it always was.
+        if (macro > 0.0f) {
+          if (wave == WAVE_SAW) {
+            r.shape = SHAPE_SOFT;
+            r.shA = onePole(inc, softCutoff(macro));
+            r.shG = softGain(macro);
+          } else if (wave == WAVE_TRI) {
+            r.shape = SHAPE_FIN;
+            r.shA = onePole(inc, finCutoff(macro));
+            r.shG = finGain(macro);
+          } else if (wave == WAVE_SIN) {
+            r.squared = true;
+            squareUp(macro, inc, r.poly);
+          }
+        }
       }
       break;
     case ENG_FM: {
@@ -1299,10 +1398,21 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
       int lvl = wtLevelFor(inc);
       float pos = macro * (float)(kWtFrames - 1);
       int f0 = pos >= (float)(kWtFrames - 1) ? kWtFrames - 2 : (int)pos;
-      int table = wave < kWtTables ? wave : 0;
-      r.wtA = gWt[table][f0][lvl];
-      r.wtB = gWt[table][f0 + 1][lvl];
       r.wtMix = pos - (float)f0;
+      if (wave == WAVE_DRAW) {  // table 6: the drawing, morphing towards a sine
+        const DrawCopy& d = gDraw.live();
+        r.wtA = d.wt[f0][lvl];
+        r.wtB = d.wt[f0 + 1][lvl];
+        if (o.dfade > 0.0f) {
+          const DrawCopy& old = gDraw.old();
+          r.wtA2 = old.wt[f0][lvl];
+          r.wtB2 = old.wt[f0 + 1][lvl];
+        }
+      } else {
+        int table = wave < kWtTables ? wave : 0;
+        r.wtA = gWt[table][f0][lvl];
+        r.wtB = gWt[table][f0 + 1][lvl];
+      }
       break;
     }
     default: {  // pluck
@@ -1322,6 +1432,10 @@ void Synth::prepOsc(Osc& o, OscRun& r, uint8_t& lastEngine, uint8_t& lastWave, u
       }
       break;
     }
+  }
+  if (r.shape != o.shKind) {  // shaping begun, ended or changed: its filter starts afresh
+    o.shKind = r.shape;
+    o.shPrime = true;
   }
   o.pluck = false;
   lastEngine = engine;
@@ -1370,7 +1484,8 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
   float incSub = minf(inc1 * p.subRatio, 0.45f);
 
   OscRun r1, r2;
-  // Pulse width for the VA engine; on the others the LFO's "PW" destination sweeps Macro instead.
+  // The LFO's MACRO destination moves pulse width on the square, and Macro
+  // itself on every other wave and engine.
   float pw1 = clampf(mapPulseWidth(p.macro1) + lfoPw, 0.05f, 0.95f);
   float pw2 = clampf(mapPulseWidth(p.macro2) + lfoPw, 0.05f, 0.95f);
   prepOsc(v.o1, r1, v.eng1, v.wave1, p.eng1, p.wave1, inc1, clampf(p.macro1 + lfoPw * 1.2f, 0.0f, 1.0f), p.color1, pw1);
@@ -1428,6 +1543,7 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
 
     float before1 = v.o1.phase;
     float s1 = run1 ? oscValue(v.o1, r1, xmod * s2, v.rng) : 0.0f;
+    if (run1 && r1.shape != SHAPE_NONE) s1 = shapeTick(v.o1, r1, s1);
     oscStep(v.o1, r1);
 
     if (sync && v.o1.phase < before1) {
@@ -1445,6 +1561,10 @@ void Synth::renderVoice(Voice& v, int index, const Patch& p, float* outL, float*
         v.o2.blep = -jump * (1.0f - t) * (1.0f - t) * 0.5f;
       }
     }
+
+    // (oscillator 2's Macro shaping comes after any sync correction, so it
+    // is applied once a sample; cross-mod above used the unshaped wave)
+    if (need2 && r2.shape != SHAPE_NONE) s2 = shapeTick(v.o2, r2, s2);
 
     float x = s1 * m1;
     if (on2) x += s2 * m2;
@@ -1567,6 +1687,7 @@ void Synth::process(const float* inL, const float* inR, float* outL, float* outR
 
     Patch p;
     clockAdvance(len);
+    gDraw.audioBlock(len, sr_);  // takes a newly prepared drawing into use, and moves its crossfade on
     derive(p, len);
     arpAdvance(len);
 
